@@ -24,4 +24,4 @@ Connect the ESP32-S3 DevKitC-1 over its USB-to-UART port, then run:
 cargo run --release -p hello-world
 ```
 
-`espflash` will select the serial device, flash the firmware, and open a monitor. The board prints `Hello, ESP32-S3!` once per second.
+`espflash` will select the serial device, flash the firmware, and open a monitor. The board prints `Hello from the ESP32-S3!` once per second.

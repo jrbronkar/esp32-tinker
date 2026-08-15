@@ -27,16 +27,11 @@ fn main() -> ! {
     // Keeping the returned peripheral handles alive also preserves exclusive ownership of them.
     let _peripherals = esp_hal::init(esp_hal::Config::default());
 
-    // Embedded firmware normally runs continuously instead of exiting to an operating system.
+    // Keep sending a heartbeat so the serial monitor shows that the ESP32 is running.
     loop {
-        // Send one line of text to the serial monitor.
-        println!("Hello, ESP32-S3!");
+        println!("Hello from the ESP32-S3!");
 
-        // Record the current monotonic hardware-timer value.
         let started = Instant::now();
-
-        // Remain here until one second has elapsed, then begin the loop again.
-        // This is a simple busy-wait: the CPU stays active while it waits.
         while started.elapsed() < Duration::from_secs(1) {}
     }
 }
