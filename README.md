@@ -8,14 +8,7 @@ Rust firmware experiments for two ESP32-S3 DevKitC-1 boards. The first crate is 
 nix develop
 ```
 
-On the first run, install Espressif's Xtensa Rust toolchain:
-
-```sh
-cargo install espup --locked
-espup install --targets esp32s3
-```
-
-Exit and re-enter `nix develop` after installation so `~/export-esp.sh` is loaded.
+The flake pins the official esp-rs Rust compiler, Rust source component, and Espressif Xtensa linker. It does not install or modify a global Rust toolchain.
 
 ## Build
 
