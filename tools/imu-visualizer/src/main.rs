@@ -1,6 +1,7 @@
 use std::{
     env,
     io::{BufRead, BufReader},
+    net::UdpSocket,
     sync::mpsc::{self, Receiver},
     thread,
     time::Duration,
@@ -11,15 +12,26 @@ use macroquad::prelude::*;
 
 #[macroquad::main("ESP32-S3 IMU Orientation")]
 async fn main() {
-    let Some(port_name) = env::args().nth(1) else {
-        eprintln!("usage: imu-visualizer /dev/cu.usbmodemXXXX");
-        return;
+    let arguments: Vec<String> = env::args().skip(1).collect();
+    let (receiver, source_name) = match arguments.as_slice() {
+        [flag] if flag == "--udp" => (udp_reader(7778), "UDP port 7778".to_owned()),
+        [flag, port] if flag == "--udp" => match port.parse::<u16>().ok().filter(|port| *port != 0)
+        {
+            Some(port) => (udp_reader(port), format!("UDP port {port}")),
+            None => {
+                eprintln!("UDP port must be a number from 1 to 65535");
+                return;
+            }
+        },
+        [port_name] => (serial_reader(port_name.clone()), port_name.clone()),
+        _ => {
+            eprintln!("usage: imu-visualizer /dev/cu.usbmodemXXXX | --udp [port]");
+            return;
+        }
     };
-
-    let receiver = serial_reader(port_name.clone());
     let mut estimator = OrientationEstimator::default();
     let mut latest = None;
-    let mut status = format!("Waiting for IMU data on {port_name}");
+    let mut status = format!("Waiting for IMU data on {source_name}");
 
     loop {
         while let Ok(message) = receiver.try_recv() {
@@ -39,6 +51,41 @@ async fn main() {
         draw_overlay(&status, latest, orientation);
         next_frame().await;
     }
+}
+
+fn udp_reader(port: u16) -> Receiver<Result<Sample, String>> {
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        let socket = match UdpSocket::bind(("0.0.0.0", port)) {
+            Ok(socket) => socket,
+            Err(error) => {
+                let _ = sender.send(Err(format!("Could not listen on UDP port {port}: {error}")));
+                return;
+            }
+        };
+        let mut packet = [0_u8; 512];
+        loop {
+            match socket.recv_from(&mut packet) {
+                Ok((length, _source)) => {
+                    let Ok(text) = std::str::from_utf8(&packet[..length]) else {
+                        continue;
+                    };
+                    for line in text.lines() {
+                        if let Some(sample) = parse_sample(line.trim()) {
+                            let _ = sender.send(Ok(sample));
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(format!("UDP receive failed: {error}")));
+                    return;
+                }
+            }
+        }
+    });
+
+    receiver
 }
 
 fn serial_reader(port_name: String) -> Receiver<Result<Sample, String>> {

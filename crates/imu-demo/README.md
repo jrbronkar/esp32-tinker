@@ -86,6 +86,12 @@ ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
 
 For a basic receiver, run `nc -u -l 7778` on the Mac. The shared `wifi-telemetry` library adds a newline to each UDP datagram and automatically reconnects the ESP32 after a Wi-Fi interruption. Credentials are not stored in Git, but they are embedded in the resulting firmware binary, so do not distribute that binary.
 
+To feed the existing 3D orientation visualizer over Wi-Fi, stop `nc` and run:
+
+```sh
+tools/run-imu-visualizer --udp
+```
+
 ## Library and tests
 
 Sensor behavior is implemented in `src/lib.rs`, independently of the ESP32 executable. The library owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. `src/main.rs` only creates the ESP32 I²C peripheral and displays the library's results.

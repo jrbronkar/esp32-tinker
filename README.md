@@ -162,7 +162,11 @@ The most recently flashed program remains in SPI flash and starts again whenever
 
 ## Live IMU orientation
 
-The host-side Rust application in `tools/imu-visualizer` consumes the IMU firmware's 50 Hz serial telemetry and displays a live 3D board orientation. See its [README](tools/imu-visualizer/README.md) for usage and the MPU6050 yaw limitation.
+The host-side Rust application in `tools/imu-visualizer` consumes the IMU firmware's 50 Hz telemetry over either serial or Wi-Fi UDP and displays a live 3D board orientation. See its [README](tools/imu-visualizer/README.md) for usage and the MPU6050 yaw limitation.
+
+## Live soil dashboard
+
+The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telemetry on port `7777`. It displays the current watering state, sensor readings, connection health, and a rolling moisture graph. Run it with `tools/run-soil-visualizer`; its [README](tools/soil-visualizer/README.md) has the details.
 
 ## References
 

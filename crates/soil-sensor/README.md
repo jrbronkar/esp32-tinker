@@ -67,6 +67,14 @@ In a second terminal, receive the records with macOS `nc`:
 nc -u -l 7777
 ```
 
+For the live Rust dashboard, stop `nc` and run:
+
+```sh
+tools/run-soil-visualizer
+```
+
+It displays the current percentage and watering state, raw and filtered ADC values, stream health, and a rolling moisture graph.
+
 The ESP32 and Mac must be on a network that permits devices to communicate with each other. Guest Wi-Fi commonly blocks this. The firmware continues running and sending after the USB monitor is closed, so it can subsequently be powered from an ordinary USB wall charger.
 
 The credentials are absent from Git, logs, and source code, but compile-time environment variables are embedded in the firmware binary. Do not publish or share that binary. Flashing new firmware replaces those embedded credentials.

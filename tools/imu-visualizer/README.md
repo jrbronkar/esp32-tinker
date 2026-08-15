@@ -23,6 +23,14 @@ tools/run-imu-visualizer /dev/cu.usbmodemXXXX
 
 Only one process can own the serial port, so close `espflash monitor` before starting the visualizer. The visualizer ignores boot and diagnostic text and parses only lines beginning with `IMU,`.
 
+For the Wi-Fi firmware, listen directly on its default UDP port instead:
+
+```sh
+tools/run-imu-visualizer --udp
+```
+
+An optional second argument overrides port `7778`. Only one process can bind a UDP port at a time, so stop `nc -u -l 7778` before starting the visualizer.
+
 ## Coordinate display
 
 - Red line: sensor X axis
