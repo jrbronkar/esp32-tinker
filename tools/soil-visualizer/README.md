@@ -5,10 +5,10 @@ This Rust/macOS dashboard listens for `soil-demo` UDP telemetry and displays the
 Run it from the repository root:
 
 ```sh
-tools/run-soil-visualizer
+nix run .#soil-visualizer
 ```
 
-The wrapper automatically enters the repository's Nix development shell, so it does not depend on the globally installed Rust version.
+`nix run` builds the application with the Nix-provided host Rust compiler, so it does not depend on the globally installed Rust version.
 
 It listens on UDP port `7777` by default. An optional argument selects another port. Stop `nc -u -l 7777` first because only one process can bind the port.
 

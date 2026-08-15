@@ -70,7 +70,7 @@ nc -u -l 7777
 For the live Rust dashboard, stop `nc` and run:
 
 ```sh
-tools/run-soil-visualizer
+nix run .#soil-visualizer
 ```
 
 It displays the current percentage and watering state, raw and filtered ADC values, stream health, and a rolling moisture graph.

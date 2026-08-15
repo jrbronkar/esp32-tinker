@@ -166,7 +166,7 @@ The host-side Rust application in `tools/imu-visualizer` consumes the IMU firmwa
 
 ## Live soil dashboard
 
-The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telemetry on port `7777`. It displays the current watering state, sensor readings, connection health, and a rolling moisture graph. Run it with `tools/run-soil-visualizer`; its [README](tools/soil-visualizer/README.md) has the details.
+The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telemetry on port `7777`. It displays the current watering state, sensor readings, connection health, and a rolling moisture graph. Run it with `nix run .#soil-visualizer`; its [README](tools/soil-visualizer/README.md) has the details.
 
 ## References
 

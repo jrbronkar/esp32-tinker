@@ -75,12 +75,33 @@
           runHook postInstall
         '';
       };
+
+      soilVisualizer = pkgs.rustPlatform.buildRustPackage {
+        pname = "soil-visualizer";
+        version = "0.1.0";
+        src = ./tools/soil-visualizer;
+        cargoLock.lockFile = ./tools/soil-visualizer/Cargo.lock;
+      };
+
+      imuVisualizer = pkgs.rustPlatform.buildRustPackage {
+        pname = "imu-visualizer";
+        version = "0.1.0";
+        src = ./tools/imu-visualizer;
+        cargoLock.lockFile = ./tools/imu-visualizer/Cargo.lock;
+      };
     in {
       formatter = pkgs.alejandra;
 
       packages = {
         esp-rust = espRust;
+        imu-visualizer = imuVisualizer;
+        soil-visualizer = soilVisualizer;
         xtensa-gcc = xtensaGcc;
+      };
+
+      apps = {
+        imu-visualizer = flake-utils.lib.mkApp {drv = imuVisualizer;};
+        soil-visualizer = flake-utils.lib.mkApp {drv = soilVisualizer;};
       };
 
       devShells.default = pkgs.mkShell {

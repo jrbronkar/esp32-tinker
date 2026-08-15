@@ -18,7 +18,7 @@ Press `Ctrl+C`, find the macOS call-out serial device, and launch the visualizer
 
 ```sh
 espflash monitor --list-all-ports
-tools/run-imu-visualizer /dev/cu.usbmodemXXXX
+nix run .#imu-visualizer -- /dev/cu.usbmodemXXXX
 ```
 
 Only one process can own the serial port, so close `espflash monitor` before starting the visualizer. The visualizer ignores boot and diagnostic text and parses only lines beginning with `IMU,`.
@@ -26,12 +26,12 @@ Only one process can own the serial port, so close `espflash monitor` before sta
 For the Wi-Fi firmware, listen directly on its default UDP port instead:
 
 ```sh
-tools/run-imu-visualizer --udp
+nix run .#imu-visualizer -- --udp
 ```
 
 An optional second argument overrides port `7778`. Only one process can bind a UDP port at a time, so stop `nc -u -l 7778` before starting the visualizer.
 
-The wrapper automatically enters the repository's Nix development shell, ensuring the app uses the pinned Rust compiler rather than an older system compiler.
+`nix run` builds the application with the Nix-provided host Rust compiler rather than the older globally installed compiler.
 
 ## Coordinate display
 

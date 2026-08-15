@@ -89,7 +89,7 @@ For a basic receiver, run `nc -u -l 7778` on the Mac. The shared `wifi-telemetry
 To feed the existing 3D orientation visualizer over Wi-Fi, stop `nc` and run:
 
 ```sh
-tools/run-imu-visualizer --udp
+nix run .#imu-visualizer -- --udp
 ```
 
 ## Library and tests
