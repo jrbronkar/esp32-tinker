@@ -19,6 +19,8 @@ compile_error!("Select only one board revision feature");
 compile_error!("Select devkitc-v1_0 or devkitc-v1_1 to choose the RGB LED pin");
 
 const LED_BRIGHTNESS: u8 = 16;
+const FADE_STEPS: u16 = 64;
+const FRAME_TIME: Duration = Duration::from_millis(20);
 
 #[main]
 fn main() -> ! {
@@ -32,27 +34,38 @@ fn main() -> ! {
 
     // RMT generates the precisely timed pulses required by the addressable LED.
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).unwrap();
+    let tx_config = TxChannelConfig::default()
+        .with_clk_divider(1)
+        .with_idle_output_level(Level::Low)
+        .with_idle_output(true);
     let mut channel = rmt
         .channel0
-        .configure_tx(&TxChannelConfig::default())
+        .configure_tx(&tx_config)
         .unwrap()
         .with_pin(led_pin);
 
+    let colors = [
+        ("green", (0, LED_BRIGHTNESS, 0)),
+        ("red", (LED_BRIGHTNESS, 0, 0)),
+        ("blue", (0, 0, LED_BRIGHTNESS)),
+    ];
+    let mut current = (0, 0, 0);
+
     loop {
-        println!("Hello from our green ESP32-S3!");
-        let pulses = rgb_pulses(0, LED_BRIGHTNESS, 0);
-        channel = channel.transmit(&pulses).unwrap().wait().unwrap();
-        wait_one_second();
+        for (name, target) in colors {
+            println!("Hello from our {name} ESP32-S3!");
 
-        println!("Hello from our red ESP32-S3!");
-        let pulses = rgb_pulses(LED_BRIGHTNESS, 0, 0);
-        channel = channel.transmit(&pulses).unwrap().wait().unwrap();
-        wait_one_second();
+            for step in 1..=FADE_STEPS {
+                let red = interpolate(current.0, target.0, step);
+                let green = interpolate(current.1, target.1, step);
+                let blue = interpolate(current.2, target.2, step);
+                let pulses = rgb_pulses(red, green, blue);
+                channel = channel.transmit(&pulses).unwrap().wait().unwrap();
+                wait(FRAME_TIME);
+            }
 
-        println!("Hello from our blue ESP32-S3!");
-        let pulses = rgb_pulses(0, 0, LED_BRIGHTNESS);
-        channel = channel.transmit(&pulses).unwrap().wait().unwrap();
-        wait_one_second();
+            current = target;
+        }
     }
 }
 
@@ -77,7 +90,13 @@ fn rgb_pulses(red: u8, green: u8, blue: u8) -> [PulseCode; 25] {
     pulses
 }
 
-fn wait_one_second() {
+fn interpolate(start: u8, end: u8, step: u16) -> u8 {
+    let start = i32::from(start);
+    let change = i32::from(end) - start;
+    (start + change * i32::from(step) / i32::from(FADE_STEPS)) as u8
+}
+
+fn wait(duration: Duration) {
     let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(1) {}
+    while started.elapsed() < duration {}
 }

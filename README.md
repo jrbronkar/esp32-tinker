@@ -128,7 +128,7 @@ Press `Ctrl+C` to close the monitor. This stops the monitor on the Mac; it does 
 
 ## RGB LED demo
 
-The `rgb-demo` crate exercises the DevKitC-1's addressable RGB LED. It cycles through green, red, and blue once per second and prints the active color over serial.
+The `rgb-demo` crate exercises the DevKitC-1's addressable RGB LED. It smoothly fades through green, red, and blue and prints each destination color over serial.
 
 The LED pin depends on the [hardware revision](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html#hardware-revision-details):
 
@@ -144,6 +144,8 @@ cargo run --release -p rgb-demo --features devkitc-v1_1
 ```
 
 The v1.1 [official schematic](https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-DevKitC-1_V1.1_20221130.pdf) identifies the onboard part as an SK68XXMINI-HS addressable LED. The demo uses the ESP32-S3 [RMT peripheral](https://docs.espressif.com/projects/rust/esp-hal/latest/esp32s3/esp_hal/rmt/) to generate its timed one-wire signal. It intentionally uses low brightness, and no external wiring is required.
+
+The most recently flashed program remains in SPI flash and starts again whenever the board is powered. Its serial output is still transmitted when no monitor is connected; there is simply nothing listening to display it.
 
 ## References
 
