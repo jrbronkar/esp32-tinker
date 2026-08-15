@@ -1,0 +1,12 @@
+# Build output
+.pio/
+build/
+sdkconfig.old
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+
+# Local environment
+.env
