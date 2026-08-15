@@ -72,6 +72,20 @@ Readings use an `IMU`-prefixed CSV protocol at approximately 50 samples per seco
 
 While sampling is healthy, the onboard GPIO48 RGB LED uses the shared `onboard-rgb` library to breathe green. This provides a visible heartbeat even when no serial monitor is attached.
 
+### Wi-Fi telemetry
+
+Serial mode remains the default. To send the same `IMU,...` rows to UDP port `7778` on the Mac, enable the optional Wi-Fi feature with compile-time environment variables:
+
+```sh
+export WIFI_SSID='your-network-name'
+export WIFI_PASSWORD='your-network-password'
+export IMU_UDP_HOST="$(ipconfig getifaddr en0)"
+ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
+  cargo run --release -p imu-demo --features wifi
+```
+
+For a basic receiver, run `nc -u -l 7778` on the Mac. The shared `wifi-telemetry` library adds a newline to each UDP datagram and automatically reconnects the ESP32 after a Wi-Fi interruption. Credentials are not stored in Git, but they are embedded in the resulting firmware binary, so do not distribute that binary.
+
 ## Library and tests
 
 Sensor behavior is implemented in `src/lib.rs`, independently of the ESP32 executable. The library owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. `src/main.rs` only creates the ESP32 I²C peripheral and displays the library's results.
