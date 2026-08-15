@@ -818,9 +818,7 @@ dependencies = [
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",
- "nb 1.1.0",
  "onboard-rgb",
- "soil-sensor",
 ]
 
 [[package]]
@@ -1162,6 +1160,19 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "soil-demo"
+version = "0.1.0"
+dependencies = [
+ "esp-backtrace",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "nb 1.1.0",
+ "onboard-rgb",
+ "soil-sensor",
 ]
 
 [[package]]

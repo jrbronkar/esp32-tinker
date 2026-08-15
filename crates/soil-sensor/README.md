@@ -16,7 +16,7 @@ The MPU6050 and soil probe share 3.3 V and ground. Leave the separate breadboard
 
 ## Telemetry and calibration
 
-The combined `imu-demo` firmware emits an uncalibrated reading once per second:
+The dedicated `soil-demo` firmware emits an uncalibrated reading once per second:
 
 ```text
 SOIL,time_ms,raw_adc
@@ -30,3 +30,9 @@ The raw ADC number is intentionally not presented as moisture percentage. Each p
 3. Configure those values with `soil_sensor::Calibration`.
 
 The resulting percentage is relative to those references, not a laboratory measurement of volumetric water content.
+
+## Run
+
+```sh
+cargo run --release -p soil-demo
+```

@@ -72,8 +72,6 @@ Readings use an `IMU`-prefixed CSV protocol at approximately 50 samples per seco
 
 While sampling is healthy, the onboard GPIO48 RGB LED uses the shared `onboard-rgb` library to breathe green. This provides a visible heartbeat even when no serial monitor is attached.
 
-The same firmware also samples a capacitive soil-moisture probe on GPIO4 once per second and emits `SOIL,time_ms,raw_adc`. See the [`soil-sensor` README](../soil-sensor/README.md) for wiring and calibration guidance.
-
 ## Library and tests
 
 Sensor behavior is implemented in `src/lib.rs`, independently of the ESP32 executable. The library owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. `src/main.rs` only creates the ESP32 I²C peripheral and displays the library's results.
