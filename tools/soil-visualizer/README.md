@@ -8,6 +8,8 @@ Run it from the repository root:
 tools/run-soil-visualizer
 ```
 
+The wrapper automatically enters the repository's Nix development shell, so it does not depend on the globally installed Rust version.
+
 It listens on UDP port `7777` by default. An optional argument selects another port. Stop `nc -u -l 7777` first because only one process can bind the port.
 
 The dashboard marks the stream stale after three seconds without a packet. Its watering labels use the project's provisional calibration and are not a plant-specific horticultural recommendation.

@@ -9,5 +9,11 @@ if [[ $# -gt 1 ]]; then
   exit 2
 fi
 
-cd /private/tmp
-cargo run --release --manifest-path "$manifest" -- "$@"
+# Always use the repository's pinned Rust toolchain. The system Rust on this
+# Mac may be older than Macroquad's transitive dependencies require.
+exec nix develop "$repo_root" --command bash -c '
+  manifest="$1"
+  shift
+  cd /private/tmp
+  exec cargo run --release --manifest-path "$manifest" -- "$@"
+' bash "$manifest" "$@"

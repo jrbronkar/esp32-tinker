@@ -31,6 +31,8 @@ tools/run-imu-visualizer --udp
 
 An optional second argument overrides port `7778`. Only one process can bind a UDP port at a time, so stop `nc -u -l 7778` before starting the visualizer.
 
+The wrapper automatically enters the repository's Nix development shell, ensuring the app uses the pinned Rust compiler rather than an older system compiler.
+
 ## Coordinate display
 
 - Red line: sensor X axis

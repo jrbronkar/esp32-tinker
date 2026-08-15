@@ -9,7 +9,11 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
   exit 2
 fi
 
-# Running Cargo outside the repository avoids applying the ESP32-only target
-# and build-std settings from .cargo/config.toml to this macOS application.
-cd /private/tmp
-cargo run --release --manifest-path "$manifest" -- "$1"
+# Use the pinned Rust compiler, then build outside the repository so the
+# ESP32-only target settings do not apply to this macOS application.
+exec nix develop "$repo_root" --command bash -c '
+  manifest="$1"
+  shift
+  cd /private/tmp
+  exec cargo run --release --manifest-path "$manifest" -- "$@"
+' bash "$manifest" "$@"
