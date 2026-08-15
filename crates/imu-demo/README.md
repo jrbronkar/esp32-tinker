@@ -68,7 +68,9 @@ raw accel=[...] gyro=[...] temp=...
 units accel(g) x=... y=... z=... | gyro(dps) x=... y=... z=... | temp=... C
 ```
 
-Readings repeat every 500 milliseconds. Pressing `Ctrl+C` closes the monitor but leaves the firmware running on the ESP32.
+Readings use an `IMU`-prefixed CSV protocol at approximately 50 samples per second. Each row contains time in milliseconds, acceleration in `g`, angular velocity in degrees per second, and temperature in degrees Celsius. Pressing `Ctrl+C` closes the monitor but leaves the firmware running on the ESP32.
+
+While sampling is healthy, the onboard GPIO48 RGB LED uses the shared `onboard-rgb` library to breathe green. This provides a visible heartbeat even when no serial monitor is attached.
 
 ## Library and tests
 

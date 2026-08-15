@@ -8,3 +8,7 @@ target/
 
 # Local environment
 .env
+
+# Locally captured sensor sessions
+imu-*.log
+imu-*.csv

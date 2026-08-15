@@ -9,16 +9,20 @@ use esp_hal::{
     i2c::master::{Config, ConfigError, Error as I2cError, I2c},
     main,
     peripherals::Peripherals,
-    time::Rate,
+    rmt::{Rmt, TxChannelConfig, TxChannelCreator},
+    time::{Instant, Rate},
 };
 use esp_println::println;
 use imu_demo::{Error as SensorError, Mpu6050, ADDRESS_LOW};
+use onboard_rgb::breathing_green;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[derive(Debug)]
 enum StartupError {
     I2cConfiguration(ConfigError),
+    LedConfiguration,
+    LedTransmission,
     Sensor(SensorError<I2cError>),
 }
 
@@ -42,6 +46,19 @@ fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
         .with_sda(peripherals.GPIO8)
         .with_scl(peripherals.GPIO9);
 
+    // The original DevKitC-1 routes its onboard addressable LED to GPIO48.
+    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
+        .map_err(|_| StartupError::LedConfiguration)?;
+    let led_config = TxChannelConfig::default()
+        .with_clk_divider(1)
+        .with_idle_output_level(esp_hal::gpio::Level::Low)
+        .with_idle_output(true);
+    let mut led = rmt
+        .channel0
+        .configure_tx(&led_config)
+        .map_err(|_| StartupError::LedConfiguration)?
+        .with_pin(peripherals.GPIO48);
+
     // The breakout's disconnected AD0 pin selects the default 0x68 address.
     let mut sensor = Mpu6050::new(i2c, ADDRESS_LOW);
     let delay = Delay::new();
@@ -51,21 +68,21 @@ fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
     sensor.initialize().map_err(StartupError::Sensor)?;
 
     println!("MPU6050 confirmed and awake");
+    println!("IMU_CSV,time_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,temp_c");
+
+    let telemetry_started = Instant::now();
+    let mut animation_frame = 0_u16;
 
     loop {
         // Read all seven sensor outputs in one I²C transaction so the axes
         // belong to the same measurement frame.
         match sensor.read_raw() {
             Ok(raw) => {
-                println!(
-                    "raw accel={:?} gyro={:?} temp={}",
-                    raw.acceleration, raw.angular_velocity, raw.temperature,
-                );
-
                 // Conversion is pure library logic and is covered by host tests.
                 let reading = raw.into_reading();
                 println!(
-                    "units accel(g) x={:.3} y={:.3} z={:.3} | gyro(dps) x={:.2} y={:.2} z={:.2} | temp={:.2} C",
+                    "IMU,{},{:.5},{:.5},{:.5},{:.3},{:.3},{:.3},{:.2}",
+                    telemetry_started.elapsed().as_millis(),
                     reading.acceleration_g[0],
                     reading.acceleration_g[1],
                     reading.acceleration_g[2],
@@ -78,7 +95,15 @@ fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
             Err(error) => println!("MPU6050 read failed: {:?}", error),
         }
 
-        delay.delay_millis(500);
+        let pulses = breathing_green(animation_frame);
+        led = led
+            .transmit(&pulses)
+            .map_err(|_| StartupError::LedTransmission)?
+            .wait()
+            .map_err(|_| StartupError::LedTransmission)?;
+        animation_frame = animation_frame.wrapping_add(1);
+
+        delay.delay_millis(20);
     }
 }
 
@@ -94,6 +119,12 @@ fn handle_startup_failure(error: StartupError) -> ! {
             }
             StartupError::Sensor(cause) => {
                 println!("MPU6050 initialization failed: {:?}", cause);
+            }
+            StartupError::LedConfiguration => {
+                println!("Onboard RGB LED configuration failed");
+            }
+            StartupError::LedTransmission => {
+                println!("Onboard RGB LED transmission failed");
             }
         }
         println!("Check wiring, then reset the ESP32 to retry initialization");
