@@ -2,6 +2,8 @@
 
 This macOS Rust application reads the `imu-demo` serial CSV stream and renders a live 3D outline of the ESP32/IMU assembly. A complementary filter integrates gyroscope motion and uses the accelerometer's gravity vector to correct long-term roll and pitch drift.
 
+Telemetry parsing and orientation estimation live in `src/lib.rs`; the serial/graphics executable consumes that library. Unit tests cover parsing, gravity initialization, gyro yaw integration, duplicate timestamps, bounded data gaps, and accelerometer correction of roll drift.
+
 The MPU6050 has no magnetometer. Yaw is therefore relative, gyro-only, and expected to drift; it is displayed for transparency rather than as an absolute compass heading.
 
 ## Run
