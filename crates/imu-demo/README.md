@@ -52,6 +52,23 @@ Leave all four unused pins disconnected for the initial test.
 
 After checking the wiring, reconnect USB. The firmware will eventually scan the I²C bus and should find the MPU6050 at `0x68` (or `0x69` if AD0 is high).
 
+## Run the scanner
+
+From the repository root and inside the Nix development shell, compile, flash, and monitor the scanner:
+
+```sh
+cargo run --release -p imu-demo
+```
+
+A correctly connected MPU6050 with AD0 low should produce output similar to:
+
+```text
+Found I2C device at 0x68
+MPU6050 confirmed: WHO_AM_I = 0x68
+```
+
+The scan repeats every three seconds, which also provides a persistent serial heartbeat. Pressing `Ctrl+C` closes the monitor but leaves the scanner firmware running on the ESP32.
+
 ## References
 
 - [MPU-6000/MPU-6050 Product Specification](https://invensense.tdk.com/wp-www.invensense.com/wp-content/uploads/2015/02/MPU-6000-Datasheet1.pdf)
