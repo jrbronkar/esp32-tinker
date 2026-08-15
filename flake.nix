@@ -90,6 +90,10 @@
           pkgs.espflash
           pkgs.pkg-config
         ];
+
+        shellHook = ''
+          export PS1='\n\[\033[1;34m\][esp32:\w:⚡]\$ \[\033[0m\]'
+        '';
       };
     });
 }
