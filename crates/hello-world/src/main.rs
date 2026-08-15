@@ -1,23 +1,45 @@
+// This is a bare-metal program, so Rust's normal standard library is unavailable.
 #![no_std]
+
+// The ESP32 reset handler supplies our entry point instead of a desktop-style `main`.
 #![no_main]
 
+// Install a panic handler that prints useful crash information over the serial connection.
+// `as _` links the crate for its side effects without introducing a name we need to use.
 use esp_backtrace as _;
+
+// Import the ESP32 entry-point macro and the time types used for the one-second delay.
 use esp_hal::{
     main,
     time::{Duration, Instant},
 };
+
+// Import a `println!` implementation that writes through the ESP32's serial interface.
 use esp_println::println;
 
+// Embed the metadata structure expected by the ESP-IDF bootloader and `espflash`.
+// It includes fields such as this crate's name and version from Cargo.toml.
 esp_bootloader_esp_idf::esp_app_desc!();
 
+// Mark this function as the firmware entry point called after the chip resets.
 #[main]
+// `-> !` means the function never returns, which embedded firmware must not do.
 fn main() -> ! {
+    // Initialize the chip's clocks and peripherals using esp-hal's default configuration.
+    // Keeping the returned peripheral handles alive also preserves exclusive ownership of them.
+    // The leading underscore tells Rust that intentionally not using the value is acceptable.
     let _peripherals = esp_hal::init(esp_hal::Config::default());
 
+    // Embedded firmware normally runs continuously instead of exiting to an operating system.
     loop {
+        // Send one line of text to the serial monitor.
         println!("Hello, ESP32-S3!");
 
+        // Record the current monotonic hardware-timer value.
         let started = Instant::now();
+
+        // Remain here until one second has elapsed, then begin the loop again.
+        // This is a simple busy-wait: the CPU stays active while it waits.
         while started.elapsed() < Duration::from_secs(1) {}
     }
 }
