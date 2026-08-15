@@ -29,6 +29,20 @@ The hello-world baseline currently requires only one ESP32-S3 DevKitC-1 and a US
 | `esp-backtrace` | Prints panic and crash diagnostics |
 | `espflash` | Flashes firmware and monitors serial output |
 
+## Safety notes
+
+The USB-only hello-world setup is low risk, but basic electrical precautions still apply:
+
+- Avoid unplugging the board or closing the flashing process while firmware is being written. An interruption usually leaves an incomplete image that must be flashed again.
+- Use the USB-to-UART connection as the only power source during initial development. Do not simultaneously power the board through USB, the `5V` pin, or the `3V3` pin unless the power arrangement has been deliberately designed for it.
+- Treat ESP32 GPIO and ADC pins as 3.3 V only. Do not connect a 5 V signal directly to them.
+- Disconnect power before adding, removing, or moving breadboard wires.
+- Connect all communicating devices to a shared ground before connecting their signal wires.
+- Check for shorts between `3V3`, `5V`, and `GND` before applying power.
+- Verify the pinout for the exact DevKitC-1 module variant before using GPIO pins. Some pins may be connected internally to flash, PSRAM, USB, or the onboard RGB LED.
+- A bad firmware image may crash or repeatedly reboot, but the board can normally be recovered through its built-in ROM download mode by using the `BOOT` and `RESET` controls and flashing known-good firmware.
+- Flash memory has finite write endurance. Normal development use is unlikely to approach it, but avoid unnecessary continuous reflashing.
+
 ## What runs where
 
 The Mac builds and flashes the firmware, but it does not run the firmware. The resulting program contains Xtensa machine instructions executed by the ESP32-S3 CPU.
