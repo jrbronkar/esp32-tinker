@@ -1,7 +1,5 @@
-# Build output
-.pio/
-build/
-sdkconfig.old
+# Rust and ESP build output
+target/
 
 # Editors and operating systems
 .vscode/
