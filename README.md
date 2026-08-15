@@ -8,7 +8,7 @@ Rust firmware experiments for two ESP32-S3 DevKitC-1 boards. The first crate is 
 
 | Quantity | Item | Planned use |
 | ---: | --- | --- |
-| 2 | ESP32-S3 DevKitC-1 with headers | One vehicle/IMU node and one command-and-control node |
+| 2 | [ESP32-S3 DevKitC-1](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html) with headers | One vehicle/IMU node and one command-and-control node |
 | 2 | MPU6050 accelerometer and gyroscope modules | Motion and orientation sensing over I²C |
 | 2 | 830-point breadboards with power supplies | Prototyping both ESP32 nodes |
 | 280 | Jumper wires | Power and signal connections from the two breadboard kits |
@@ -21,17 +21,17 @@ The hello-world baseline currently requires only one ESP32-S3 DevKitC-1 and a US
 | Component | Purpose |
 | --- | --- |
 | Nix flake | Pins and assembles the development environment |
-| esp-rs Rust `1.95.0.0` | Compiles Rust for the ESP32-S3 Xtensa CPU |
-| Espressif Xtensa GCC `15.2.0_20250920` | Links the firmware using the ESP32-S3 memory layout |
-| `esp-hal` | Initializes and controls ESP32-S3 hardware |
-| `esp-bootloader-esp-idf` | Adds the application descriptor required by the bootloader |
-| `esp-println` | Sends formatted text through the ESP32 serial interface |
-| `esp-backtrace` | Prints panic and crash diagnostics |
-| `espflash` | Flashes firmware and monitors serial output |
+| [esp-rs Rust](https://github.com/esp-rs/rust-build) `1.95.0.0` | Compiles Rust for the ESP32-S3 Xtensa CPU |
+| [Espressif Xtensa GCC](https://github.com/espressif/crosstool-NG) `15.2.0_20250920` | Links the firmware using the ESP32-S3 memory layout |
+| [`esp-hal`](https://docs.espressif.com/projects/rust/esp-hal/latest/esp32s3/esp_hal/) | Initializes and controls ESP32-S3 hardware |
+| [`esp-bootloader-esp-idf`](https://docs.espressif.com/projects/rust/esp-bootloader-esp-idf/latest/esp32s3/esp_bootloader_esp_idf/) | Adds the application descriptor required by the bootloader |
+| [`esp-println`](https://docs.espressif.com/projects/rust/esp-println/latest/esp32s3/esp_println/) | Sends formatted text through the ESP32 serial interface |
+| [`esp-backtrace`](https://docs.espressif.com/projects/rust/esp-backtrace/latest/esp32s3/esp_backtrace/) | Prints panic and crash diagnostics |
+| [`espflash`](https://github.com/esp-rs/espflash) | Flashes firmware and monitors serial output |
 
 ## Safety notes
 
-The USB-only hello-world setup is low risk, but basic electrical precautions still apply:
+The USB-only hello-world setup is low risk, but basic electrical precautions still apply. Consult the [official DevKitC-1 hardware guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.0.html) and the documentation for the exact board revision:
 
 - Avoid unplugging the board or closing the flashing process while firmware is being written. An interruption usually leaves an incomplete image that must be flashed again.
 - Use the USB-to-UART connection as the only power source during initial development. Do not simultaneously power the board through USB, the `5V` pin, or the `3V3` pin unless the power arrangement has been deliberately designed for it.
@@ -77,7 +77,7 @@ This produces an ELF firmware file at:
 target/xtensa-esp32s3-none-elf/release/hello-world
 ```
 
-The ELF contains the program, ESP32-S3 memory layout, and an ESP-IDF-compatible application descriptor used by the bootloader and flashing tools.
+The ELF contains the program, ESP32-S3 memory layout, and an [ESP-IDF-compatible application descriptor](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/system/app_image_format.html#application-description) used by the bootloader and flashing tools.
 
 ## Flash and monitor
 
@@ -125,3 +125,32 @@ println!("Hello from the ESP32-S3!");
 The DevKitC-1's USB-to-UART bridge converts that UART output into USB serial data. `espflash` reads the data and displays it in the Mac terminal once per second.
 
 Press `Ctrl+C` to close the monitor. This stops the monitor on the Mac; it does not stop the firmware running on the ESP32.
+
+## RGB LED demo
+
+The `rgb-demo` crate exercises the DevKitC-1's addressable RGB LED. It cycles through green, red, and blue once per second and prints the active color over serial.
+
+The LED pin depends on the [hardware revision](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html#hardware-revision-details):
+
+- Original/v1.0: GPIO48
+- v1.1: GPIO38
+
+Select the matching revision explicitly:
+
+```sh
+cargo run --release -p rgb-demo --features devkitc-v1_0
+# or
+cargo run --release -p rgb-demo --features devkitc-v1_1
+```
+
+The v1.1 [official schematic](https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-DevKitC-1_V1.1_20221130.pdf) identifies the onboard part as an SK68XXMINI-HS addressable LED. The demo uses the ESP32-S3 [RMT peripheral](https://docs.espressif.com/projects/rust/esp-hal/latest/esp32s3/esp_hal/rmt/) to generate its timed one-wire signal. It intentionally uses low brightness, and no external wiring is required.
+
+## References
+
+- [ESP32-S3-DevKitC-1 documentation](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html)
+- [ESP32-S3-DevKitC-1 v1.1 schematic](https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-DevKitC-1_V1.1_20221130.pdf)
+- [Rust on ESP Book](https://docs.espressif.com/projects/rust/book/)
+- [`esp-hal` documentation for ESP32-S3](https://docs.espressif.com/projects/rust/esp-hal/latest/esp32s3/esp_hal/)
+- [`esp-bootloader-esp-idf` documentation](https://docs.espressif.com/projects/rust/esp-bootloader-esp-idf/latest/esp32s3/esp_bootloader_esp_idf/)
+- [`espflash` project and usage documentation](https://github.com/esp-rs/espflash)
+- [ESP-IDF application image format](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/system/app_image_format.html)
