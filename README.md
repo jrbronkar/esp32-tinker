@@ -126,9 +126,18 @@ The DevKitC-1's USB-to-UART bridge converts that UART output into USB serial dat
 
 Press `Ctrl+C` to close the monitor. This stops the monitor on the Mac; it does not stop the firmware running on the ESP32.
 
+To reconnect to the running firmware's serial output without compiling or flashing again, enter the development shell and start only the monitor:
+
+```sh
+nix develop
+espflash monitor
+```
+
+Both demos emit recurring heartbeat messages, so output should appear shortly after the monitor connects. If more than one serial device is available, list the detected ports with `espflash monitor --list-all-ports` and pass the appropriate one using `--port`.
+
 ## RGB LED demo
 
-The `rgb-demo` crate exercises the DevKitC-1's addressable RGB LED. It smoothly fades through green, red, and blue and prints each destination color over serial.
+The `rgb-demo` crate exercises the DevKitC-1's addressable RGB LED. It smoothly fades through green, red, and blue and periodically prints a heartbeat over serial.
 
 The LED pin depends on the [hardware revision](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html#hardware-revision-details):
 

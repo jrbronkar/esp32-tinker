@@ -51,9 +51,9 @@ fn main() -> ! {
     ];
     let mut current = (0, 0, 0);
 
-    println!("Hello from our ESP32-S3 RGB gradient!");
-
     loop {
+        println!("ESP32-S3 RGB gradient is still running!");
+
         for target in colors {
             for step in 1..=FADE_STEPS {
                 let red = interpolate(current.0, target.0, step);
