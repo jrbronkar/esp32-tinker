@@ -37,6 +37,36 @@ The resulting percentage is relative to those references, not a laboratory measu
 
 ## Run
 
+Serial-only mode is the default and needs no network configuration:
+
 ```sh
 cargo run --release -p soil-demo
 ```
+
+### Wi-Fi mode
+
+The optional `wifi` feature joins a 2.4 GHz Wi-Fi network with DHCP and sends the same `SOIL,...` record to UDP port `7777` on your Mac. Find the Mac's Wi-Fi address with:
+
+```sh
+ipconfig getifaddr en0
+```
+
+Set the variables only in your current shell. The password is consumed during compilation and is not written to the repository:
+
+```sh
+export WIFI_SSID='your-network-name'
+export WIFI_PASSWORD='your-network-password'
+export SOIL_UDP_HOST='your-mac-ipv4-address'
+ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
+  cargo run --release -p soil-demo --features wifi
+```
+
+In a second terminal, receive the records with macOS `nc`:
+
+```sh
+nc -u -l 7777
+```
+
+The ESP32 and Mac must be on a network that permits devices to communicate with each other. Guest Wi-Fi commonly blocks this. The firmware continues running and sending after the USB monitor is closed, so it can subsequently be powered from an ordinary USB wall charger.
+
+The credentials are absent from Git, logs, and source code, but compile-time environment variables are embedded in the firmware binary. Do not publish or share that binary. Flashing new firmware replaces those embedded credentials.
