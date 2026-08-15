@@ -5,7 +5,6 @@
 #![no_main]
 
 // Install a panic handler that prints useful crash information over the serial connection.
-// `as _` links the crate for its side effects without introducing a name we need to use.
 use esp_backtrace as _;
 
 // Import the ESP32 entry-point macro and the time types used for the one-second delay.
@@ -23,11 +22,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 // Mark this function as the firmware entry point called after the chip resets.
 #[main]
-// `-> !` means the function never returns, which embedded firmware must not do.
 fn main() -> ! {
     // Initialize the chip's clocks and peripherals using esp-hal's default configuration.
     // Keeping the returned peripheral handles alive also preserves exclusive ownership of them.
-    // The leading underscore tells Rust that intentionally not using the value is acceptable.
     let _peripherals = esp_hal::init(esp_hal::Config::default());
 
     // Embedded firmware normally runs continuously instead of exiting to an operating system.
