@@ -2,6 +2,33 @@
 
 Rust firmware experiments for two ESP32-S3 DevKitC-1 boards. The first crate is a bare-metal serial hello-world baseline.
 
+## Inventory
+
+### Hardware
+
+| Quantity | Item | Planned use |
+| ---: | --- | --- |
+| 2 | ESP32-S3 DevKitC-1 with headers | One vehicle/IMU node and one command-and-control node |
+| 2 | MPU6050 accelerometer and gyroscope modules | Motion and orientation sensing over I²C |
+| 2 | 830-point breadboards with power supplies | Prototyping both ESP32 nodes |
+| 280 | Jumper wires | Power and signal connections from the two breadboard kits |
+| 4 | Capacitive soil-moisture sensors V1.2 | Available for later ADC experiments; not part of the current drone baseline |
+
+The hello-world baseline currently requires only one ESP32-S3 DevKitC-1 and a USB data cable connected to its USB-to-UART port.
+
+### Software
+
+| Component | Purpose |
+| --- | --- |
+| Nix flake | Pins and assembles the development environment |
+| esp-rs Rust `1.95.0.0` | Compiles Rust for the ESP32-S3 Xtensa CPU |
+| Espressif Xtensa GCC `15.2.0_20250920` | Links the firmware using the ESP32-S3 memory layout |
+| `esp-hal` | Initializes and controls ESP32-S3 hardware |
+| `esp-bootloader-esp-idf` | Adds the application descriptor required by the bootloader |
+| `esp-println` | Sends formatted text through the ESP32 serial interface |
+| `esp-backtrace` | Prints panic and crash diagnostics |
+| `espflash` | Flashes firmware and monitors serial output |
+
 ## What runs where
 
 The Mac builds and flashes the firmware, but it does not run the firmware. The resulting program contains Xtensa machine instructions executed by the ESP32-S3 CPU.
