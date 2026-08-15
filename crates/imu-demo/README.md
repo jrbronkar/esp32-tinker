@@ -74,6 +74,8 @@ Readings repeat every 500 milliseconds. Pressing `Ctrl+C` closes the monitor but
 
 Sensor behavior is implemented in `src/lib.rs`, independently of the ESP32 executable. The library owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. `src/main.rs` only creates the ESP32 I²C peripheral and displays the library's results.
 
+Firmware startup is also fallible: `main` passes hardware ownership to `run`, then handles any returned setup error in a persistent safe-state loop. Expected setup failures do not use `unwrap()` or panic. The existing `esp-backtrace` panic handler remains a final boundary for programming defects and other unexpected failures.
+
 The repository's Cargo configuration defaults to the Xtensa firmware target. To run the library unit tests on the Mac, invoke Cargo from outside the repository so that target configuration is not applied:
 
 ```sh
