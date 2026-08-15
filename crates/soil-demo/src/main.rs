@@ -10,9 +10,15 @@ use esp_hal::{
     time::{Instant, Rate},
 };
 use esp_println::println;
-use onboard_rgb::breathing_green;
+use onboard_rgb::{breathing_rgb, DEFAULT_BRIGHTNESS};
+use soil_sensor::{Calibration, Smoother};
 
 esp_bootloader_esp_idf::esp_app_desc!();
+
+// Provisional endpoints measured from this probe. Replace DRY_ADC with a
+// stable dry-soil measurement before treating the percentage as actionable.
+const DRY_ADC: u16 = 4095;
+const WATERED_ADC: u16 = 3425;
 
 #[main]
 fn main() -> ! {
@@ -38,15 +44,25 @@ fn main() -> ! {
     };
 
     let delay = Delay::new();
+    let calibration = match Calibration::new(DRY_ADC, WATERED_ADC) {
+        Ok(calibration) => calibration,
+        Err(_) => fatal("Soil calibration endpoints are invalid"),
+    };
+    let mut smoother = Smoother::default();
     let started = Instant::now();
     let mut animation_frame = 0_u16;
     let mut sample_frame = 0_u8;
+    let mut moisture_percent = 0_u8;
 
     println!("Capacitive soil-moisture demo started");
-    println!("SOIL_CSV,time_ms,raw_adc");
+    println!("SOIL_CSV,time_ms,raw_adc,filtered_adc,moisture_percent");
+    println!("Calibration is provisional: dry={DRY_ADC}, watered={WATERED_ADC}");
 
     loop {
-        let pulses = breathing_green(animation_frame);
+        // Wet is green, halfway is yellow, and dry is red.
+        let red = u16::from(DEFAULT_BRIGHTNESS) * u16::from(100 - moisture_percent) / 100;
+        let green = u16::from(DEFAULT_BRIGHTNESS) * u16::from(moisture_percent) / 100;
+        let pulses = breathing_rgb(red as u8, green as u8, 0, animation_frame);
         led = match led.transmit(&pulses) {
             Ok(transfer) => match transfer.wait() {
                 Ok(channel) => channel,
@@ -61,7 +77,17 @@ fn main() -> ! {
         if sample_frame == 50 {
             sample_frame = 0;
             match nb::block!(adc.read_oneshot(&mut soil_pin)) {
-                Ok(raw) => println!("SOIL,{},{}", started.elapsed().as_millis(), raw),
+                Ok(raw) => {
+                    let filtered = smoother.update(raw);
+                    moisture_percent = calibration.moisture_percent(filtered);
+                    println!(
+                        "SOIL,{},{},{},{}",
+                        started.elapsed().as_millis(),
+                        raw,
+                        filtered,
+                        moisture_percent
+                    );
+                }
                 Err(_) => println!("Soil sensor ADC read failed"),
             }
         }

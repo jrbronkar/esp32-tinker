@@ -44,6 +44,11 @@ pub fn interpolate(start: u8, end: u8, step: u16, total_steps: u16) -> u8 {
 
 /// Produces a dim green breathing frame for a monotonically increasing index.
 pub fn breathing_green(frame: u16) -> [PulseCode; 25] {
+    breathing_rgb(0, DEFAULT_BRIGHTNESS, 0, frame)
+}
+
+/// Produces a breathing frame whose peak is the supplied RGB color.
+pub fn breathing_rgb(red: u8, green: u8, blue: u8, frame: u16) -> [PulseCode; 25] {
     let phase = frame % BREATHING_FRAMES;
     let half = BREATHING_FRAMES / 2;
     let ramp = if phase < half {
@@ -51,6 +56,6 @@ pub fn breathing_green(frame: u16) -> [PulseCode; 25] {
     } else {
         BREATHING_FRAMES - phase
     };
-    let green = (ramp * u16::from(DEFAULT_BRIGHTNESS) / half) as u8;
-    rgb_pulses(0, green, 0)
+    let scale = |channel: u8| (ramp * u16::from(channel) / half) as u8;
+    rgb_pulses(scale(red), scale(green), scale(blue))
 }

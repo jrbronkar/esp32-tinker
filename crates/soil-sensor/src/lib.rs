@@ -17,6 +17,24 @@ pub struct Calibration {
     wet: u16,
 }
 
+/// A small integer low-pass filter for reducing ADC noise without allocation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Smoother {
+    filtered: Option<u16>,
+}
+
+impl Smoother {
+    /// Adds a sample, retaining 75% of the previous result and 25% of the new one.
+    pub fn update(&mut self, raw: u16) -> u16 {
+        let filtered = match self.filtered {
+            None => raw,
+            Some(previous) => ((u32::from(previous) * 3 + u32::from(raw)) / 4) as u16,
+        };
+        self.filtered = Some(filtered);
+        filtered
+    }
+}
+
 impl Calibration {
     /// Creates a calibration from measurements in dry and wet reference media.
     pub const fn new(dry: u16, wet: u16) -> Result<Self, CalibrationError> {
@@ -80,5 +98,13 @@ mod tests {
         let calibration = Calibration::new(3_000, 1_000).unwrap();
         assert_eq!(calibration.moisture_percent(4_000), 0);
         assert_eq!(calibration.moisture_percent(0), 100);
+    }
+
+    #[test]
+    fn smooths_changes_with_an_integer_low_pass_filter() {
+        let mut smoother = Smoother::default();
+        assert_eq!(smoother.update(4_000), 4_000);
+        assert_eq!(smoother.update(3_000), 3_750);
+        assert_eq!(smoother.update(3_000), 3_562);
     }
 }
