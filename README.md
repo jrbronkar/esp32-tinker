@@ -160,6 +160,10 @@ The v1.1 [official schematic](https://dl.espressif.com/dl/schematics/SCH_ESP32-S
 
 The most recently flashed program remains in SPI flash and starts again whenever the board is powered. Its serial output is still transmitted when no monitor is connected; there is simply nothing listening to display it.
 
+## Live IMU orientation
+
+The host-side Rust application in `tools/imu-visualizer` consumes the IMU firmware's 50 Hz serial telemetry and displays a live 3D board orientation. See its [README](tools/imu-visualizer/README.md) for usage and the MPU6050 yaw limitation.
+
 ## References
 
 - [ESP32-S3-DevKitC-1 documentation](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html)

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+manifest="$repo_root/tools/imu-visualizer/Cargo.toml"
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: tools/run-imu-visualizer /dev/cu.usbmodemXXXX" >&2
+  exit 2
+fi
+
+# Running Cargo outside the repository avoids applying the ESP32-only target
+# and build-std settings from .cargo/config.toml to this macOS application.
+cd /private/tmp
+cargo run --release --manifest-path "$manifest" -- "$1"
