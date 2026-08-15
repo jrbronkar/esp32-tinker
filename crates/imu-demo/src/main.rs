@@ -9,64 +9,65 @@ use esp_hal::{
     time::Rate,
 };
 use esp_println::println;
+use imu_demo::{Mpu6050, ADDRESS_LOW};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-const MPU6050_ADDRESS_LOW: u8 = 0x68;
-const MPU6050_ADDRESS_HIGH: u8 = 0x69;
-const WHO_AM_I_REGISTER: u8 = 0x75;
-
 #[main]
 fn main() -> ! {
+    // Take ownership of the chip peripherals, then run I²C at the MPU6050's
+    // conservative standard-mode frequency of 100 kHz.
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let i2c_config = Config::default().with_frequency(Rate::from_khz(100));
-    let mut i2c = I2c::new(peripherals.I2C0, i2c_config)
+    let i2c = I2c::new(peripherals.I2C0, i2c_config)
         .unwrap()
         .with_sda(peripherals.GPIO8)
         .with_scl(peripherals.GPIO9);
+
+    // The breakout's disconnected AD0 pin selects the default 0x68 address.
+    let mut sensor = Mpu6050::new(i2c, ADDRESS_LOW);
     let delay = Delay::new();
 
-    println!("ESP32-S3 MPU6050 I2C scanner started");
-    println!("Wiring: GPIO8=SDA, GPIO9=SCL");
+    println!("Initializing MPU6050 at I2C address 0x68...");
+
+    if let Err(error) = sensor.initialize() {
+        println!("MPU6050 initialization failed: {:?}", error);
+        loop {
+            // Stay alive and keep reporting the fault so a newly attached
+            // serial monitor does not miss a one-time initialization message.
+            delay.delay_millis(3_000);
+            println!("MPU6050 is not running; reset after checking the wiring");
+        }
+    }
+
+    println!("MPU6050 confirmed and awake");
 
     loop {
-        let mut devices_found = 0;
+        // Read all seven sensor outputs in one I²C transaction so the axes
+        // belong to the same measurement frame.
+        match sensor.read_raw() {
+            Ok(raw) => {
+                println!(
+                    "raw accel={:?} gyro={:?} temp={}",
+                    raw.acceleration, raw.angular_velocity, raw.temperature,
+                );
 
-        println!("Scanning I2C addresses...");
-
-        // The ranges below skip addresses reserved by the I2C specification.
-        for address in 0x08..=0x77 {
-            if i2c.write(address, &[]).is_ok() {
-                devices_found += 1;
-                println!("Found I2C device at 0x{address:02X}");
-
-                if address == MPU6050_ADDRESS_LOW || address == MPU6050_ADDRESS_HIGH {
-                    report_mpu6050_identity(&mut i2c, address);
-                }
+                // Conversion is pure library logic and is covered by host tests.
+                let reading = raw.into_reading();
+                println!(
+                    "units accel(g) x={:.3} y={:.3} z={:.3} | gyro(dps) x={:.2} y={:.2} z={:.2} | temp={:.2} C",
+                    reading.acceleration_g[0],
+                    reading.acceleration_g[1],
+                    reading.acceleration_g[2],
+                    reading.angular_velocity_dps[0],
+                    reading.angular_velocity_dps[1],
+                    reading.angular_velocity_dps[2],
+                    reading.temperature_c,
+                );
             }
+            Err(error) => println!("MPU6050 read failed: {:?}", error),
         }
 
-        if devices_found == 0 {
-            println!("No I2C devices found; check power, ground, SDA, and SCL");
-        }
-
-        println!("Scan complete; {devices_found} device(s) found\n");
-        delay.delay_millis(3_000);
-    }
-}
-
-fn report_mpu6050_identity(i2c: &mut I2c<'_, esp_hal::Blocking>, address: u8) {
-    let mut identity = [0_u8; 1];
-
-    match i2c.write_read(address, &[WHO_AM_I_REGISTER], &mut identity) {
-        Ok(()) if identity[0] == MPU6050_ADDRESS_LOW => {
-            println!("MPU6050 confirmed: WHO_AM_I = 0x{:02X}", identity[0]);
-        }
-        Ok(()) => {
-            println!("Device responded, but WHO_AM_I = 0x{:02X}", identity[0]);
-        }
-        Err(_) => {
-            println!("Device acknowledged, but reading WHO_AM_I failed");
-        }
+        delay.delay_millis(500);
     }
 }

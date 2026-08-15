@@ -1,6 +1,6 @@
 # MPU6050 IMU demo
 
-This demo connects one MPU6050 breakout board to the ESP32-S3 DevKitC-1 over I²C. The initial goal is to detect the sensor at address `0x68`, read its identity register, and then stream accelerometer and gyroscope measurements.
+This demo connects one MPU6050 breakout board to the ESP32-S3 DevKitC-1 over I²C. It confirms the sensor identity, wakes it from sleep, and streams acceleration, angular velocity, and temperature as both raw register values and physical units.
 
 ## Wiring
 
@@ -50,11 +50,11 @@ Leave all four unused pins disconnected for the initial test.
 - Check for bent pins, loose jumpers, or exposed conductors touching one another.
 - Do not connect the separate breadboard power-supply module for this test.
 
-After checking the wiring, reconnect USB. The firmware will eventually scan the I²C bus and should find the MPU6050 at `0x68` (or `0x69` if AD0 is high).
+After checking the wiring, reconnect USB. This demo expects the MPU6050 at `0x68`; its reusable library also exposes `0x69` for a board whose AD0 pin is high.
 
-## Run the scanner
+## Run the demo
 
-From the repository root and inside the Nix development shell, compile, flash, and monitor the scanner:
+From the repository root and inside the Nix development shell, compile, flash, and monitor the demo:
 
 ```sh
 cargo run --release -p imu-demo
@@ -63,11 +63,23 @@ cargo run --release -p imu-demo
 A correctly connected MPU6050 with AD0 low should produce output similar to:
 
 ```text
-Found I2C device at 0x68
-MPU6050 confirmed: WHO_AM_I = 0x68
+MPU6050 confirmed and awake
+raw accel=[...] gyro=[...] temp=...
+units accel(g) x=... y=... z=... | gyro(dps) x=... y=... z=... | temp=... C
 ```
 
-The scan repeats every three seconds, which also provides a persistent serial heartbeat. Pressing `Ctrl+C` closes the monitor but leaves the scanner firmware running on the ESP32.
+Readings repeat every 500 milliseconds. Pressing `Ctrl+C` closes the monitor but leaves the firmware running on the ESP32.
+
+## Library and tests
+
+Sensor behavior is implemented in `src/lib.rs`, independently of the ESP32 executable. The library owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. `src/main.rs` only creates the ESP32 I²C peripheral and displays the library's results.
+
+The repository's Cargo configuration defaults to the Xtensa firmware target. To run the library unit tests on the Mac, invoke Cargo from outside the repository so that target configuration is not applied:
+
+```sh
+manifest="$PWD/crates/imu-demo/Cargo.toml"
+(cd /private/tmp && cargo test --manifest-path "$manifest" --lib)
+```
 
 ## References
 
