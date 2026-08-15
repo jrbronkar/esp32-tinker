@@ -1636,20 +1636,18 @@ name = "soil-demo"
 version = "0.1.0"
 dependencies = [
  "embassy-executor",
- "embassy-net",
  "embassy-time",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",
- "esp-radio",
  "esp-rtos",
  "heapless 0.8.0",
  "nb 1.1.0",
  "onboard-rgb",
  "soil-sensor",
- "static_cell",
+ "wifi-telemetry",
 ]
 
 [[package]]
@@ -1921,6 +1919,21 @@ name = "void"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
+
+[[package]]
+name = "wifi-telemetry"
+version = "0.1.0"
+dependencies = [
+ "embassy-executor",
+ "embassy-net",
+ "embassy-time",
+ "esp-hal",
+ "esp-println",
+ "esp-radio",
+ "esp-rtos",
+ "heapless 0.8.0",
+ "static_cell",
+]
 
 [[package]]
 name = "winapi-util"
