@@ -135,12 +135,16 @@ The LED pin depends on the [hardware revision](https://docs.espressif.com/projec
 - Original/v1.0: GPIO48
 - v1.1: GPIO38
 
-Select the matching revision explicitly:
+This project defaults to the original/v1.0 board used here, so run:
 
 ```sh
-cargo run --release -p rgb-demo --features devkitc-v1_0
-# or
-cargo run --release -p rgb-demo --features devkitc-v1_1
+cargo run --release -p rgb-demo
+```
+
+To target a v1.1 board instead, disable the default feature and select v1.1:
+
+```sh
+cargo run --release -p rgb-demo --no-default-features --features devkitc-v1_1
 ```
 
 The v1.1 [official schematic](https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-DevKitC-1_V1.1_20221130.pdf) identifies the onboard part as an SK68XXMINI-HS addressable LED. The demo uses the ESP32-S3 [RMT peripheral](https://docs.espressif.com/projects/rust/esp-hal/latest/esp32s3/esp_hal/rmt/) to generate its timed one-wire signal. It intentionally uses low brightness, and no external wiring is required.

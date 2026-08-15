@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [features]
+default = ["devkitc-v1_0"]
 devkitc-v1_0 = []
 devkitc-v1_1 = []
 

@@ -45,16 +45,16 @@ fn main() -> ! {
         .with_pin(led_pin);
 
     let colors = [
-        ("green", (0, LED_BRIGHTNESS, 0)),
-        ("red", (LED_BRIGHTNESS, 0, 0)),
-        ("blue", (0, 0, LED_BRIGHTNESS)),
+        (0, LED_BRIGHTNESS, 0),
+        (LED_BRIGHTNESS, 0, 0),
+        (0, 0, LED_BRIGHTNESS),
     ];
     let mut current = (0, 0, 0);
 
-    loop {
-        for (name, target) in colors {
-            println!("Hello from our {name} ESP32-S3!");
+    println!("Hello from our ESP32-S3 RGB gradient!");
 
+    loop {
+        for target in colors {
             for step in 1..=FADE_STEPS {
                 let red = interpolate(current.0, target.0, step);
                 let green = interpolate(current.1, target.1, step);
