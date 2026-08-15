@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hello-world", "crates/imu-demo", "crates/onboard-rgb", "crates/rgb-demo"]
+members = ["crates/hello-world", "crates/imu-demo", "crates/onboard-rgb", "crates/rgb-demo", "crates/soil-sensor"]
 
 [profile.dev]
 opt-level = "s"

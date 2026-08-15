@@ -5,6 +5,7 @@ use core::convert::Infallible;
 
 use esp_backtrace as _;
 use esp_hal::{
+    analog::adc::{Adc, AdcConfig, Attenuation},
     delay::Delay,
     i2c::master::{Config, ConfigError, Error as I2cError, I2c},
     main,
@@ -39,6 +40,11 @@ fn main() -> ! {
 }
 
 fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
+    // GPIO4 samples the soil probe's 0–3.3 V analog output through ADC1.
+    let mut adc_config = AdcConfig::new();
+    let mut soil_pin = adc_config.enable_pin(peripherals.GPIO4, Attenuation::_11dB);
+    let mut adc = Adc::new(peripherals.ADC1, adc_config);
+
     // Run I²C at the MPU6050's conservative standard-mode frequency of 100 kHz.
     let i2c_config = Config::default().with_frequency(Rate::from_khz(100));
     let i2c = I2c::new(peripherals.I2C0, i2c_config)
@@ -72,6 +78,7 @@ fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
 
     let telemetry_started = Instant::now();
     let mut animation_frame = 0_u16;
+    let mut soil_frame = 0_u8;
 
     loop {
         // Read all seven sensor outputs in one I²C transaction so the axes
@@ -102,6 +109,16 @@ fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
             .wait()
             .map_err(|_| StartupError::LedTransmission)?;
         animation_frame = animation_frame.wrapping_add(1);
+
+        // Soil moisture changes slowly, so one sample per second is sufficient.
+        soil_frame = soil_frame.wrapping_add(1);
+        if soil_frame == 50 {
+            soil_frame = 0;
+            match nb::block!(adc.read_oneshot(&mut soil_pin)) {
+                Ok(raw) => println!("SOIL,{},{}", telemetry_started.elapsed().as_millis(), raw),
+                Err(_) => println!("Soil sensor ADC read failed"),
+            }
+        }
 
         delay.delay_millis(20);
     }

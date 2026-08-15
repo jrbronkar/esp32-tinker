@@ -818,7 +818,9 @@ dependencies = [
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",
+ "nb 1.1.0",
  "onboard-rgb",
+ "soil-sensor",
 ]
 
 [[package]]
@@ -1161,6 +1163,10 @@ dependencies = [
  "serde",
  "unsafe-libyaml",
 ]
+
+[[package]]
+name = "soil-sensor"
+version = "0.1.0"
 
 [[package]]
 name = "somni-expr"
