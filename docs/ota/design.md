@@ -525,3 +525,11 @@ initialization function in place. Permanent configuration errors still require a
 corrected firmware build; rebooting does not repair them. No upload request is
 replayed by this startup retry. Panics from programming errors still use the
 backtrace panic handler and do not intentionally reboot.
+
+
+### Native gRPC investigation
+
+See [gRPC feasibility](grpc-feasibility.md) for the published-library compile
+experiment and proposed migration gates. Protolink 0.0.5 with Embassy TCP/timers
+cross-compiles for ESP32-S3. Memory, codec integration, standard-client interop,
+and actual device service behavior are unverified; current transport is unchanged.

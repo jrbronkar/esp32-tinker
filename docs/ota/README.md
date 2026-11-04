@@ -8,6 +8,7 @@ ESP32 application slot, then optionally select it for the next boot.
 | [Design](design.md) | Architecture, decisions, milestones, and hardware evidence |
 | [Protocol](protocol.md) | API contract, framing, sequence diagrams, upload states, and boot lifecycle |
 | [Provisioning](provisioning.md) | Partition layout, initial USB setup, image export, upload, and recovery |
+| [gRPC feasibility](grpc-feasibility.md) | Native server candidate, ESP32 compile probe, constraints, and proposed gates |
 | [Testing](testing.md) | Automated checks, board fault harness, manual procedures, results, and gaps |
 
 Commands in these guides run from the repository root inside `nix develop`.
