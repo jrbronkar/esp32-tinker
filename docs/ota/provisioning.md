@@ -100,5 +100,5 @@ bootloader, partition table, NVS, or PHY regions.
 
 [Current validation and gaps](testing.md#validation-status) distinguish the latest
 build from earlier activation tests. Old split-version prototypes require a USB
-upgrade to unified protocol 1. The tested board now runs `mdns-3` in ota_0 after a successful Wi-Fi
-commit and reboot.
+upgrade to unified protocol 1. After each activation, query status with `--boot`
+to confirm the firmware version and running slot.

@@ -5,8 +5,6 @@ package ota;
 message Request {
   uint32 protocol_version = 1;
   uint32 request_id = 2;
-  // Former private UDP discovery operation; discovery now uses DNS-SD.
-  reserved 12;
   oneof payload {
     StatusRequest status = 10;
     BeginUpdate begin = 20;

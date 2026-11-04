@@ -1209,6 +1209,7 @@ name = "espctl"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "edge-mdns",
  "mdns-sd",
  "ota-core",
  "ota-protocol",

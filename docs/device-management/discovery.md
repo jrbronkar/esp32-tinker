@@ -1,7 +1,7 @@
-# mDNS / DNS-SD device discovery
+# LAN discovery
 
-Find ESP32 management services on the same IPv4 LAN without a board IP or
-management-port assumption:
+Find provisioned `device-demo` boards on the same LAN without knowing their IP
+addresses or management ports:
 
 ```sh
 nix develop
@@ -9,59 +9,58 @@ cargo run -p espctl -- discover
 cargo run -p espctl -- discover --watch
 ```
 
-The board advertises `_espctl._tcp.local.` using `edge-mdns`; the Mac browses and
-resolves services using `mdns-sd`. No custom DNS encoder, Protobuf discovery
-message, private UDP port, or IP sweep is used. The existing TCP management API
-is unchanged. Discovery-enabled `device-demo` firmware is required; sensor demos
-and older firmware do not advertise this service.
+Use `--interface <local-interface-ip>` to restrict browsing to one interface,
+and `--timeout-ms 5000` to extend the default three-second collection window.
+Watch mode waits three seconds between scans. Ctrl+C stops it.
 
-## Advertised records
+## Service contract
 
-| Record | Purpose |
+Firmware uses `edge-mdns` to advertise `_espctl._tcp.local.`. The CLI uses
+`mdns-sd` to resolve IPv4 endpoints from these standard DNS-SD records:
+
+| Record | Meaning |
 | --- | --- |
-| PTR | Find instances of `_espctl._tcp.local.` |
-| SRV | Resolve the target hostname and actual management port |
-| A | Resolve the board's current IPv4 address |
-| TXT | Small application metadata: id, application, firmware, protocol, state, ota |
+| PTR | Lists service instances |
+| SRV | Gives each instance's target hostname and management port |
+| A | Resolves the target hostname to its current IPv4 address |
+| TXT | Carries id, application, firmware, protocol, state and ota metadata |
 
-Hostnames derive from the board's base MAC, such as
-`esp32s3-a4cb8fd813c8.local.`. Discovery follows SRV/A records, not a hardcoded
-management endpoint. The browser supports protocol=1 and validates bounded ID
-and firmware metadata. The responder uses fixed UDP and DNS buffers and sets IP
-TTL to 255. It rebuilds its address records when the network configuration changes.
+Hostnames derive from each board's MAC. The client follows advertised SRV ports
+and A records rather than assuming a management endpoint. TXT keys and the
+protocol version are shared constants in `ota-protocol`.
 
-State changes request fresh announcements. Values are idle, receiving, verified,
-and committing, matching [the management lifecycle](../ota/protocol.md).
-The service task owns a runtime object containing the management state and
-announcement signal. A typed state enum is stored in a Cell because both
-consumers run in the same task. TCP and mDNS run concurrently as joined async functions
-that borrow this object; neither reads global management state. The upload
-guard borrows the same runtime and restores idle on exit or cancellation.
+The responder matches query names, record types and classes, including ANY
+queries and the mDNS unicast-response class bit. Related A/SRV/TXT records remain
+available in the additional section. DNS parsing and serialization belong to the
+library; a small wrapper adds type/class matching to its name-based handler.
 
-TXT is cached advertised metadata, not a guaranteed live health check. For live
-uptime and boot details, query the resolved endpoint explicitly:
+TXT states are idle, receiving, verified and committing. The service task owns
+Runtime; concurrent TCP and mDNS futures borrow it. An upload guard restores idle
+when a session exits or is cancelled. State changes request fresh announcements.
+Fixed-size firmware buffers bound packet storage; records have a 60-second TTL
+and unique records use cache-flush semantics. Address records are rebuilt when
+DHCP configuration changes.
+
+## Interpreting results
+
+TXT is cached, unauthenticated advertised metadata. Query the resolved endpoint
+for current uptime and boot inventory:
 
 ```sh
 cargo run -p espctl -- status --host <resolved-ip> --port <resolved-port> --boot
 ```
 
-## Mac interfaces and collection
+The CLI validates bounded metadata, deduplicates instance/endpoints, processes
+replacement/removal events, and caps displayed endpoints at 64. The host library
+owns DNS caching and packet processing; the display cap does not bound its cache.
+Each watch iteration creates a new browse session.
 
-The default browser searches available interfaces and displays resolved IPv4 endpoints. To restrict it to a specific
-interface, supply that interface's local IP address:
+mDNS uses the standard multicast address 224.0.0.251 and UDP port 5353. AP
+filtering, client isolation and routing can hide services; an empty scan does not
+prove a device is offline. Successful resolution also does not establish that
+the advertised endpoint is reachable from the client's current IP configuration.
 
-```sh
-cargo run -p espctl -- discover --interface 10.128.248.55 --timeout-ms 5000
-```
-
-The default collection window is three seconds, plus bounded daemon startup and
-shutdown overhead. Watch mode waits three seconds between scans. Ctrl+C stops
-it. The application deduplicates service instances/endpoints, applies replacement
-and removal events, caps displayed endpoints at 64, and reports overflow. DNS
-packet processing, caching, TTLs, and retransmissions belong to the library;
-this display cap is not a total memory bound for the host library's cache.
-
-macOS Bonjour can inspect the same service independently:
+On macOS, Bonjour provides an independent diagnostic client:
 
 ```sh
 dns-sd -B _espctl._tcp local.
@@ -69,74 +68,16 @@ dns-sd -L <instance-name> _espctl._tcp local.
 dns-sd -G v4 <hostname>.local.
 ```
 
-Multicast DNS uses the standard 224.0.0.251:5353 address/port. Firewalls, AP client
-isolation, multicast filtering, and routing can hide services; an empty scan is
-not proof that boards are offline. Cross-subnet discovery and persistent inventory
-are outside this implementation. MAC-derived names reduce collisions; automatic
-hostname conflict renaming has not been validated. TXT metadata is unauthenticated.
+## Validation and limits
 
-## Validation and scope
+Host tests exercise record filtering, SRV ports, metadata, replacement/removal,
+deduplication, result limits and CLI options. Physical tests found intermittent
+multicast delivery before the board's IP stack on one WLAN; another access point
+passed 10/10 discovery scans. The exact AP/radio interoperability cause remains
+unresolved. See [validation status](../ota/testing.md#validation-status) for the
+latest firmware smoke test and remaining gaps.
 
-Host tests cover resolved SRV ports (including non-default ports), TXT metadata,
-address replacement, deduplication, removal, invalid records, result limits, and
-CLI options. Multicast interoperability needs actual LAN tests; fixture tests do
-not establish it. See [current hardware validation](../ota/testing.md#validation-status).
-Remote logs and fleet inventory remain separate future work.
-
-### Multicast delivery investigation
-
-Discovery remains intermittent on the current LAN. Temporary counters at the
-Wi-Fi-driver and DNS-socket boundaries isolated the failure before the IP stack:
-
-| Controlled observation | Result |
-| --- | --- |
-| Two failed scans | Zero incoming mDNS frames at either board boundary |
-| Next successful scan | One incoming frame at each boundary, followed by a response |
-| Explicit multicast query with a unicast reply expected | Timed out without increasing board receive counters |
-| Unicast query from port 5353, triggering a multicast response | Mac received the board response |
-| Direct DNS queries | Continued to return identity and diagnostic counters |
-
-The driver handed an IGMP membership report to the radio; this does not establish
-that the AP received or accepted it. These observations point to intermittent
-multicast delivery toward the ESP32, rather than service resolution or DNS
-response parsing. They do not distinguish Mac transmission, AP forwarding, and
-radio filtering before the driver boundary. Host socket loopback confirms query
-generation, not over-the-air delivery. Power saving is disabled by default in
-the installed radio driver. Changing host library versions did not resolve it.
-
-A subsequent macOS en0 capture showed nine valid multicast PTR queries across
-three failed scans, with no board replies during those scans. The same capture
-received the board startup multicast announcement and a direct DNS reply about
-188 ms after its request. Query checksums and IP TTL 255 were correct. This
-confirms query output at the Mac interface, but not physical radio delivery.
-
-Next, compare on another LAN/AP if available, or capture at the AP/wireless
-boundary to distinguish forwarding from radio reception. macOS packet capture
-requires administrator access. Keep packet captures and temporary diagnostic firmware outside the
-repository; the production TXT contract excludes these counters.
-
-### Alternate-network comparison
-
-The same mDNS implementation, rebuilt with iPhone hotspot credentials as
-`mdns-hotspot-1`, was found in 10/10 independent scans, including scans well
-after startup. Direct TCP status and boot inventory also passed once the Mac had
-a local IPv4 address. On the original WLAN, a fresh startup passed 3/3 scans and
-a later round passed 2/3. This strengthens the case for an original-network
-forwarding or radio interoperability issue; it does not identify the exact AP
-setting or driver defect.
-
-The startup capture saw an IGMPv2 report with Router Alert from another device,
-not the ESP32. It therefore does not verify the ESP32 report on the wire. An AP
-may consume membership reports without forwarding them to the Mac.
-
-The hotspot exposed a separate addressing problem: the Mac initially had a
-translated IPv4 address (`192.0.0.2`) and routed the advertised board address
-through its gateway. Discovery succeeded but direct status timed out. After a
-temporary IPv6-off test and restoring IPv6 to Automatic, the Mac obtained
-`172.20.10.7/28`, directly reached the board at `172.20.10.6`, and status passed.
-Do not confuse successful DNS-SD resolution with endpoint reachability.
-
-Normal `mdns-3` firmware and original Wi-Fi credentials were restored afterward.
-A later mDNS scan rediscovered the board at `10.128.248.68:7779`; direct status
-and boot inventory confirmed ota_0 and OTA available. No USB connection was
-needed to complete the recovery check.
+Older firmware and sensor demos do not advertise this service. Multiple physical
+boards, automatic hostname conflict renaming and DHCP changes remain hardware
+coverage gaps. Cross-subnet discovery, remote logs and persistent inventory are
+outside this change. Keep captures and diagnostic firmware outside the repo.

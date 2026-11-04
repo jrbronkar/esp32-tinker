@@ -8,8 +8,7 @@ use edge_mdns::{
     },
     host::{Host, Service, ServiceAnswers},
     io::{IP_BROADCAST_ADDR as MDNS_MULTICAST_ADDR, PORT as MDNS_PORT},
-    HostAnswer, HostAnswers, HostAnswersMdnsHandler, MdnsError, MdnsHandler, MdnsRequest,
-    MdnsResponse,
+    HostAnswer, HostAnswers, MdnsError, MdnsHandler, MdnsRequest, MdnsResponse,
 };
 use embassy_net::{
     udp::{PacketMetadata, UdpSocket},
@@ -20,7 +19,7 @@ use embassy_time::{Duration, Timer};
 use embedded_io_async::{ErrorKind, ErrorType};
 use ota_protocol::txt;
 
-// RFC 6762 requires link-local mDNS packets to use this IP hop limit.
+// Standard link-local mDNS IP hop limit (RFC 6762).
 const MDNS_HOP_LIMIT: u8 = 255;
 const DNS_CACHE_FLUSH_BIT: u16 = 0x8000;
 const RECORD_TTL_SECS: u32 = 60;
@@ -135,7 +134,7 @@ impl MdnsHandler for Advertisement<'_> {
     ) -> Result<MdnsResponse<'a>, MdnsError> {
         // Legacy DNS replies must use ordinary IN records (RFC 6762 section 6.7).
         self.cache_flush = !matches!(request, MdnsRequest::Request { legacy: true, .. });
-        HostAnswersMdnsHandler::new(&*self).handle(request, buffer)
+        crate::mdns_filter::respond(&*self, request, buffer)
     }
 }
 pub async fn serve(

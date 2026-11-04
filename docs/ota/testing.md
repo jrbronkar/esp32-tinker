@@ -131,11 +131,11 @@ Recovery performed / follow-up:
 
 | Build / check | Evidence | Limits |
 | --- | --- | --- |
-| Current host suite | 35 tests pass: 5 discovery/client, 14 status/client, 3 upload/client, 5 core, 8 protocol | Mock I/O/storage cannot establish real flash or bootloader recovery |
+| Current host suite | 40 tests pass: 10 discovery/client, 14 status/client, 3 upload/client, 5 core, 8 protocol | Mock I/O/storage cannot establish real flash or bootloader recovery |
 | Current no-feature firmware | Firmware check and release link pass | Startup error reset path has not been fault-injected |
-| `ota-merge-check-1` on board | Earlier no-feature release: 501,024 bytes uploaded, verified and committed over Wi-Fi from ota_0; post-reboot status confirms protocol 1, ota_1, OTA available | Latest activation verified; rollback and confirmation-error injection remain untested |
-| `mdns-3` on board | 526,912-byte Wi-Fi activation passed; status confirms ota_0 and OTA available. Direct DNS resolves PTR/SRV/A/TXT; espctl and Bonjour have resolved the service; espctl observed committing during activation | Repeated multicast scans still intermittently miss the board, including native Bonjour in earlier tests; temporary driver/socket counters locate missed multicast queries before the IP stack; reliable LAN discovery and all cached TXT transitions remain unverified |
-| `mdns-hotspot-1` network comparison | 10/10 iPhone hotspot discovery scans passed; TCP status and boot inventory passed after correcting Mac IPv4 reachability | Original WLAN remains intermittent; hotspot result does not establish the exact AP/radio cause or validate Router Alert on the wire |
+| `ota-merge-check-1` on board | Earlier no-feature release: 501,024 bytes uploaded, verified and committed over Wi-Fi from ota_0; post-reboot status confirms protocol 1, ota_1, OTA available | Earlier activation verified; rollback and confirmation-error injection remain untested |
+| `discovery-final-1` on board | Wi-Fi activation, discovery, status and boot inventory pass. Unrelated/type/class queries are ignored; receiving/verified DNS snapshots and disconnect cleanup to idle pass without reboot | One board; DHCP changes, hostname conflict handling and long-duration network behavior remain unverified |
+| Discovery network comparison | Alternate AP: 10/10 scans passed; status and boot inventory passed | Multicast remains intermittent on another WLAN; exact cause unresolved |
 | `unified-1` on board | Eleven non-activating probes and 500,560-byte verify-only upload pass | One socket timeout before a successful fresh transfer; activation/rollback not tested on this build |
 | Earlier A → B → C prototype | Wi-Fi activation alternated slots; earlier NVS comparison was identical | Predates unified protocol; not evidence for every later build |
 
