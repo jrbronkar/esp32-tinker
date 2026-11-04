@@ -133,7 +133,7 @@ Recovery performed / follow-up:
 | --- | --- | --- |
 | Current host suite | 30 tests pass: 14 status/client, 3 upload/client, 5 core, 8 protocol | Mock I/O/storage cannot establish real flash or bootloader recovery |
 | Current no-feature firmware | Firmware check and release link pass | Startup error reset path has not been fault-injected |
-| `ota-default-1` on board | USB-flashed without feature flags; Wi-Fi status confirms protocol 1, ota_0, OTA available | No full fault or activation rerun after feature removal |
+| `ota-merge-check-1` on board | Latest no-feature release: 501,024 bytes uploaded, verified and committed over Wi-Fi from ota_0; post-reboot status confirms protocol 1, ota_1, OTA available | Latest activation verified; rollback and confirmation-error injection remain untested |
 | `unified-1` on board | Eleven non-activating probes and 500,560-byte verify-only upload pass | One socket timeout before a successful fresh transfer; activation/rollback not tested on this build |
 | Earlier A → B → C prototype | Wi-Fi activation alternated slots; earlier NVS comparison was identical | Predates unified protocol; not evidence for every later build |
 

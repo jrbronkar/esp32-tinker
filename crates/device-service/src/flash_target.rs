@@ -88,13 +88,14 @@ impl FlashTarget {
             .ok_or(Error::State)?;
         let mut ota =
             Ota::new(part.as_embedded_storage(&mut self.storage), 2).map_err(|_| Error::Storage)?;
-        if let Ok(selected) = ota.current_app_partition() {
-            if Kind::App(selected) == running
-                && ota.current_ota_state() == Ok(OtaImageState::PendingVerify)
-            {
-                ota.set_current_ota_state(OtaImageState::Valid)
-                    .map_err(|_| Error::Storage)?;
-            }
+        let selected = ota.current_app_partition().map_err(|_| Error::Storage)?;
+        if Kind::App(selected) != running {
+            return Ok(());
+        }
+        let state = ota.current_ota_state().map_err(|_| Error::Storage)?;
+        if state == OtaImageState::PendingVerify {
+            ota.set_current_ota_state(OtaImageState::Valid)
+                .map_err(|_| Error::Storage)?;
         }
         Ok(())
     }
