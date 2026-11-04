@@ -1,0 +1,17 @@
+[package]
+name = "device-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+device-service = { path = "../device-service" }
+wifi-network = { path = "../wifi-network" }
+embassy-executor = "0.10.0"
+embassy-time = "0.5.0"
+esp-alloc = { version = "0.10.0", features = ["esp32s3"] }
+esp-backtrace = { version = "0.19.0", features = ["esp32s3", "panic-handler", "println"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"] }
+esp-hal = { version = "1.1.1", features = ["esp32s3", "rt", "unstable"] }
+esp-println = { version = "0.17.0", features = ["esp32s3"] }
+esp-rtos = { version = "0.3.0", features = ["embassy", "esp-radio", "esp32s3"] }

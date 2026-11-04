@@ -76,6 +76,14 @@
         '';
       };
 
+      firmwareTools = [
+        espRust
+        xtensaGcc
+        pkgs.espflash
+        pkgs.protobuf
+        pkgs.pkg-config
+      ];
+
       soilVisualizer = pkgs.rustPlatform.buildRustPackage {
         pname = "soil-visualizer";
         version = "0.1.0";
@@ -105,12 +113,7 @@
       };
 
       devShells.default = pkgs.mkShell {
-        packages = [
-          espRust
-          xtensaGcc
-          pkgs.espflash
-          pkgs.pkg-config
-        ];
+        packages = firmwareTools;
 
         shellHook = ''
           export PS1='\n\[\033[1;34m\][esp32:\w:⚡]\$ \[\033[0m\]'

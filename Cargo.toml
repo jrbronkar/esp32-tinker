@@ -1,6 +1,27 @@
 [workspace]
 resolver = "2"
-members = ["crates/hello-world", "crates/imu-demo", "crates/onboard-rgb", "crates/rgb-demo", "crates/soil-demo", "crates/soil-sensor", "crates/wifi-telemetry"]
+members = [
+    "crates/hello-world",
+    "crates/imu-demo",
+    "crates/onboard-rgb",
+    "crates/rgb-demo",
+    "crates/soil-demo",
+    "crates/soil-sensor",
+    "crates/wifi-telemetry",
+    "crates/ota-protocol",
+    "crates/ota-core",
+    "crates/wifi-network",
+    "crates/device-service",
+    "crates/device-demo",
+    "tools/espctl",
+]
+# Plain Cargo commands build/test the host tools and shared portable crates.
+# Firmware packages are selected explicitly with -p and the Xtensa target.
+default-members = [
+    "crates/ota-protocol",
+    "crates/ota-core",
+    "tools/espctl",
+]
 
 [profile.dev]
 opt-level = "s"

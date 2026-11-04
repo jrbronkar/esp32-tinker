@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = []
-wifi = ["dep:embassy-executor", "dep:embassy-time", "dep:esp-alloc", "dep:esp-rtos", "dep:heapless", "dep:wifi-telemetry"]
+wifi = ["dep:embassy-executor", "dep:embassy-time", "dep:esp-alloc", "dep:esp-rtos", "dep:heapless", "dep:wifi-telemetry", "dep:wifi-network"]
 
 [dependencies]
 embassy-executor = { version = "0.10.0", optional = true }
@@ -22,3 +22,4 @@ nb = "1.1.0"
 onboard-rgb = { path = "../onboard-rgb" }
 soil-sensor = { path = "../soil-sensor" }
 wifi-telemetry = { path = "../wifi-telemetry", optional = true }
+wifi-network = { path = "../wifi-network", optional = true }

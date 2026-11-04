@@ -11,7 +11,7 @@ The MPU6050 has no magnetometer. Yaw is therefore relative, gyro-only, and expec
 First flash the 50 Hz telemetry firmware:
 
 ```sh
-cargo run --release -p imu-demo
+cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p imu-demo
 ```
 
 Press `Ctrl+C`, find the macOS call-out serial device, and launch the visualizer:

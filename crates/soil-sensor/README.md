@@ -40,7 +40,7 @@ The resulting percentage is relative to those references, not a laboratory measu
 Serial-only mode is the default and needs no network configuration:
 
 ```sh
-cargo run --release -p soil-demo
+cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p soil-demo
 ```
 
 ### Wi-Fi mode
@@ -58,7 +58,7 @@ export WIFI_SSID='your-network-name'
 export WIFI_PASSWORD='your-network-password'
 export SOIL_UDP_HOST='your-mac-ipv4-address'
 ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
-  cargo run --release -p soil-demo --features wifi
+  cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p soil-demo --features wifi
 ```
 
 In a second terminal, receive the records with macOS `nc`:

@@ -16,7 +16,7 @@ use esp_println::println;
 use heapless::String;
 use imu_demo::{Mpu6050, ADDRESS_LOW};
 use onboard_rgb::breathing_green;
-use wifi_telemetry::Settings;
+use wifi_network::Settings;
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
@@ -33,7 +33,7 @@ async fn main(spawner: Spawner) -> ! {
     let destination: Ipv4Addr = IMU_UDP_HOST
         .parse()
         .unwrap_or_else(|_| fatal("IMU_UDP_HOST must be an IPv4 address"));
-    let mut telemetry = wifi_telemetry::connect(
+    let stack = wifi_network::connect(
         spawner,
         peripherals.WIFI,
         peripherals.TIMG0,
@@ -41,12 +41,13 @@ async fn main(spawner: Spawner) -> ! {
         Settings {
             ssid: WIFI_SSID,
             password: WIFI_PASSWORD,
-            destination,
-            port: IMU_UDP_PORT,
         },
     )
     .await
     .unwrap_or_else(|_| fatal("Wi-Fi telemetry initialization failed"));
+
+    let mut telemetry = wifi_telemetry::UdpTelemetry::new(stack, destination, IMU_UDP_PORT)
+        .unwrap_or_else(|_| fatal("UDP telemetry initialization failed"));
 
     let i2c_config = Config::default().with_frequency(Rate::from_khz(100));
     let i2c = I2c::new(peripherals.I2C0, i2c_config)
