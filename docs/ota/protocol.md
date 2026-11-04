@@ -1,8 +1,8 @@
 # Device management API: Protobuf over TCP
 
-Status: status and opt-in unsigned development uploads are implemented. The
-earlier split-version build was verified on a real ESP32-S3; unified version 1
-has host/compile coverage but has not yet been reflashed and retested on hardware.
+Status: status and opt-in unsigned development uploads are implemented. Both the
+earlier split-version build and unified version 1 have real ESP32-S3 evidence;
+see the testing guide for the exact cases and remaining gaps.
 Recovery after actual Wi-Fi loss remains untested.
 See [docs/ota/design.md](design.md) for hardware evidence.
 

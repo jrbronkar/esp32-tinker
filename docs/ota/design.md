@@ -543,3 +543,7 @@ choice requires a separate scope decision.
 
 Status and uploads use version 1 and dispatch by payload. The earlier upload-v2
 prototype is superseded. See [versioning and development-board migration](protocol.md#versioning-decision); USB reprovisioning is required for existing prototype boards.
+
+
+Unified version 1 was USB-flashed as `unified-1` and passed the eleven non-activating
+fault probes on the ESP32-S3. See [the hardware migration record](testing.md#unified-firmware-usb-migration-2026-11-03) for build identity, initial reachability failures, harness retry correction, and validation limits.

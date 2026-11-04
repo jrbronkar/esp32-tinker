@@ -215,3 +215,37 @@ version 1 on every request. Both firmware configurations and the hardware probe
 compile. The capability marker changed to `rust-dev-ota-v1`; the earlier board
 requires USB reprovisioning and a repeat of the hardware suite. No new hardware
 result is claimed for this protocol change.
+
+
+### Unified firmware USB migration (2026-11-03)
+
+Built release `unified-1` with local Wi-Fi settings using Nix, target ESP32-S3,
+`dev-ota`, and explicit core/alloc build flags. Image: 500,560 bytes; SHA-256
+`27028f4eb6c0fcbaebf7a0645bfdb54be74761771c689b719892de38438a97ee`;
+capability marker `rust-dev-ota-v1`. Flashed the connected 16 MiB board over USB
+using the existing partition CSV, ota_0, and OTA metadata initialization. NVS/PHY
+were not erased; no fresh byte-for-byte preservation comparison was performed.
+Serial showed bootloader load offset `0x10000`, successful DHCP at 10.128.248.68,
+and development OTA available. A manual reset was used to capture startup logs.
+
+Initial network queries timed out/reported host unreachable while reachability
+was settling, then status succeeded. The first harness attempt also encountered
+a refused initial connection while the sole listener rearmed. The probe now
+retries only connection establishment refusals within five seconds; transmitted
+operations are never replayed. After rebuilding it, all eleven non-activating
+modes passed: malformed, oversized, truncated, bad-protobuf, stall, bad-offset,
+early-commit, early-finish, bad-id, disconnect and wrong-digest. Each successful
+probe verified the original version and increasing uptime. Raw results are kept
+locally; firmware images containing credentials are not committed.
+
+This exercises unified upload dispatch and failure recovery, not successful
+activation or rollback. The newly added startup initialization-error reset path
+was not deliberately fault-injected.
+
+The first normal verify-only upload returned `Resource temporarily unavailable`
+from socket I/O; status immediately afterward confirmed `unified-1` still healthy
+in ota_0 at 218,294 ms uptime. A fresh, manually initiated verify-only session
+succeeded: all 500,560 bytes verified at inactive slot `0x310000`, then Abort left
+the current image selected. Final status: `unified-1`, protocol 1, ota_0 at
+`0x10000`, uptime 277,177 ms, OTA available. The timeout remains an observed
+reliability issue; no upload operation was automatically replayed.

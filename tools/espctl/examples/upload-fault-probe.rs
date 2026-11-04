@@ -8,7 +8,7 @@ fn pause(label: &str) {
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 fn exchange(s: &mut TcpStream, id: u32, op: Op) -> Response {
     let r = Request {
@@ -67,7 +67,20 @@ fn main() {
     let before = espctl::query_status(address, Duration::from_secs(5)).unwrap();
     assert!(before.ota_available);
     std::thread::sleep(Duration::from_millis(250));
-    let mut s = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
+    // The sole listener may still be closing/rearming after the status query.
+    // Retry only connection establishment; never replay a transmitted request.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut s = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "timed out connecting to probe target");
+        match TcpStream::connect_timeout(&address, remaining) {
+            Ok(socket) => break socket,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                std::thread::sleep(Duration::from_millis(50).min(remaining));
+            }
+            Err(error) => panic!("probe connection failed: {error}"),
+        }
+    };
     s.set_nodelay(true).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     s.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
