@@ -32,7 +32,7 @@ async fn main(spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 36 * 1024);
 
-    let stack = wifi_network::connect(
+    let stack = match wifi_network::connect(
         spawner,
         peripherals.WIFI,
         peripherals.TIMG0,
@@ -43,16 +43,24 @@ async fn main(spawner: Spawner) -> ! {
         },
     )
     .await
-    .expect("Wi-Fi initialization failed");
-    device_service::start_status(
+    {
+        Ok(stack) => stack,
+        Err(error) => {
+            println!("Wi-Fi initialization failed: {error:?}");
+            restart_initialization().await
+        }
+    };
+    if let Err(error) = device_service::start_status(
         spawner,
         stack,
         "device-demo",
         option_env!("FIRMWARE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
         boot,
         flash,
-    )
-    .expect("Status service initialization failed");
+    ) {
+        println!("Device service initialization failed: {error}");
+        restart_initialization().await;
+    }
     #[cfg(not(feature = "dev-ota"))]
     println!("device-demo ready: status only; no sensors, telemetry, or flash writes");
     #[cfg(feature = "dev-ota")]
@@ -61,4 +69,12 @@ async fn main(spawner: Spawner) -> ! {
         Timer::after(Duration::from_secs(10)).await;
         println!("device-demo alive");
     }
+}
+
+/// Startup consumes peripheral handles and initializes static resources once.
+/// Retry from reset rather than reinitializing them in the same execution.
+async fn restart_initialization() -> ! {
+    println!("Retrying device initialization through reset in five seconds");
+    Timer::after(Duration::from_secs(5)).await;
+    esp_hal::system::software_reset();
 }

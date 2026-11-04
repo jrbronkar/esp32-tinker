@@ -202,15 +202,15 @@ From the repository root:
 ```sh
 nix develop
 # Export WIFI_SSID and WIFI_PASSWORD in your local environment before building.
-cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --locked --release -p device-demo
+cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
 ```
 
 Once the device firmware is installed and its Wi-Fi address is known:
 
 ```sh
-cargo run --locked -p espctl -- status --host <board-ip> --boot
-cargo run --locked -p espctl -- status --host <board-ip> --timings
-cargo run --locked -p espctl -- profile --host <board-ip> --samples 10 --interval-ms 500
+cargo run -p espctl -- status --host <board-ip> --boot
+cargo run -p espctl -- status --host <board-ip> --timings
+cargo run -p espctl -- profile --host <board-ip> --samples 10 --interval-ms 500
 ```
 
 Host commands use the compiler's native target. Wi-Fi credentials are embedded at compile time; keep them out

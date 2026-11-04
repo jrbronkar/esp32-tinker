@@ -10,7 +10,7 @@ and rollback are also pending implementation/configuration.
 Inside `nix develop`, from the repo root:
 
 ```sh
-cargo test --locked \
+cargo test \
   -p ota-core -p ota-protocol -p espctl
 ```
 
@@ -32,7 +32,7 @@ partition CSV for USB recovery. Record a baseline with `espctl status --boot`.
 From `nix develop` at the repository root, run one case:
 
 ```sh
-cargo run --locked \
+cargo run \
   -p espctl --example upload-fault-probe -- \
   <board-ip> <absolute-candidate.bin> <embedded-version> disconnect
 ```
@@ -191,3 +191,17 @@ A full verify-only upload also passed: 503,392 bytes verified in inactive slot
 `0x310000`, followed by Abort (no activation). Final `status --boot` confirmed
 `ota-c` still running from `ota_0` at `0x10000`, uptime 11,240,661 ms and OTA
 available. Baseline uptime was 11,122,223 ms; no reboot was observed in this run.
+
+
+### Startup retry checks (not yet exercised on hardware)
+
+- With the AP unavailable, check repeated connection attempts at five-second
+  intervals, restore the AP, and confirm DHCP/status recover without reflashing.
+- In a dedicated test build, inject a returned radio/task initialization error
+  and a service-start error separately. Require the error log, five-second delay,
+  reset, and a fresh startup attempt. Remove the injection and confirm recovery.
+- An empty SSID is a permanent configuration error: a delayed restart is expected,
+  but it cannot recover until configuration is corrected. This case does not
+  prove recovery from a transient radio failure.
+- Deliberately panic only in a separate diagnostic build and capture the serial
+  backtrace. The current panic handler loops; startup error retry is distinct.

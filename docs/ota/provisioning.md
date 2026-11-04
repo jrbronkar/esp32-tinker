@@ -31,7 +31,7 @@ The backup contains embedded credentials, so it is not a shared deliverable.
 In nix develop with Wi-Fi variables exported:
 
 ```sh
-FIRMWARE_VERSION=ota-a cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --locked --release -p device-demo --features dev-ota
+FIRMWARE_VERSION=ota-a cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo --features dev-ota
 espflash flash --port /dev/cu.usbmodem5C4C1816511 --flash-size 16mb \
   --partition-table partitions/ota-16mb.csv --target-app-partition ota_0 \
   --erase-parts otadata target/xtensa-esp32s3-none-elf/release/device-demo
@@ -45,7 +45,7 @@ Back up a different board and inspect its data/layout before migrating it.
 ## Build and export the next release
 
 ```sh
-FIRMWARE_VERSION=ota-next cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --locked --release -p device-demo --features dev-ota
+FIRMWARE_VERSION=ota-next cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo --features dev-ota
 mkdir -p target/ota
 espflash save-image --chip esp32s3 --flash-size 16mb \
   --partition-table partitions/ota-16mb.csv --target-app-partition ota_0 \
@@ -63,7 +63,7 @@ The image is built with your Wi-Fi credentials: keep it private. Nothing loads
 ## Upload, verify, then optionally activate
 
 ```sh
-cargo run --locked -p espctl -- upload --host 10.128.248.68 \
+cargo run -p espctl -- upload --host 10.128.248.68 \
   --image target/ota/ota-next.bin --firmware-version ota-next
 ```
 
@@ -74,14 +74,14 @@ there is no persistent commit token or resume facility.
 To upload and activate in the same session:
 
 ```sh
-cargo run --locked -p espctl -- upload --host 10.128.248.68 \
+cargo run -p espctl -- upload --host 10.128.248.68 \
   --image target/ota/ota-next.bin --firmware-version ota-next --commit
 ```
 
 Reconnect after reboot and verify version/slot:
 
 ```sh
-cargo run --locked -p espctl -- status --host 10.128.248.68 --boot
+cargo run -p espctl -- status --host 10.128.248.68 --boot
 ```
 
 No request is replayed once sent. If commit's response is lost, the outcome is

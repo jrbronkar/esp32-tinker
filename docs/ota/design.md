@@ -109,7 +109,7 @@ this unsigned phase is descriptive, not cryptographically authenticated.
 CLI usage (implemented; see [setup and hardware checks](../../tools/espctl/README.md)):
 
 ```sh
-cargo run --locked -p espctl -- status --host <board-ip>
+cargo run -p espctl -- status --host <board-ip>
 ```
 
 The first client needs one explicit host, readable output, a finite timeout, and
@@ -339,7 +339,7 @@ or private keys here.
 Board `a4:cb:8f:d8:13:c8` at `10.128.248.68:7779`, application `device-demo`,
 firmware `status-v1`, protocol 1. OTA correctly reports unavailable.
 
-- CLI command: `cargo run --locked -p espctl -- status --host 10.128.248.68`.
+- CLI command: `cargo run -p espctl -- status --host 10.128.248.68`.
 - Ten consecutive queries passed and uptime increased (observed 125127 ms).
 - Invalid-session recovery passed: 513-byte length prefix (`00000201`), malformed
   one-byte body (`00000001ff`), and truncated body (`0000000a0801`, then half-close).
@@ -512,3 +512,16 @@ security-fuse changes were made by the agent.
 
 See [OTA automated tests and manual fault harness](testing.md) for the validation
 matrix, board probe modes, physical fault procedures, and result template.
+
+
+### Startup failure handling
+
+Wi-Fi association failures retry in the connection task every five seconds;
+ordinary disconnects return to that loop. `device-demo` no longer panics on a
+reported radio/task or management-service initialization failure: it logs the
+error, waits five seconds, and software-resets to retry startup. Peripheral
+ownership and one-time static initialization prevent safely rerunning the entire
+initialization function in place. Permanent configuration errors still require a
+corrected firmware build; rebooting does not repair them. No upload request is
+replayed by this startup retry. Panics from programming errors still use the
+backtrace panic handler and do not intentionally reboot.

@@ -101,7 +101,7 @@ Firmware startup is also fallible: `main` passes hardware ownership to `run`, th
 To run the library unit tests on the Mac, use ordinary Cargo from the repository root:
 
 ```sh
-cargo test --locked -p imu-demo --lib
+cargo test -p imu-demo --lib
 ```
 
 ## References
