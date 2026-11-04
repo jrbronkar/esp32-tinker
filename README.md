@@ -77,15 +77,16 @@ nix develop
 
 The flake pins the official esp-rs Rust compiler, Rust source component, and Espressif Xtensa linker. It does not install or modify a global Rust toolchain.
 
-Firmware commands use `cargo esp-build`, `cargo esp-run`, or `cargo esp-check`.
-These Cargo aliases rebuild `core` and `alloc` for the default ESP32 target.
-Host commands use ordinary Cargo with an explicit host `--target`; they can run
-from the repository root without inheriting firmware standard-library settings.
+Firmware commands select `--target xtensa-esp32s3-none-elf` and
+`-Zbuild-std=core,alloc` explicitly. Target-specific linker and flashing settings
+remain in `.cargo/config.toml`. Host tools use ordinary Cargo from the repository
+root. Plain `cargo build` and `cargo test` select the CLI and shared portable
+crates; select a firmware package with `-p` when building for the board.
 
 ## Build
 
 ```sh
-cargo esp-build --release -p hello-world
+cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p hello-world
 ```
 
 This produces an ELF firmware file at:
@@ -101,7 +102,7 @@ The ELF contains the program, ESP32-S3 memory layout, and an [ESP-IDF-compatible
 Connect the ESP32-S3 DevKitC-1 over its USB-to-UART port, then run:
 
 ```sh
-cargo esp-run --release -p hello-world
+cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p hello-world
 ```
 
 Cargo knows how to run an ESP32-S3 binary because `.cargo/config.toml` defines this target runner:
@@ -111,7 +112,7 @@ Cargo knows how to run an ESP32-S3 binary because `.cargo/config.toml` defines t
 runner = "espflash flash --monitor"
 ```
 
-After compiling, `cargo esp-run` effectively invokes:
+After compiling, `cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc` effectively invokes:
 
 ```sh
 espflash flash --monitor \
@@ -164,13 +165,13 @@ The LED pin depends on the [hardware revision](https://docs.espressif.com/projec
 This project defaults to the original/v1.0 board used here, so run:
 
 ```sh
-cargo esp-run --release -p rgb-demo
+cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p rgb-demo
 ```
 
 To target a v1.1 board instead, disable the default feature and select v1.1:
 
 ```sh
-cargo esp-run --release -p rgb-demo --no-default-features --features devkitc-v1_1
+cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p rgb-demo --no-default-features --features devkitc-v1_1
 ```
 
 The v1.1 [official schematic](https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-DevKitC-1_V1.1_20221130.pdf) identifies the onboard part as an SK68XXMINI-HS addressable LED. The demo uses the ESP32-S3 [RMT peripheral](https://docs.espressif.com/projects/rust/esp-hal/latest/esp32s3/esp_hal/rmt/) to generate its timed one-wire signal. It intentionally uses low brightness, and no external wiring is required.
@@ -201,19 +202,18 @@ From the repository root:
 ```sh
 nix develop
 # Export WIFI_SSID and WIFI_PASSWORD in your local environment before building.
-cargo esp-build --locked --release -p device-demo
+cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --locked --release -p device-demo
 ```
 
 Once the device firmware is installed and its Wi-Fi address is known:
 
 ```sh
-./tools/espctl/run.sh status --host <board-ip> --boot
-./tools/espctl/run.sh status --host <board-ip> --timings
-./tools/espctl/run.sh profile --host <board-ip> --samples 10 --interval-ms 500
+cargo run --locked -p espctl -- status --host <board-ip> --boot
+cargo run --locked -p espctl -- status --host <board-ip> --timings
+cargo run --locked -p espctl -- profile --host <board-ip> --samples 10 --interval-ms 500
 ```
 
-The host launcher selects the Mac target independently of the workspace's Xtensa
-firmware target. Wi-Fi credentials are embedded at compile time; keep them out
+Host commands use the compiler's native target. Wi-Fi credentials are embedded at compile time; keep them out
 of tracked files and treat exported firmware images as containing credentials.
 
 For updates, follow the [provisioning and upload guide](partitions/README.md)

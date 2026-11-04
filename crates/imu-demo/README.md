@@ -57,7 +57,7 @@ After checking the wiring, reconnect USB. This demo expects the MPU6050 at `0x68
 From the repository root and inside the Nix development shell, compile, flash, and monitor the demo:
 
 ```sh
-cargo esp-run --release -p imu-demo
+cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p imu-demo
 ```
 
 A correctly connected MPU6050 with AD0 low should produce output similar to:
@@ -81,7 +81,7 @@ export WIFI_SSID='your-network-name'
 export WIFI_PASSWORD='your-network-password'
 export IMU_UDP_HOST="$(ipconfig getifaddr en0)"
 ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
-  cargo esp-run --release -p imu-demo --features wifi
+  cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p imu-demo --features wifi
 ```
 
 For a basic receiver, run `nc -u -l 7778` on the Mac. The shared `wifi-telemetry` library adds a newline to each UDP datagram and automatically reconnects the ESP32 after a Wi-Fi interruption. Credentials are not stored in Git, but they are embedded in the resulting firmware binary, so do not distribute that binary.
@@ -98,11 +98,10 @@ Sensor behavior is implemented in `src/lib.rs`, independently of the ESP32 execu
 
 Firmware startup is also fallible: `main` passes hardware ownership to `run`, then handles any returned setup error in a persistent safe-state loop. Expected setup failures do not use `unwrap()` or panic. The existing `esp-backtrace` panic handler remains a final boundary for programming defects and other unexpected failures.
 
-The repository's Cargo configuration defaults to the Xtensa firmware target. To run the library unit tests on the Mac, select the host target explicitly from the repository root:
+To run the library unit tests on the Mac, use ordinary Cargo from the repository root:
 
 ```sh
-host=$(rustc -vV | sed -n 's/^host: //p')
-cargo test --locked -p imu-demo --target "$host" --lib
+cargo test --locked -p imu-demo --lib
 ```
 
 ## References

@@ -10,13 +10,13 @@ and rollback are also pending implementation/configuration.
 Inside `nix develop`, from the repo root:
 
 ```sh
-host=$(rustc -vV | sed -n 's/^host: //p')
 cargo test --locked \
-  --target "$host" -p ota-core -p ota-protocol -p espctl
+  -p ota-core -p ota-protocol -p espctl
 ```
 
-Run from the repository root. The explicit host target selects the Mac; firmware
-`build-std` settings are confined to the `esp-*` aliases. Tests require no board or credentials.
+Run from the repository root. Host commands use the native compiler target;
+firmware target and `build-std` flags are explicit only on firmware commands.
+Tests require no board or credentials.
 They cover bounded protocol decoding, fragmented/truncated TCP messages, bad
 correlation and phases, request deadlines, explicit activation, lost commit reply,
 ordered chunks, image corruption and injected storage read/write/commit failures.
@@ -29,11 +29,11 @@ application-only candidate binary with a distinct embedded version, following
 [the provisioning guide](partitions/README.md). Keep the known-good image and
 partition CSV for USB recovery. Record a baseline with `espctl status --boot`.
 
-From `nix develop`, select the host as above, then run one case:
+From `nix develop` at the repository root, run one case:
 
 ```sh
 cargo run --locked \
-  --target "$host" -p espctl --example upload-fault-probe -- \
+  -p espctl --example upload-fault-probe -- \
   <board-ip> <absolute-candidate.bin> <embedded-version> disconnect
 ```
 

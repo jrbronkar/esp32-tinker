@@ -109,7 +109,7 @@ this unsigned phase is descriptive, not cryptographically authenticated.
 CLI usage (implemented; see [setup and hardware checks](tools/espctl/README.md)):
 
 ```sh
-./tools/espctl/run.sh status --host <board-ip>
+cargo run --locked -p espctl -- status --host <board-ip>
 ```
 
 The first client needs one explicit host, readable output, a finite timeout, and
@@ -339,7 +339,7 @@ or private keys here.
 Board `a4:cb:8f:d8:13:c8` at `10.128.248.68:7779`, application `device-demo`,
 firmware `status-v1`, protocol 1. OTA correctly reports unavailable.
 
-- CLI command: `./tools/espctl/run.sh status --host 10.128.248.68`.
+- CLI command: `cargo run --locked -p espctl -- status --host 10.128.248.68`.
 - Ten consecutive queries passed and uptime increased (observed 125127 ms).
 - Invalid-session recovery passed: 513-byte length prefix (`00000201`), malformed
   one-byte body (`00000001ff`), and truncated body (`0000000a0801`, then half-close).

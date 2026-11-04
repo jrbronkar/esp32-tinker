@@ -10,19 +10,19 @@ From the repository root:
 
 ```sh
 nix develop
-./tools/espctl/run.sh --help
-./tools/espctl/run.sh status --host 192.168.1.123
+cargo run --locked -p espctl -- --help
+cargo run --locked -p espctl -- status --host 192.168.1.123
 ```
 
-`run.sh` selects the host target and runs Cargo from the repository root. It preserves the development shell and builds from this workspace's lock
-file. For repeated queries, run `target/aarch64-apple-darwin/debug/espctl` directly
-on the Mac after the first build.
+Ordinary Cargo commands build for the Mac from the repository root using the
+workspace lockfile. For repeated queries, run `target/debug/espctl` directly
+after the first build.
 
 Clap provides argument validation and generated help:
 
 ```sh
-./tools/espctl/run.sh --help
-./tools/espctl/run.sh status --help
+cargo run --locked -p espctl -- --help
+cargo run --locked -p espctl -- status --help
 ```
 
 Options: `--port 7779`, `--timeout-ms 5000`. The host is an IP literal, not a URL.
@@ -41,7 +41,7 @@ See [build, export, provisioning, and upload guide](../../partitions/README.md).
 An upload verifies but does not activate unless `--commit` is supplied:
 
 ```sh
-./tools/espctl/run.sh upload --host 10.128.248.68 \
+cargo run --locked -p espctl -- upload --host 10.128.248.68 \
   --image target/ota/ota-next.bin --firmware-version ota-next --commit
 ```
 
@@ -53,7 +53,7 @@ check version and running slot. Commit-response loss is an uncertain outcome.
 ## Inspect flash/boot layout
 
 ```sh
-./tools/espctl/run.sh status --host 10.128.248.68 --boot
+cargo run --locked -p espctl -- status --host 10.128.248.68 --boot
 ```
 
 Requires `device-demo` firmware with boot inventory support. The query is
@@ -65,9 +65,9 @@ for the build/flash command, candidate layout, and offline image export.
 ## Profile query latency
 
 ```sh
-./tools/espctl/run.sh status --host 10.128.248.68 --timings
-./tools/espctl/run.sh profile --host 10.128.248.68 --samples 50 --interval-ms 100
-./tools/espctl/run.sh profile --host 10.128.248.68 --samples 50 --interval-ms 100 --csv > profile.csv
+cargo run --locked -p espctl -- status --host 10.128.248.68 --timings
+cargo run --locked -p espctl -- profile --host 10.128.248.68 --samples 50 --interval-ms 100
+cargo run --locked -p espctl -- profile --host 10.128.248.68 --samples 50 --interval-ms 100 --csv > profile.csv
 ```
 
 `profile` reports min, median, nearest-rank p95, max, and mean across successful
@@ -89,7 +89,7 @@ phases; do not add all durations together or treat them as pure CPU time.
 Build and flash the instrumented version with your exported Wi-Fi settings:
 
 ```sh
-FIRMWARE_VERSION=status-profile-v1 cargo esp-build --locked --release -p device-demo
+FIRMWARE_VERSION=status-profile-v1 cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --locked --release -p device-demo
 ```
 
 Flash/monitor as below, keep serial open, then run `profile --samples 10
@@ -115,7 +115,7 @@ can stay on disk, git-ignored, but plain Cargo does not read it.
 From the repository root in the development shell:
 
 ```sh
-cargo esp-build --locked --release -p device-demo
+cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --locked --release -p device-demo
 espflash flash --monitor --port /dev/cu.usbmodem5C4C1816511 \
   target/xtensa-esp32s3-none-elf/release/device-demo
 ```
@@ -126,7 +126,7 @@ Read the DHCP IPv4 address and TCP listener message from serial output. In anoth
 development-shell terminal, run:
 
 ```sh
-./tools/espctl/run.sh status --host <board-ip>
+cargo run --locked -p espctl -- status --host <board-ip>
 ```
 
 Hardware acceptance checklist:
@@ -146,18 +146,17 @@ an existing network stack, so it will not require another radio or duplicate DHC
 
 The host-only mock uses the same Protobuf contract and handler. It does not emulate
 Wi-Fi, the Embassy listener, flash, or sensors. In a development shell, from the
-repository root, build and run it with the host target:
+repository root, build and run it normally:
 
 ```sh
-host=$(rustc -vV | sed -n 's/^host: //p')
 cargo run --locked \
-  -p espctl --target "$host" --example mock-device -- 127.0.0.1:7779
+  -p espctl --example mock-device -- 127.0.0.1:7779
 ```
 
 In a second terminal:
 
 ```sh
-./tools/espctl/run.sh status --host 127.0.0.1
+cargo run --locked -p espctl -- status --host 127.0.0.1
 ```
 
 Stop the mock with Ctrl+C. The response is explicitly identified as `mock-esp32s3`.
@@ -165,16 +164,15 @@ Stop the mock with Ctrl+C. The response is explicitly identified as `mock-esp32s
 Run host protocol/client tests from the repository root in the development shell:
 
 ```sh
-host=$(rustc -vV | sed -n 's/^host: //p')
 cargo test --locked \
-  -p ota-core -p ota-protocol -p espctl --target "$host"
+  -p ota-core -p ota-protocol -p espctl
 ```
 
 Cross-compile firmware without a board using nonsecret build-only placeholders:
 
 ```sh
 WIFI_SSID=build-check WIFI_PASSWORD=build-check \
-  cargo esp-build --locked --release -p device-demo
+  cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --locked --release -p device-demo
 ```
 
 Rebuild with real network settings before flashing. Placeholder builds cannot
