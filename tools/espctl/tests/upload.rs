@@ -31,7 +31,9 @@ fn request(s: &mut TcpStream) -> Request {
     let n = ota_protocol::upload_frame_length(p).unwrap();
     let mut body = vec![0; n];
     s.read_exact(&mut body).unwrap();
-    ota_protocol::decode_upload(&body).unwrap()
+    let request: Request = ota_protocol::decode_upload(&body).unwrap();
+    assert_eq!(request.protocol_version, ota_protocol::VERSION);
+    request
 }
 fn send(s: &mut TcpStream, r: Response) {
     let body = ota_protocol::encode(&r).unwrap();
@@ -42,7 +44,7 @@ fn ack(s: &mut TcpStream, id: u32, phase: UploadPhase, n: u32) {
     send(
         s,
         Response {
-            protocol_version: 2,
+            protocol_version: ota_protocol::VERSION,
             request_id: id,
             payload: Some(ResponsePayload::Upload(UploadAck {
                 phase,
@@ -155,7 +157,11 @@ fn upload_rejects_bad_acknowledgements_and_does_not_replay() {
                 send(
                     &mut s,
                     Response {
-                        protocol_version: if fault == "version" { 1 } else { 2 },
+                        protocol_version: if fault == "version" {
+                            ota_protocol::VERSION + 1
+                        } else {
+                            ota_protocol::VERSION
+                        },
                         request_id: r.request_id + u32::from(fault == "id"),
                         payload: Some(if fault == "error" {
                             ResponsePayload::Error(ota_protocol::ErrorResponse {

@@ -117,7 +117,18 @@ async fn session(
     let request: Request = ota_protocol::decode(&body[..length]).map_err(|_| ())?;
     trace.decode_us = decoded.elapsed().as_micros();
     #[cfg(feature = "dev-ota")]
-    if request.protocol_version == ota_protocol::UPLOAD_VERSION {
+    if request.protocol_version == ota_protocol::VERSION
+        && matches!(
+            &request.payload,
+            Some(
+                RequestPayload::Begin(_)
+                    | RequestPayload::Chunk(_)
+                    | RequestPayload::Finish(_)
+                    | RequestPayload::Commit(_)
+                    | RequestPayload::Abort(_)
+            )
+        )
+    {
         return crate::upload::session(socket, request, target).await;
     }
     trace.request_id = request.request_id;

@@ -29,8 +29,8 @@ Mac CLI to one board and a decoded response, without any flash writes.
   Sensor demos use networking/telemetry and do not start the management service.
 - `espflash` currently installs firmware over USB. The Nix flake pins the
   Xtensa toolchain.
-- The opt-in `dev-ota` firmware now supports v2 unsigned uploads. The tested
-  board is provisioned with two 3 MiB app slots and OTA metadata; status remains v1.
+- The opt-in `dev-ota` firmware now supports unsigned uploads using protocol version 1. The tested
+  board is provisioned with two 3 MiB app slots and OTA metadata; status and uploads share that version.
 - Work in this checkout, `~/sources/esp32`. A separate `esp32-tinker` checkout
   was present at the same commit when this design was drafted.
 
@@ -254,7 +254,7 @@ GUI, or discovery is required for this milestone.
 
 ### 3. Build the OTA tracer bullet
 
-- [x] Specify v2 begin/chunk/finish/commit/abort framing and limits.
+- [x] Specify begin/chunk/finish/commit/abort framing and limits.
 - [x] Add portable ota-core validation/state engine and a constrained flash backend.
 - [x] Add Clap upload command and application-image export workflow.
 - [x] Validate metadata/descriptor, stream sectors to the inactive slot, and
@@ -483,7 +483,7 @@ security-fuse changes were made by the agent.
 - Device-service dev-ota is off by default. Its backend accepts only the exact
   installed layout and only the opposite of the MMU-identified running app. App
   writes cannot address bootloader/table/NVS/PHY; commit changes OTA metadata only.
-- Protocol v2 uses a separate 4608-byte bound for 4096-byte chunks; v1 status keeps
+- Upload sessions use a separate 4608-byte bound for 4096-byte chunks; status keeps
   its 512-byte bound. One upload uses one connection, incremental IDs, 180-second
   total bound, and bounded I/O. No automatic request replay or resume.
 - CLI: espctl upload --host IP --image FILE --firmware-version VERSION [--commit].
@@ -537,3 +537,9 @@ server/client spike, gateway, runtime dependency, or transport migration.
 The [feasibility investigation](grpc-feasibility.md) is retained as historical
 reference only; it does not add an implementation milestone. Reopening this
 choice requires a separate scope decision.
+
+
+### Unified protocol version
+
+Status and uploads use version 1 and dispatch by payload. The earlier upload-v2
+prototype is superseded. See [versioning and development-board migration](protocol.md#versioning-decision); USB reprovisioning is required for existing prototype boards.

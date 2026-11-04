@@ -1,5 +1,5 @@
 //! Hardware fault harness. Only commit-no-reply sends a valid COMMIT; use a development board.
-use ota_protocol::{Request, RequestPayload as Op, Response, ResponsePayload, UPLOAD_VERSION};
+use ota_protocol::{Request, RequestPayload as Op, Response, ResponsePayload, VERSION};
 fn pause(label: &str) {
     println!("PAUSED: {label}. Perform the manual action, then press Enter to inspect status.");
     let mut line = String::new();
@@ -12,7 +12,7 @@ use std::{
 };
 fn exchange(s: &mut TcpStream, id: u32, op: Op) -> Response {
     let r = Request {
-        protocol_version: UPLOAD_VERSION,
+        protocol_version: VERSION,
         request_id: id,
         payload: Some(op),
     };
@@ -25,7 +25,7 @@ fn exchange(s: &mut TcpStream, id: u32, op: Op) -> Response {
     let mut b = vec![0; n];
     s.read_exact(&mut b).unwrap();
     let response: Response = ota_protocol::decode(&b).unwrap();
-    assert_eq!(response.protocol_version, UPLOAD_VERSION);
+    assert_eq!(response.protocol_version, VERSION);
     assert_eq!(response.request_id, id);
     response
 }
@@ -140,7 +140,7 @@ fn main() {
         };
         let response = if mode == "bad-id" {
             let request = Request {
-                protocol_version: 2,
+                protocol_version: VERSION,
                 request_id: 3,
                 payload: Some(op),
             };
@@ -206,7 +206,7 @@ fn main() {
             pause("image verified, not committed; power cycle or reset now");
         } else {
             let request = Request {
-                protocol_version: 2,
+                protocol_version: VERSION,
                 request_id: id + 2,
                 payload: Some(Op::Commit(ota_protocol::CommitUpdate {})),
             };

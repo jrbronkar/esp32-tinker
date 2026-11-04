@@ -1,7 +1,9 @@
 # Device management API: Protobuf over TCP
 
-Status: v1 status and opt-in v2 unsigned development uploads are implemented and
-verified on a real ESP32-S3. Recovery after actual Wi-Fi loss remains untested.
+Status: status and opt-in unsigned development uploads are implemented. The
+earlier split-version build was verified on a real ESP32-S3; unified version 1
+has host/compile coverage but has not yet been reflashed and retested on hardware.
+Recovery after actual Wi-Fi loss remains untested.
 See [docs/ota/design.md](design.md) for hardware evidence.
 
 This is a custom request/response API using **Protobuf over length-prefixed TCP**,
@@ -17,7 +19,7 @@ The schema is [protocol/ota.proto](../../protocol/ota.proto). Both endpoints use
 shared `ota-protocol` crate, generated with micropb 0.7.0. `protoc` runs on the Mac
 at build time; firmware serialization uses fixed-capacity containers, no allocator.
 
-## Status v1 connection and framing
+## Status connection and framing
 
 - Mac opens TCP to the explicitly supplied IP; default port **7779**.
 - One request and one response per connection; reconnect for another query.
@@ -87,16 +89,16 @@ identity and version must be nonempty on a successful CLI response.
   canonical signature input.
 - CLI rejects malformed responses, wrong protocol versions, mismatched request IDs,
   absent supported payloads, and empty identity fields. Errors exit nonzero.
-- Future upload/authentication operations require an explicitly documented protocol
-  revision; v1 has no hidden write or reboot commands. Never reuse deleted field
-  numbers when evolving the schema.
+- Additive fields and operations use Protobuf compatibility rules. Increment the
+  protocol version only for incompatible framing or behavioral changes. Never
+  reuse deleted field numbers when evolving the schema.
 
 ## Scope and security
 
 Status v1 is **read-only, unauthenticated plain TCP**, started by the dedicated
 `device-demo` firmware. Sensor demos do not start it. It exposes identity and
 version to reachable LAN peers. Default builds cannot install firmware or reboot
-through this service; opt-in `dev-ota` builds also expose the v2 write/commit path
+through this service; opt-in `dev-ota` builds also expose the write/commit path
 below. Neither path updates the partition table. Wi-Fi credentials are never
 included in status.
 Future signed update authorization and optional TLS are covered by
@@ -131,10 +133,10 @@ availability is reported separately through `ota_available`.
 The existing 512-byte bound is unchanged; maximal bounded inventory/identity/timing
 fields are covered by a control-frame roundtrip test. See `docs/ota/provisioning.md`.
 
-## Unsigned development upload protocol v2
+## Unsigned development uploads
 
-Explicit dev-ota builds accept upload requests with protocol_version 2. Status
-remains v1, one request per connection. The default build exposes no upload path.
+All requests use protocol_version 1. Upload dispatch uses the payload operation,
+not a separate version number. Status uses one request per connection. The default build exposes no upload path.
 A dev-ota build only advertises ota_available when its exact provisioned layout
 matches and it can identify a different inactive slot. No signature verification
 or TLS is implemented in this milestone.
@@ -155,9 +157,9 @@ Upload lifecycle, one TCP connection:
 6. AbortUpdate: acknowledge Aborted and discard in-memory state without changing
    boot selection. Disconnect or failure also discards state.
 
-The first Begin frame is bounded to the v1-sized 512-byte control limit. Later v2
+The first Begin frame is bounded to the 512-byte control limit. Later upload
 frames have a separate 1..4608-byte bound to carry sector-sized Protobuf chunks.
-This does not raise the v1 frame bound. FirmwareChunk.data has a generated 4096-
+This does not raise the initial/status frame bound. FirmwareChunk.data has a generated 4096-
 byte capacity, SHA-256 has capacity 32. Request IDs increment by exactly one per
 frame within the session, and responses echo the corresponding ID/version.
 Error responses are best effort; invalid framing may simply close the connection.
@@ -190,23 +192,23 @@ provide neither authentication nor durable transaction identity.
 | Request payload | Version / connection | Response | Side effect |
 | --- | --- | --- | --- |
 | `status` | v1, fresh connection | `StatusResponse` | None; optional boot inventory was captured at startup |
-| `begin` | v2, first request | `UploadAck(RECEIVING, next_offset=0)` | Creates volatile transfer state and chooses inactive target; no image write yet |
-| `chunk` | v2, same connection | `UploadAck(RECEIVING, next_offset)` | Writes sequential bytes into inactive slot |
-| `finish` | v2, same connection | `UploadAck(VERIFIED)` | Reads back and validates entire stored image; selection unchanged |
-| `commit` | v2, after verification | Best-effort `UploadAck(COMMITTED)` | Changes boot metadata and resets device |
-| `abort` | v2, receiving or verified | `UploadAck(ABORTED)` | Discards transfer state; stored bytes remain, selection unchanged |
+| `begin` | v1, first request | `UploadAck(RECEIVING, next_offset=0)` | Creates volatile transfer state and chooses inactive target; no image write yet |
+| `chunk` | v1, same connection | `UploadAck(RECEIVING, next_offset)` | Writes sequential bytes into inactive slot |
+| `finish` | v1, same connection | `UploadAck(VERIFIED)` | Reads back and validates entire stored image; selection unchanged |
+| `commit` | v1, after verification | Best-effort `UploadAck(COMMITTED)` | Changes boot metadata and resets device |
+| `abort` | v1, receiving or verified | `UploadAck(ABORTED)` | Discards transfer state; stored bytes remain, selection unchanged |
 
 `next_offset` is a byte offset relative to the candidate image. `target_offset`
 is the absolute flash start of the inactive slot. There is one active connection
 and one transfer at a time. Uploads use stop-and-wait: the host waits for each
-acknowledgement before sending the next request. A v2 session cannot interleave
+acknowledgement before sending the next request. An upload session cannot interleave
 status queries or begin a second transfer.
 
 Implementation ownership:
 
 - `wifi-network`: radio connection, DHCP, and Embassy network runner.
-- `device-service::status`: TCP listener, initial framing, v1 dispatch and v2 handoff.
-- `device-service::upload`: v2 message ordering, acknowledgements, and reset.
+- `device-service::status`: TCP listener, initial framing, status dispatch and upload handoff.
+- `device-service::upload`: upload message ordering, acknowledgements, and reset.
 - `ota-core::Update`: metadata, sequential chunk, integrity, and verification rules.
 - `device-service::flash_target`: partition bounds, flash I/O, and boot metadata.
 - `ota-protocol`: generated micropb messages, capacities, encoding and decoding.
@@ -225,7 +227,7 @@ sequenceDiagram
     Service-->>CLI: StatusResponse (running version, OTA availability)
     Note over CLI,Service: Status connection closes; upload uses a new connection
     CLI->>CLI: Validate application binary and compute SHA-256
-    CLI->>Service: v2 BeginUpdate (identity, version, size, digest)
+    CLI->>Service: BeginUpdate (identity, version, size, digest)
     Service->>Service: Validate metadata and choose inactive slot
     Service-->>CLI: RECEIVING (next_offset=0, target_offset)
     loop Sequential chunks, up to 4096 bytes each
@@ -268,7 +270,7 @@ persisted enum values. `UploadAck.Phase` reports successful operation results.
 ```mermaid
 stateDiagram-v2
     [*] --> AwaitBegin: TCP accepted
-    AwaitBegin --> Receiving: Valid v2 Begin / RECEIVING
+    AwaitBegin --> Receiving: Valid Begin / RECEIVING
     Receiving --> Receiving: Valid sequential Chunk / RECEIVING
     Receiving --> Verified: Finish with all bytes and valid image / VERIFIED
     Verified --> Committing: Commit
@@ -324,3 +326,18 @@ mark a matching `PendingVerify` image `Valid`, and ignores confirmation errors.
 It is not a complete health policy. Rollback support in the installed bootloader,
 a bounded health deadline, and reset/power-loss recovery are not yet verified.
 The diagrams do not claim automatic fallback works today.
+
+
+## Versioning decision
+
+Status and upload share protocol version 1. Protobuf field numbers and unknown
+field handling support additive schema evolution; protocol_version rejects
+incompatible framing or semantics, not individual capabilities. Upload capability
+is advertised through ota_available and enabled by the dev-ota build feature.
+
+This supersedes the development-only status-v1/upload-v2 split. Old v2 upload
+clients/firmware are intentionally unsupported. The application capability marker
+is now rust-dev-ota-v1 so the updater cannot silently install an image that expects
+the old upload protocol. Reprovision existing development boards over USB before
+using the unified client; existing hardware results describe the earlier build,
+not verification of this wire-version change.

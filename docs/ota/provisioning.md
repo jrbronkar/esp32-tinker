@@ -26,7 +26,15 @@ The initial board used NVS 0x9000/0x6000, PHY 0xf000/0x1000, and a factory parti
 477,488-byte app, bootloader, table, NVS, and PHY; its image SHA footer verified.
 The backup contains embedded credentials, so it is not a shared deliverable.
 
-## Initial provisioning (already performed on this board)
+## Unified-protocol migration
+
+The earlier prototype used upload protocol 2 and marker `rust-dev-ota-v2`.
+Current status and uploads share protocol 1 with marker `rust-dev-ota-v1`.
+Reflash existing prototype boards over USB before using the updated uploader;
+the old and new upload implementations intentionally reject one another.
+The hardware results below describe the earlier build, not this migration.
+
+## Initial provisioning (already performed on this board for the earlier build)
 
 In nix develop with Wi-Fi variables exported:
 
@@ -53,7 +61,7 @@ espflash save-image --chip esp32s3 --flash-size 16mb \
 ```
 
 Export an application-only .bin, not an ELF or merged image. It works in either
-slot. The dev-ota build embeds a descriptor marker (`rust-dev-ota-v2`) and release
+slot. The dev-ota build embeds a descriptor marker (`rust-dev-ota-v1`) and release
 version so host/device can reject incompatible images or firmware missing the
 update capability. The validated A/B/C images were 503,392 bytes each.
 

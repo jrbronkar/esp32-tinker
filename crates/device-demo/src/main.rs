@@ -18,7 +18,7 @@ esp_bootloader_esp_idf::esp_app_desc!(
     "device-demo",
     esp_bootloader_esp_idf::BUILD_TIME,
     esp_bootloader_esp_idf::BUILD_DATE,
-    "rust-dev-ota-v2",
+    "rust-dev-ota-v1",
     esp_bootloader_esp_idf::MMU_PAGE_SIZE,
     0,
     u16::MAX,

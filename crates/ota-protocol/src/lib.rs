@@ -199,7 +199,7 @@ mod tests {
         for (request, code) in [
             (
                 Request {
-                    protocol_version: 2,
+                    protocol_version: VERSION + 1,
                     ..status_request(7)
                 },
                 ErrorCode::UnsupportedVersion,
@@ -219,8 +219,7 @@ mod tests {
     }
 }
 
-/// Upload v2 has separate bounded frames so v1's 512-byte limit stays intact.
-pub const UPLOAD_VERSION: u32 = 2;
+/// Upload sessions have separate bounded frames; initial/control frames stay at 512 bytes.
 pub const UPLOAD_FRAME: usize = 4608;
 pub const CHUNK_SIZE: usize = 4096;
 pub fn upload_frame_length(prefix: [u8; 4]) -> Result<usize, Error> {
@@ -253,13 +252,38 @@ pub fn decode_upload(bytes: &[u8]) -> Result<Request, Error> {
 mod upload_tests {
     use super::*;
     #[test]
-    fn sector_chunk_fits_v2_and_is_rejected_by_v1_limit() {
+    fn upload_and_status_share_version_without_enabling_upload_in_status_handler() {
+        let request = Request {
+            protocol_version: VERSION,
+            request_id: 7,
+            payload: Some(RequestPayload::Begin(BeginUpdate {
+                application: "device-demo".try_into().unwrap(),
+                chip: "esp32s3".try_into().unwrap(),
+                version: "release".try_into().unwrap(),
+                image_size: 4096,
+                sha256: (&[0u8; 32][..]).try_into().unwrap(),
+            })),
+        };
+        let bytes = encode(&request).unwrap();
+        assert_eq!(decode::<Request>(&bytes).unwrap(), request);
+        assert_eq!(request.protocol_version, status_request(1).protocol_version);
+        let response = respond(
+            request,
+            status("board", "device-demo", "release", 0).unwrap(),
+        );
+        assert!(
+            matches!(response.payload, Some(ResponsePayload::Error(e)) if e.code == ErrorCode::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn sector_chunk_uses_same_version_but_requires_upload_frame_limit() {
         let chunk = FirmwareChunk {
             offset: 4096,
             data: (&[7u8; 4096][..]).try_into().unwrap(),
         };
         let request = Request {
-            protocol_version: 2,
+            protocol_version: VERSION,
             request_id: 2,
             payload: Some(RequestPayload::Chunk(chunk)),
         };

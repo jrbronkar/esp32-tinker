@@ -1,6 +1,6 @@
 //! Unsigned development uploads. Never retries a request after transmission.
 use ota_protocol::{
-    Request, RequestPayload as Op, Response, ResponsePayload, UploadPhase, UPLOAD_VERSION,
+    Request, RequestPayload as Op, Response, ResponsePayload, UploadPhase, VERSION,
 };
 use std::{
     fs,
@@ -131,7 +131,7 @@ fn exchange(
     timeout: Duration,
 ) -> io::Result<ota_protocol::UploadAck> {
     let request = Request {
-        protocol_version: UPLOAD_VERSION,
+        protocol_version: VERSION,
         request_id: id,
         payload: Some(payload),
     };
@@ -152,7 +152,7 @@ fn exchange(
     read_exact(socket, &mut body[..n], deadline, timeout)?;
     let response: Response =
         ota_protocol::decode(&body[..n]).map_err(|_| invalid("invalid upload response"))?;
-    if response.protocol_version != UPLOAD_VERSION || response.request_id != id {
+    if response.protocol_version != VERSION || response.request_id != id {
         return Err(invalid("upload version/request ID mismatch"));
     }
     match response.payload {

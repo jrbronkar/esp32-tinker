@@ -1,7 +1,7 @@
 syntax = "proto3";
 package ota;
 
-// Status uses v1. Explicit unsigned-development upload operations use v2.
+// All operations use protocol version 1. Uploads require explicit dev-ota firmware.
 message Request {
   uint32 protocol_version = 1;
   uint32 request_id = 2;

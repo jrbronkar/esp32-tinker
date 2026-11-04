@@ -5,8 +5,7 @@ use crate::{
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{with_timeout, Duration};
 use ota_protocol::{
-    Request, RequestPayload as Op, Response, ResponsePayload, UploadAck, UploadPhase,
-    UPLOAD_VERSION,
+    Request, RequestPayload as Op, Response, ResponsePayload, UploadAck, UploadPhase, VERSION,
 };
 
 pub async fn session(
@@ -30,7 +29,7 @@ pub async fn session(
         .try_into()
         .unwrap();
         let response = Response {
-            protocol_version: UPLOAD_VERSION,
+            protocol_version: VERSION,
             request_id: last_id,
             payload: Some(ResponsePayload::Error(ota_protocol::ErrorResponse {
                 code: ota_protocol::ErrorCode::InvalidRequest,
@@ -49,7 +48,7 @@ async fn transfer(
     last_id: &mut u32,
 ) -> Result<(), ota_core::Error> {
     use ota_core::Error;
-    if first.protocol_version != UPLOAD_VERSION {
+    if first.protocol_version != VERSION {
         return Err(Error::Metadata);
     }
     let Op::Begin(begin) = first.payload.ok_or(Error::State)? else {
@@ -78,7 +77,7 @@ async fn transfer(
             .map_err(|_| Error::State)?
             .map_err(|_| Error::State)?;
         let request = ota_protocol::decode_upload(&body[..n]).map_err(|_| Error::Metadata)?;
-        if request.protocol_version != UPLOAD_VERSION
+        if request.protocol_version != VERSION
             || request.request_id != id.checked_add(1).ok_or(Error::State)?
         {
             return Err(Error::Order);
@@ -146,7 +145,7 @@ async fn ack(
     send(
         socket,
         &Response {
-            protocol_version: UPLOAD_VERSION,
+            protocol_version: VERSION,
             request_id: id,
             payload: Some(ResponsePayload::Upload(UploadAck {
                 phase,

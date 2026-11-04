@@ -2,7 +2,7 @@
 
 A Mac CLI for querying and updating one board by IP using
 bounded Protobuf messages over TCP. The optional unsigned development uploader
-uses explicit protocol v2 and requires a provisioned dev-ota firmware.
+shares protocol version 1 with status and requires a provisioned dev-ota firmware.
 
 ## Build and query
 

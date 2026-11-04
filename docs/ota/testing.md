@@ -205,3 +205,13 @@ available. Baseline uptime was 11,122,223 ms; no reboot was observed in this run
   prove recovery from a transient radio failure.
 - Deliberately panic only in a separate diagnostic build and capture the serial
   backtrace. The current panic handler loops; startup error retry is distinct.
+
+
+### Unified protocol regression (after the hardware campaign)
+
+Status and upload now share version 1. All **30 host tests** pass, including a
+new shared-version/disabled-upload-handler regression; upload mock peers assert
+version 1 on every request. Both firmware configurations and the hardware probe
+compile. The capability marker changed to `rust-dev-ota-v1`; the earlier board
+requires USB reprovisioning and a repeat of the hardware suite. No new hardware
+result is claimed for this protocol change.

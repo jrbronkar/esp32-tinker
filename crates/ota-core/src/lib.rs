@@ -3,7 +3,7 @@
 use sha2::{Digest, Sha256};
 
 pub const APP: &str = "device-demo";
-pub const MARKER: &str = "rust-dev-ota-v2";
+pub const MARKER: &str = "rust-dev-ota-v1";
 pub const SLOT_SIZE: u32 = 0x300000;
 pub const CHUNK: usize = 4096;
 
