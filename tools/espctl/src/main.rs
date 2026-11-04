@@ -444,6 +444,9 @@ fn main() -> ExitCode {
 }
 
 fn run_logs(args: LogsArgs) -> Result<(), String> {
+    if args.follow {
+        eprintln!("Log polling pauses during OTA uploads and resumes when the device is available.");
+    }
     let mut cursor = ota_protocol::ReadLogsRequest::default();
     loop {
         let logs = match espctl::read_logs(
