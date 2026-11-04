@@ -99,6 +99,5 @@ and power-cut recovery are not established. No network update writes the
 bootloader, partition table, NVS, or PHY regions.
 
 [Current validation and gaps](testing.md#validation-status) distinguish the latest
-build from earlier activation tests. [Hardware history](history/hardware-validation.md)
-records the old split-version migration; those prototype builds required a USB
+build from earlier activation tests. Old split-version prototypes require a USB
 upgrade to unified protocol 1. The tested board now runs `ota-default-1`.

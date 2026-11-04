@@ -17,12 +17,3 @@ Partition configuration stays in [`partitions/`](../../partitions), the schema i
 
 Uploads are unsigned and unencrypted development functionality. Authentication,
 reliable rollback, and power-loss validation remain pending.
-
-## Historical reference
-
-- [Hardware validation records](history/hardware-validation.md)
-- [Implementation and latency investigation notes](history/implementation-notes.md)
-- [gRPC feasibility research](history/grpc-feasibility.md) — explicitly out of scope
-
-Historical notes preserve earlier experiments; use the guides above for current
-commands and behavior.

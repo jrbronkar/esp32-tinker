@@ -18,7 +18,8 @@ Authentication, reliable rollback, and power-loss recovery remain unfinished.
 - USB provisioning and physical BOOT/RESET remain the recovery path.
 - gRPC clients/servers, HTTP/2 integration, and gateways are explicitly out of
   scope. Discovery, fleet rollout, a dashboard, resume and remote release fetching
-  are deferred. [gRPC research](history/grpc-feasibility.md) is historical only.
+  are deferred. Native gRPC would add HTTP/2/runtime integration and memory
+  costs without a validated benefit for this milestone. No gRPC dependency is included.
 
 ## Architecture and ownership
 
@@ -132,6 +133,3 @@ assumptions. Treat it as a separate design and provisioning decision.
 - [Protocol](protocol.md): framing, operations, errors and state/sequence diagrams.
 - [Provisioning](provisioning.md): layout, build/export, USB setup and upload.
 - [Testing](testing.md): procedures, current evidence and gaps.
-- [Historical implementation notes](history/implementation-notes.md): superseded
-  milestones, detailed latency investigation and early provisioning observations.
-- [Hardware validation history](history/hardware-validation.md): dated test runs.

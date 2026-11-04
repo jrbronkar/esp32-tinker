@@ -137,9 +137,9 @@ Recovery performed / follow-up:
 | `unified-1` on board | Eleven non-activating probes and 500,560-byte verify-only upload pass | One socket timeout before a successful fresh transfer; activation/rollback not tested on this build |
 | Earlier A → B → C prototype | Wi-Fi activation alternated slots; earlier NVS comparison was identical | Predates unified protocol; not evidence for every later build |
 
-[Hardware records](history/hardware-validation.md) contain image identities,
-observations, failures, and preservation-test limits. Record new runs there with
-the template above; update this table when the current validation changes.
+Keep detailed run logs, firmware images, and raw backups outside the repository.
+Use the template above for local records and update this summary when validation
+changes; distinguish new evidence from results on earlier builds.
 
 ## Remaining coverage gaps
 

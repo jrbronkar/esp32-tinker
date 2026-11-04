@@ -334,5 +334,4 @@ is advertised through ota_available and requires the supported partition layout.
 
 The earlier development-only status-v1/upload-v2 split is superseded. The
 capability marker `rust-dev-ota-v1` rejects incompatible old images. See
-[hardware history](history/hardware-validation.md) for migration evidence and
 [validation status](testing.md#validation-status) for the current build.
