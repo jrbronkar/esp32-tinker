@@ -5,11 +5,13 @@ edition = "2024"
 publish = false
 
 [dependencies]
+ota-core = { path = "../ota-core" }
 ota-protocol = { path = "../ota-protocol" }
 protolink = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false, features = ["async"] }
 
 [dev-dependencies]
 protolink = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["macros", "rt", "net", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "net", "time", "sync"] }
 tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"] }
 bytes = "1"
+tokio-stream = "0.1"

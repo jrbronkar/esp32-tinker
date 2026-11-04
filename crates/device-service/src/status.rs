@@ -34,16 +34,19 @@ pub async fn server(
     // Both futures borrow task-owned state. Joining keeps them concurrent without
     // requiring a global runtime or a separate spawned task with a static borrow.
     #[cfg(feature = "experimental-grpc")]
+    let target_offset = target.offset;
+    let target = core::cell::RefCell::new(target);
+    #[cfg(feature = "experimental-grpc")]
     embassy_futures::join::join3(
-        crate::grpc::serve(stack, &identity, &runtime),
+        crate::grpc::serve(stack, &identity, &runtime, &target, target_offset),
         crate::discovery::serve(stack, &identity, &runtime),
-        serve(stack, &identity, &mut target, &runtime),
+        serve(stack, &identity, &target, &runtime),
     )
     .await;
     #[cfg(not(feature = "experimental-grpc"))]
     embassy_futures::join::join(
         crate::discovery::serve(stack, &identity, &runtime),
-        serve(stack, &identity, &mut target, &runtime),
+        serve(stack, &identity, &target, &runtime),
     )
     .await;
 }
@@ -51,7 +54,7 @@ pub async fn server(
 async fn serve(
     stack: Stack<'static>,
     identity: &StatusResponse,
-    target: &mut crate::flash_target::FlashTarget,
+    target: &core::cell::RefCell<crate::flash_target::FlashTarget>,
     runtime: &crate::runtime::Runtime,
 ) {
     let mut rx = [0u8; TCP_BUFFER_BYTES];
@@ -122,7 +125,7 @@ async fn session(
     socket: &mut TcpSocket<'_>,
     identity: &StatusResponse,
     trace: &mut Trace,
-    target: &mut crate::flash_target::FlashTarget,
+    target: &core::cell::RefCell<crate::flash_target::FlashTarget>,
     runtime: &crate::runtime::Runtime,
 ) -> Result<(), ()> {
     trace.phase = "read";
@@ -160,7 +163,8 @@ async fn session(
             )
         )
     {
-        return crate::upload::session(socket, request, target, runtime).await;
+        let mut target = target.try_borrow_mut().map_err(|_| ())?;
+        return crate::upload::session(socket, request, &mut target, runtime).await;
     }
     trace.request_id = request.request_id;
     trace.enabled =

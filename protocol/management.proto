@@ -1,7 +1,10 @@
 syntax = "proto3";
 package esp.experimental;
 import "ota.proto";
-// Experimental cleartext HTTP/2 endpoint on port 7780. No OTA writes yet.
+// Experimental cleartext HTTP/2 endpoint on port 7780. Upload verifies only;
+// no activation. Clients acknowledge each upload operation before sending next.
 service Management {
+  rpc Logs(ota.Request) returns (stream ota.Response);
+  rpc Upload(stream ota.Request) returns (stream ota.Response);
   rpc Status(ota.Request) returns (ota.Response);
 }

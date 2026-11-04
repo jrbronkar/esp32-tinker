@@ -1,0 +1,351 @@
+#[path = "../examples/common/mod.rs"]
+mod common;
+use common::*;
+use ota_protocol::{ReadLogsRequest, RequestPayload as Op, ResponsePayload};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    task::{Context, Waker},
+    time::Duration,
+};
+
+struct Memory(Vec<u8>);
+impl ota_core::Reader for Memory {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ota_core::Error> {
+        ota_core::SliceImage(&self.0).read(offset, bytes)
+    }
+}
+impl ota_core::Target for Memory {
+    fn capacity(&self) -> u32 {
+        self.0.len() as u32
+    }
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ota_core::Error> {
+        self.0[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+    fn commit(&mut self) -> Result<(), ota_core::Error> {
+        panic!("verify-only transport must never commit")
+    }
+}
+struct Events {
+    logs: ota_protocol::logs::LogBuffer,
+    wake: Option<Waker>,
+}
+#[derive(Clone)]
+struct Env(Rc<RefCell<Events>>);
+impl device_grpc::Environment for Env {
+    fn status(&self) -> ota_protocol::StatusResponse {
+        ota_protocol::status("mock", "device-demo", "v1", 0).unwrap()
+    }
+    fn logs(
+        &self,
+        cursor: &ReadLogsRequest,
+        cx: &mut Context<'_>,
+    ) -> ota_protocol::ReadLogsResponse {
+        let mut env = self.0.borrow_mut();
+        env.wake = Some(cx.waker().clone());
+        env.logs.read(cursor)
+    }
+    fn event(&self, message: &str) {
+        let mut env = self.0.borrow_mut();
+        env.logs.push(0, ota_protocol::LogSeverity::Info, message);
+        if let Some(w) = env.wake.take() {
+            w.wake();
+        }
+    }
+}
+fn image() -> Vec<u8> {
+    let size = 128 * 1024;
+    let end = 32 + size;
+    let footer = (end + 16) & !15;
+    let mut bytes = vec![0u8; footer + 32];
+    bytes[0] = 0xe9;
+    bytes[1] = 1;
+    bytes[12] = 9;
+    bytes[23] = 1;
+    bytes[28..32].copy_from_slice(&(size as u32).to_le_bytes());
+    bytes[32..36].copy_from_slice(&0xabcd5432u32.to_le_bytes());
+    bytes[48..50].copy_from_slice(b"v1");
+    bytes[80..91].copy_from_slice(b"device-demo");
+    bytes[144..144 + ota_core::MARKER.len()].copy_from_slice(ota_core::MARKER.as_bytes());
+    bytes[footer - 1] = bytes[32..end].iter().fold(0xef, |a, b| a ^ b);
+    let digest = ota_core::hash(&bytes[..footer]);
+    bytes[footer..].copy_from_slice(&digest);
+    bytes
+}
+async fn fixture() -> (
+    Client,
+    tokio::task::JoinHandle<()>,
+    Rc<RefCell<Memory>>,
+    Env,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let memory = Rc::new(RefCell::new(Memory(vec![0xff; 256 * 1024])));
+    let env = Env(Rc::new(RefCell::new(Events {
+        logs: ota_protocol::logs::LogBuffer::new(1),
+        wake: None,
+    })));
+    let target = memory.clone();
+    let events = env.clone();
+    let server = tokio::task::spawn_local(async move {
+        // Exactly one accept: every RPC in the test must share this TCP connection.
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut handler = device_grpc::StreamingManagement::new(&target, 0x10000, events);
+        let _ = protolink::tokio::server(stream)
+            .with_config(device_grpc::config())
+            .build()
+            .serve(&mut handler)
+            .await;
+    });
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+        .unwrap()
+        .initial_stream_window_size(Some(1024))
+        .connect()
+        .await
+        .unwrap();
+    (Client::new(channel), server, memory, env)
+}
+#[tokio::test]
+async fn same_connection_upload_and_live_logs_verify_image() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                let (mut client, server, memory, _) = fixture().await;
+                let mut logs = logs(&mut client, ReadLogsRequest::default()).await.unwrap();
+                logs.message().await.unwrap().unwrap(); // initial cursor snapshot
+                let (tx, mut replies) = upload(&mut client).await.unwrap();
+                let image = image();
+                op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                let mut id = 2;
+                let mut during_upload = 0;
+                for (i, bytes) in image.chunks(4096).enumerate() {
+                    let ack = op(&tx, &mut replies, chunk(i * 4096, bytes), id)
+                        .await
+                        .unwrap();
+                    id += 1;
+                    assert_eq!(ack.next_offset as usize, (i * 4096) + bytes.len());
+                    // Wait for real chunk events BEFORE the next chunk/Finish. A sequential
+                    // upload-then-log server cannot pass, even if it eventually returns logs.
+                    loop {
+                        let batch = response(&logs.message().await.unwrap().unwrap());
+                        let Some(ResponsePayload::Logs(batch)) = batch.payload else {
+                            panic!()
+                        };
+                        if batch.entries.iter().any(|e| {
+                            e.message.as_str()
+                                == format!("gRPC chunk id={} next={}", id - 1, ack.next_offset)
+                        }) {
+                            during_upload += 1;
+                            break;
+                        }
+                    }
+                }
+                let ack = op(&tx, &mut replies, Op::Finish(Default::default()), id)
+                    .await
+                    .unwrap();
+                id += 1;
+                assert_eq!(ack.phase, ota_protocol::UploadPhase::Verified);
+                assert_eq!(during_upload, image.chunks(4096).count());
+                op(&tx, &mut replies, Op::Abort(Default::default()), id)
+                    .await
+                    .unwrap();
+                assert!(replies.message().await.unwrap().is_none());
+                assert_eq!(&memory.borrow().0[..image.len()], &image);
+                drop(logs);
+                drop(tx);
+                server.abort();
+                let _ = server.await;
+            })
+            .await
+            .unwrap();
+        })
+        .await;
+}
+#[tokio::test]
+async fn cancellation_errors_and_disconnect_release_flash() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let (mut client, server, memory, env) = fixture().await;
+                let image = image();
+                for _ in 0..4 {
+                    let (tx, mut replies) = upload(&mut client).await.unwrap();
+                    op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                    assert!(memory.try_borrow_mut().is_err());
+                    drop(replies);
+                    drop(tx);
+                    // A successful new Begin below proves cleanup, not just client drop.
+                    for _ in 0..100 {
+                        if memory.try_borrow_mut().is_ok() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    assert!(memory.try_borrow_mut().is_ok());
+                }
+                // Legacy ownership rejects Begin without modifying the target.
+                let lease = memory.borrow_mut();
+                let (tx, mut replies) = upload(&mut client).await.unwrap();
+                assert_eq!(
+                    op(&tx, &mut replies, begin(&image, "v1"), 1)
+                        .await
+                        .unwrap_err()
+                        .code(),
+                    tonic::Code::ResourceExhausted
+                );
+                drop(lease);
+                drop(tx);
+                drop(replies);
+                let (tx, mut replies) = upload(&mut client).await.unwrap();
+                op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                assert_eq!(
+                    op(&tx, &mut replies, chunk(4096, &image[..4096]), 2)
+                        .await
+                        .unwrap_err()
+                        .code(),
+                    tonic::Code::FailedPrecondition
+                );
+                assert!(memory.try_borrow_mut().is_ok());
+                // New subscriptions wake after an external log producer, and cancel cleanly.
+                for _ in 0..4 {
+                    let mut cursor = ReadLogsRequest::default();
+                    loop {
+                        let batch = env.0.borrow().logs.read(&cursor);
+                        cursor.boot_id = batch.boot_id;
+                        cursor.after_sequence = batch.next_sequence;
+                        if batch.entries.is_empty() {
+                            break;
+                        }
+                    }
+                    let mut stream = logs(&mut client, cursor).await.unwrap();
+                    stream.message().await.unwrap().unwrap();
+                    device_grpc::Environment::event(&env, "external wake");
+                    let Some(ResponsePayload::Logs(batch)) =
+                        response(&stream.message().await.unwrap().unwrap()).payload
+                    else {
+                        panic!()
+                    };
+                    assert!(batch.entries.iter().any(|e| e.message == "external wake"));
+                    drop(stream);
+                }
+                let (active_tx, mut active) = upload(&mut client).await.unwrap();
+                op(&active_tx, &mut active, begin(&image, "v1"), 1)
+                    .await
+                    .unwrap();
+                assert!(memory.try_borrow_mut().is_err());
+                server.abort();
+                let _ = server.await;
+                assert!(memory.try_borrow_mut().is_ok());
+            })
+            .await
+            .unwrap();
+        })
+        .await;
+}
+#[tokio::test]
+async fn stalled_log_stream_does_not_stall_upload_and_reports_overwrite() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                let (mut client, server, memory, _) = fixture().await;
+                let mut logs = logs(&mut client, Default::default()).await.unwrap();
+                logs.message().await.unwrap().unwrap();
+                // Peer grants just 1024 bytes per stream. Do NOT consume logs while
+                // producing substantially more than that; uploads must still finish.
+                let image = image();
+                for _ in 0..3 {
+                    let (tx, mut replies) = upload(&mut client).await.unwrap();
+                    op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                    let mut id = 2;
+                    for (i, bytes) in image.chunks(4096).enumerate() {
+                        op(&tx, &mut replies, chunk(i * 4096, bytes), id)
+                            .await
+                            .unwrap();
+                        id += 1;
+                    }
+                    let ack = op(&tx, &mut replies, Op::Finish(Default::default()), id)
+                        .await
+                        .unwrap();
+                    id += 1;
+                    assert_eq!(ack.phase, ota_protocol::UploadPhase::Verified);
+                    op(&tx, &mut replies, Op::Abort(Default::default()), id)
+                        .await
+                        .unwrap();
+                    assert!(replies.message().await.unwrap().is_none());
+                }
+                assert_eq!(&memory.borrow().0[..image.len()], &image);
+                loop {
+                    let Some(ResponsePayload::Logs(batch)) =
+                        response(&logs.message().await.unwrap().unwrap()).payload
+                    else {
+                        panic!()
+                    };
+                    if batch.dropped {
+                        break;
+                    }
+                }
+                drop(logs);
+                server.abort();
+                let _ = server.await;
+            })
+            .await
+            .unwrap();
+        })
+        .await;
+}
+#[tokio::test]
+async fn competing_stream_cannot_release_active_upload_and_deadline_cancels_logs() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let (mut client, server, memory, _) = fixture().await;
+                let image = image();
+                let (tx, mut replies) = upload(&mut client).await.unwrap();
+                op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                let (other_tx, mut other) = upload(&mut client).await.unwrap();
+                assert_eq!(
+                    op(&other_tx, &mut other, begin(&image, "v1"), 1)
+                        .await
+                        .unwrap_err()
+                        .code(),
+                    tonic::Code::ResourceExhausted
+                );
+                assert!(memory.try_borrow_mut().is_err());
+                op(&tx, &mut replies, chunk(0, &image[..4096]), 2)
+                    .await
+                    .unwrap();
+                op(&tx, &mut replies, Op::Abort(Default::default()), 3)
+                    .await
+                    .unwrap();
+                assert!(replies.message().await.unwrap().is_none());
+                drop(other_tx);
+                drop(other);
+                drop(tx);
+                client.ready().await.unwrap();
+                let mut request = tonic::Request::new(body(Op::ReadLogs(Default::default()), 88));
+                request.set_timeout(Duration::from_millis(100));
+                let mut stream = client
+                    .server_streaming(request, device_grpc::LOGS_PATH.parse().unwrap(), RawCodec)
+                    .await
+                    .unwrap()
+                    .into_inner();
+                loop {
+                    match stream.message().await {
+                        Ok(Some(_)) => {}
+                        Err(status) => {
+                            assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+                            break;
+                        }
+                        Ok(None) => panic!("deadline must have error trailers"),
+                    }
+                }
+                server.abort();
+                let _ = server.await;
+                assert!(memory.try_borrow_mut().is_ok());
+            })
+            .await
+            .unwrap();
+        })
+        .await;
+}

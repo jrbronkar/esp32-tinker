@@ -13,6 +13,7 @@ pub enum State {
 pub struct Runtime {
     // Both consumers are joined futures within the same executor task.
     state: Cell<State>,
+    pub log_waker: core::cell::RefCell<Option<core::task::Waker>>,
     pub logs: core::cell::RefCell<ota_protocol::logs::LogBuffer>,
     pub announce: Signal<CriticalSectionRawMutex, ()>,
 }
@@ -22,6 +23,7 @@ impl Runtime {
         let boot_id = ((rng.random() as u64) << 32 | rng.random() as u64).max(1);
         Self {
             state: Cell::new(State::Idle),
+            log_waker: core::cell::RefCell::new(None),
             logs: core::cell::RefCell::new(ota_protocol::logs::LogBuffer::new(boot_id)),
             announce: Signal::new(),
         }
@@ -30,6 +32,9 @@ impl Runtime {
         self.logs
             .borrow_mut()
             .push(embassy_time::Instant::now().as_millis(), severity, message);
+        if let Some(waker) = self.log_waker.borrow_mut().take() {
+            waker.wake();
+        }
     }
     pub fn state(&self) -> &'static str {
         match self.state.get() {

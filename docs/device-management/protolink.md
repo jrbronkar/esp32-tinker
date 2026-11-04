@@ -1,84 +1,137 @@
-# Experimental Protolink transport
+# Experimental concurrent Protolink transport
 
-The `experimental-grpc` feature on `device-demo` adds cleartext HTTP/2 on TCP
-7780. The legacy management/OTA service remains on 7779 and retains sole flash
-ownership. Discovery still advertises the legacy endpoint only.
+The opt-in `experimental-grpc` feature on `device-demo` serves cleartext HTTP/2
+on TCP 7780, alongside the legacy management/OTA listener on 7779. Discovery
+continues to advertise the legacy endpoint. Protolink is pinned to
+`62cc2c87a687ba65fc6885e7c9691cefacf2d064`; Cargo.lock pins zerodds HTTP/2 and
+HPACK to 1.0.0-rc.7. The raw Handler keeps existing micropb 0.7 protobuf bodies
+independent of Protolink's optional micropb 0.6 codec.
 
-Protolink is pinned to upstream revision
-`62cc2c87a687ba65fc6885e7c9691cefacf2d064` (0.0.5). Cargo.lock also pins its
-HTTP/2/HPACK dependencies, currently zerodds 1.0.0-rc.7. Its default micropb
-feature is disabled: the raw Handler uses existing micropb 0.7 protobuf bodies,
-without the legacy four-byte transport length prefix.
+## RPC contract
 
-## Implemented
+See `protocol/management.proto`. Every request/response uses the existing
+`ota.Request`/`ota.Response` envelope, without its legacy four-byte length
+prefix. Protolink supplies HTTP/2 and gRPC framing/status trailers.
 
-`/esp.experimental.Management/Status` takes `ota.Request` with protocol version
-1 and a status payload, returning `ota.Response`. See
-`protocol/management.proto`. The firmware updates uptime and management state
-at dispatch. The host fixture tests this Handler over a real TCP connection
-against Tonic's independent HTTP/2/gRPC implementation, including eight calls
-on one connection, malformed protobuf and unknown-method status trailers.
+- `Status`: unary, with current uptime and management state.
+- `Logs`: server streaming, one ReadLogs cursor request and bounded batches of
+  four records. A first snapshot is always sent; later batches arrive when
+  records are available, including reset/overwritten-history indications.
+- `Upload`: bidirectional streaming. Send Begin, ordered sector-sized chunks,
+  Finish, then Abort or half-close. Wait for the matching ACK before sending
+  each operation. Finish hashes and validates the image read back from flash.
+  Abort/half-close releases the lease without changing boot selection. Commit
+  is rejected; activation still requires the legacy explicit OTA path.
 
-The Embassy listener uses `server_split` on TCP socket halves and an Embassy
-clock/timer for deadlines. Connections have a ten-second socket inactivity
-timeout and 180-second absolute lifetime, and the listener rearms after failure.
-Two streams are permitted, each with a 1024-byte receive window; decoded headers
-are capped at 1024 bytes, serialized output at 4096 bytes and messages at 512
-bytes. Compression is disabled. HTTP/2's initial connection window cannot be
-lowered below 65535; these settings are not a proof of a total heap bound.
+One task owns the flash target behind a RefCell. Either transport borrows it
+exclusively for the upload's lifetime; competing uploads fail before writing.
+Cancellation, malformed operations, half-close and connection/driver teardown
+release the lease. An upload's synchronous flash operation can briefly delay
+other work, while its network waits permit logs and legacy status to progress.
+The complete image is never held in firmware RAM.
 
-## Validation (2026-11-04)
+There are at most two active streams, two fixed subscription slots, one upload
+state and one pending upload ACK. Receive windows are 8192 bytes per stream so
+a complete 4096-byte protobuf chunk can arrive without awaiting its own
+consumption. The connection window is 65535 (the HTTP/2 minimum), decoded
+headers are capped at 1024, serialized output at 8192 and messages at 4608.
+Compression is disabled. This is not a proof of a global heap bound.
 
-- Existing default host suite passed before changes.
-- Unchanged release firmware build passed.
-- Tonic interoperability test passed.
-- ESP32-S3 release build with the experimental feature passed.
-- Board discovered as `esp32s3-a4:cb:8f:d8:13:c8`, `10.128.248.68:7779`,
-  running `network-logs-2`. Experimental firmware has not been activated.
+The Embassy server splits the TCP socket into independently polled directions.
+External log producers register/wake the connection task through Runtime.
+Connections have a ten-second socket inactivity timeout and a 180-second
+absolute lifetime. Clients must reconnect after expiry or network loss.
 
-Comparable section sizes, using the same Nix toolchain and release settings:
+## Automated tests
 
-| Section | Legacy | Experimental | Change |
-| --- | ---: | ---: | ---: |
-| .data | 11396 | 11804 | +408 |
-| .bss | 102956 | 107060 | +4104 |
-| .text | 400937 | 490633 | +89696 |
-| .rodata | 44924 | 56804 | +11880 |
-| .stack (linker remainder) | 184876 | 180364 | -4512 |
+`cargo test` includes `device-grpc` by default. The existing 48 tests plus five
+Tonic transport tests pass (53 total). The new tests use independent Tonic/h2
+clients against the actual Handler over TCP; each fixture accepts exactly ONE
+connection, so requests cannot silently move to separate sockets.
 
-Other listed Wi-Fi/RAM code sections were unchanged. The `.stack` section is a
-linker reservation, not measured stack usage. The generic `size` total includes
-dummy and reserved sections and must not be called actual RAM consumption.
-The reserved heap remains 100 KiB; runtime peak/free heap has not been measured.
+Coverage:
+
+- Repeated status calls, malformed protobuf and unknown-method trailers.
+- A valid 128 KiB synthetic ESP image uploaded and verified, requiring each
+  matching chunk log BEFORE the next chunk; upload-then-log serialization fails.
+- A 1024-byte log receive window with consumption stopped while three complete
+  uploads finish; resumption reports overwritten RAM history.
+- Repeated cancellation/resubscription, external log wakeups, competing legacy
+  flash ownership, invalid chunk order and teardown during an active upload.
+- Competing RPC upload streams cannot release each other's lease; log deadlines
+  produce DEADLINE_EXCEEDED trailers.
+
+Both legacy and experimental release firmware builds pass. Formatting and
+patch whitespace checks pass. Clippy was unavailable: the default installation
+selects Rust 1.79, and the installed newer nightly has no Clippy component.
+
+Host mocks exercise the real updater/image validator but do not establish flash
+hardware behavior, power-loss recovery or worst-case scheduling latency.
+
+## Hardware validation, 2026-11-04
+
+Identity checked before writes: `esp32s3-a4:cb:8f:d8:13:c8`, address
+`10.128.248.68`. Existing OTA activated `grpc-streams-1` in ota_0; boot status
+confirmed the version, expected 16 MiB layout and OTA availability.
+
+| Probe on grpc-streams-1 | Observed result |
+| --- | --- |
+| Live logs + real upload, one HTTP/2 connection | 636448 bytes verified from inactive-slot flash; all 156 chunk-specific live logs arrived before the next chunk; 32.4395 s, max chunk+log step 474.7 ms |
+| Logs deliberately unread, 1024-byte receive window | Same full image verified in 34.7162 s; max chunk step 431.9 ms; overwritten history reported when reads resumed |
+| Legacy status during gRPC upload | Responded in 79.24 ms and reported receiving |
+| Four upload cancellations + log resubscriptions | Subsequent Begin/Abort succeeded; empty upload rejected; same connection |
+
+The gRPC probes were verify-only: they did not activate the uploaded image.
+The second probe logged allocator estimates: 47528 bytes used after connection
+cleanup, 70268-byte boot-wide peak, 54872 currently free of the 102400-byte heap.
+These are allocator estimates, not stack measurements or a worst-case bound.
+
+A final review fixed target-offset reporting when a connection opens while the
+legacy service owns flash. `grpc-streams-2` contains that correction; final
+activation/probe results are recorded below.
+
+Final `grpc-streams-2` activation was verified in ota_1. The live-stream probe
+verified 636592 bytes and all 156 matching chunk logs in 29.5871 seconds
+(maximum chunk step 468.7 ms), including checking the ACK target against the
+inactive partition from boot inventory. The final stalled-log probe also verified
+636592 bytes, in 29.2389 seconds (maximum chunk step 464.4 ms), and reported
+lost history on resumption. The final cancellation/resubscription and empty
+upload probe passed too. Both completed uploads left boot selection unchanged.
+Final post-probe status confirmed `grpc-streams-2`, ota_1, idle and OTA available.
+Final allocator estimates were 47920 bytes used, a 71872-byte boot-wide peak
+and 54480 currently free. The observed peak leaves 30528 bytes of the configured
+heap; this is still not a worst-case memory guarantee.
 
 ## Reproduce
 
-Enter `nix develop` at the repository root. Then:
+Enter `nix develop` at the repository root. Export Wi-Fi credentials locally
+without printing them, then build/export using the existing provisioning guide:
 
 ```sh
-cargo test -p device-grpc
-# Export WIFI_SSID and WIFI_PASSWORD locally, without printing them.
-cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc \
-  --release -p device-demo --features experimental-grpc
+cargo test
+FIRMWARE_VERSION=grpc-streams-2 cargo build --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --release -p device-demo --features experimental-grpc
+# Export an application-only image with espflash; keep credential-bearing images private.
 ```
 
-After a separately validated firmware deployment, a grpcurl client can use the
-proto files without reflection:
+After identity/layout checks and explicit activation through legacy OTA:
 
 ```sh
-grpcurl -plaintext -import-path protocol -proto management.proto \
-  -d '{"protocolVersion":1,"requestId":1,"status":{}}' \
-  BOARD_IP:7780 esp.experimental.Management/Status
+cargo run -p device-grpc --example concurrent -- BOARD_IP IMAGE.bin VERSION
+GRPC_STALL_LOGS=1 cargo run -p device-grpc --example concurrent -- BOARD_IP IMAGE.bin VERSION
+cargo run -p device-grpc --example cleanup -- BOARD_IP IMAGE.bin VERSION
 ```
 
-## Outstanding evaluation
+The examples check the known board identity before beginning an upload. The
+concurrent probe checks unique request-ID/offset log records to avoid counting
+retained records from an earlier upload as current progress. The stalled mode
+requires a dropped-history indication after resumption. Both use one Tonic
+channel while both RPC streams are active on the single-listener connection.
 
-Connect the RAM log buffer to bounded server streaming with wakeups,
-cancellation and slow-reader tests. Then integrate OTA through exclusive flash
-ownership, ordered sector-sized chunks, verification and explicit activation;
-never buffer a complete image. Demonstrate simultaneous upload and logs over
-one connection, with flow-control isolation, deadlines and disconnect tests.
-Measure runtime heap and task responsiveness on hardware before treating the
-transport as viable. TLS/authentication remain a separate step. This endpoint
-is an unauthenticated development experiment, and existing rollback and
-power-loss guarantees remain unproven.
+## Remaining limits
+
+TLS/authentication, full serial-log capture, gRPC activation, power interruption
+and Wi-Fi outage tests, worst-case heap/stack analysis and sensor-task latency
+instrumentation remain outstanding. Flash verification is synchronous and can
+pause the executor. The endpoint is an unauthenticated development experiment;
+automatic rollback and dependable power-loss recovery remain unverified.

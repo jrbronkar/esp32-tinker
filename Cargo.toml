@@ -19,6 +19,7 @@ members = [
 # Plain Cargo commands build/test the host tools and shared portable crates.
 # Firmware packages are selected explicitly with -p and the Xtensa target.
 default-members = [
+    "crates/device-grpc",
     "crates/ota-protocol",
     "crates/ota-core",
     "tools/espctl",
