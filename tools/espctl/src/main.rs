@@ -21,10 +21,25 @@ struct Cli {
 enum Commands {
     /// Query one board's identity, firmware version, and uptime
     Status(StatusArgs),
+    /// Discover ESP32 management services on the same IPv4 LAN
+    Discover(DiscoverArgs),
     /// Sample fresh connections and summarize host-observed query phases
     Profile(ProfileArgs),
     /// Upload unsigned development firmware; activation requires --commit
     Upload(UploadArgs),
+}
+
+#[derive(Args)]
+struct DiscoverArgs {
+    /// Restrict mDNS browsing to the interface with this local IPv4 address
+    #[arg(long)]
+    interface: Option<std::net::Ipv4Addr>,
+    /// Collection window in milliseconds
+    #[arg(long, default_value_t = espctl::discovery::DEFAULT_SCAN_MS, value_parser = clap::value_parser!(u64).range(espctl::discovery::MIN_SCAN_MS..=espctl::discovery::MAX_SCAN_MS))]
+    timeout_ms: u64,
+    /// Repeat discovery until interrupted; each view contains only that scan's responders
+    #[arg(long)]
+    watch: bool,
 }
 
 #[derive(Args)]
@@ -89,6 +104,7 @@ struct TargetArgs {
 fn run(command: Commands) -> Result<(), String> {
     match command {
         Commands::Status(args) => run_status(args),
+        Commands::Discover(args) => run_discover(args),
         Commands::Profile(args) => run_profile(args),
         Commands::Upload(args) => {
             let result = espctl::upload::upload(
@@ -116,6 +132,45 @@ fn run(command: Commands) -> Result<(), String> {
     }
 }
 
+fn run_discover(args: DiscoverArgs) -> Result<(), String> {
+    loop {
+        let result =
+            espctl::discovery::discover(args.interface, Duration::from_millis(args.timeout_ms))
+                .map_err(|e| format!("discovery: {e}"))?;
+        if result.devices.is_empty() {
+            println!(
+                "No devices responded in this scan (multicast filtering or LAN isolation can hide devices)."
+            );
+        } else {
+            println!(
+                "{:<34} {:<22} {:<22} {:<14} OTA",
+                "Device", "Address", "Firmware", "Advertised state"
+            );
+            for device in result.devices {
+                println!(
+                    "{:<34} {:<22} {:<22} {:<14} {}",
+                    device.device_id.escape_debug().to_string(),
+                    device.address,
+                    device.firmware.escape_debug().to_string(),
+                    device.management_state.escape_debug().to_string(),
+                    if device.ota_available { "yes" } else { "no" }
+                );
+            }
+        }
+        if result.limit_reached {
+            eprintln!(
+                "Discovery result limit reached ({} devices); additional replies omitted.",
+                espctl::discovery::MAX_DEVICES
+            );
+        }
+        if !args.watch {
+            return Ok(());
+        }
+        println!();
+        std::thread::sleep(espctl::discovery::WATCH_INTERVAL);
+    }
+}
+
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
@@ -140,6 +195,9 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     println!("Application: {}", status.application.escape_debug());
     println!("Firmware:    {}", status.firmware_version.escape_debug());
     println!("Protocol:    {}", ota_protocol::VERSION);
+    if !status.management_state.is_empty() {
+        println!("State:       {}", status.management_state.escape_debug());
+    }
     println!("Uptime:      {} ms", status.uptime_ms);
     println!("Latency:     {latency_ms:.2} ms (total query)");
     println!(
@@ -227,7 +285,9 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
     let mut failed = 0;
     let mut device_timings = Vec::new();
     if args.csv {
-        println!("sample,total_ms,connect_ms,retry_wait_ms,write_ms,first_byte_ms,read_ms,decode_validate_ms,refused_connects,device_read_us,device_decode_us,device_prepare_us");
+        println!(
+            "sample,total_ms,connect_ms,retry_wait_ms,write_ms,first_byte_ms,read_ms,decode_validate_ms,refused_connects,device_read_us,device_decode_us,device_prepare_us"
+        );
     }
     for index in 1..=args.samples {
         match espctl::query_status_profiled(address, Duration::from_millis(args.target.timeout_ms))
@@ -350,7 +410,10 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
             }
             println!("Encoding, enqueue, ACK and close: STATUS_TRACE serial logs.");
         }
-        println!("* Retry wait is included in connect. Refused connects: {}. Host timing, not device CPU time.", samples.iter().map(|t| t.refused_connects).sum::<u32>());
+        println!(
+            "* Retry wait is included in connect. Refused connects: {}. Host timing, not device CPU time.",
+            samples.iter().map(|t| t.refused_connects).sum::<u32>()
+        );
     }
     if failed > 0 {
         return Err(format!("{failed}/{} profile queries failed", args.samples));

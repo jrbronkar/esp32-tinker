@@ -2,7 +2,10 @@
 
 use embassy_executor::Spawner;
 pub mod boot;
+mod discovery;
 mod flash_target;
+mod mdns_filter;
+mod runtime;
 mod status;
 mod upload;
 

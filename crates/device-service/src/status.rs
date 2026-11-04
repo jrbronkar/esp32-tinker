@@ -7,6 +7,11 @@ use ota_protocol::{
     SESSION_TIMEOUT_SECS,
 };
 
+const TCP_BUFFER_BYTES: usize = 1024;
+const MAX_SESSION_DURATION: Duration = Duration::from_secs(180);
+const ABORT_FLUSH_TIMEOUT: Duration = Duration::from_millis(250);
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 #[embassy_executor::task]
 pub async fn server(
     stack: Stack<'static>,
@@ -16,11 +21,28 @@ pub async fn server(
     let mut identity = identity;
     let mut target = crate::flash_target::FlashTarget::new(flash);
     identity.ota_available = target.available;
+
     if let Err(error) = target.confirm_running() {
         println!("Running image confirmation failed: {error:?}");
     }
-    let mut rx = [0u8; 1024];
-    let mut tx = [0u8; 1024];
+    let runtime = crate::runtime::Runtime::new();
+    // Both futures borrow task-owned state. Joining keeps them concurrent without
+    // requiring a global runtime or a separate spawned task with a static borrow.
+    embassy_futures::join::join(
+        crate::discovery::serve(stack, &identity, &runtime),
+        serve(stack, &identity, &mut target, &runtime),
+    )
+    .await;
+}
+
+async fn serve(
+    stack: Stack<'static>,
+    identity: &StatusResponse,
+    target: &mut crate::flash_target::FlashTarget,
+    runtime: &crate::runtime::Runtime,
+) {
+    let mut rx = [0u8; TCP_BUFFER_BYTES];
+    let mut tx = [0u8; TCP_BUFFER_BYTES];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
     socket.set_timeout(Some(Duration::from_secs(SESSION_TIMEOUT_SECS)));
     println!("Protobuf device service on TCP port {PORT} (unauthenticated)");
@@ -34,8 +56,8 @@ pub async fn server(
             // Absolute session deadline, including reads, writes, and ACKs. A
             // trickle of bytes must not monopolize the sole listener forever.
             match with_timeout(
-                Duration::from_secs(180),
-                session(&mut socket, &identity, &mut trace, &mut target),
+                MAX_SESSION_DURATION,
+                session(&mut socket, identity, &mut trace, target, runtime),
             )
             .await
             {
@@ -53,9 +75,9 @@ pub async fn server(
             }
         }
         socket.abort();
-        let _ = with_timeout(Duration::from_millis(250), socket.flush()).await;
+        let _ = with_timeout(ABORT_FLUSH_TIMEOUT, socket.flush()).await;
         // Also yield/back off after accept errors, e.g. while DHCP is changing.
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(ACCEPT_RETRY_DELAY).await;
     }
 }
 
@@ -79,18 +101,22 @@ async fn session(
     identity: &StatusResponse,
     trace: &mut Trace,
     target: &mut crate::flash_target::FlashTarget,
+    runtime: &crate::runtime::Runtime,
 ) -> Result<(), ()> {
     trace.phase = "read";
     let accepted = Instant::now();
     trace.accepted_us = accepted.as_micros();
     let mut prefix = [0u8; 4];
-    with_timeout(Duration::from_secs(5), read_exact(socket, &mut prefix))
-        .await
-        .map_err(|_| ())??;
+    with_timeout(
+        Duration::from_secs(SESSION_TIMEOUT_SECS),
+        read_exact(socket, &mut prefix),
+    )
+    .await
+    .map_err(|_| ())??;
     let length = ota_protocol::frame_length(prefix).map_err(|_| ())?;
     let mut body = [0u8; MAX_FRAME];
     with_timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(SESSION_TIMEOUT_SECS),
         read_exact(socket, &mut body[..length]),
     )
     .await
@@ -112,7 +138,7 @@ async fn session(
             )
         )
     {
-        return crate::upload::session(socket, request, target).await;
+        return crate::upload::session(socket, request, target, runtime).await;
     }
     trace.request_id = request.request_id;
     trace.enabled =
@@ -120,6 +146,7 @@ async fn session(
     trace.phase = "prepare";
     let prepared = Instant::now();
     let mut current = identity.clone();
+    current.management_state = runtime.state().try_into().unwrap_or_default();
     current.uptime_ms = Instant::now().as_millis();
     let include_boot =
         matches!(&request.payload, Some(RequestPayload::Status(status)) if status.include_boot);

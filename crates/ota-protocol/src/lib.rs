@@ -13,7 +13,21 @@ pub use generated::ota_::{
 use micropb::{MessageDecode, MessageEncode, PbEncoder};
 
 pub const VERSION: u32 = 1;
+/// Decimal protocol version advertised in DNS-SD TXT records.
+pub const VERSION_TXT: &str = "1";
 pub const PORT: u16 = 7779;
+pub const SERVICE_TYPE: &str = "_espctl._tcp.local.";
+
+/// DNS-SD TXT keys shared by the advertiser and discovery client.
+pub mod txt {
+    pub const ID: &str = "id";
+    pub const APPLICATION: &str = "application";
+    pub const FIRMWARE: &str = "firmware";
+    pub const PROTOCOL: &str = "protocol";
+    pub const STATE: &str = "state";
+    pub const OTA: &str = "ota";
+}
+
 pub const MAX_FRAME: usize = 512;
 pub const SESSION_TIMEOUT_SECS: u64 = 5;
 pub type Frame = heapless::Vec<u8, MAX_FRAME>;
@@ -118,6 +132,7 @@ mod tests {
 
     #[test]
     fn request_matches_protobuf_wire_format() {
+        assert_eq!(VERSION_TXT.parse::<u32>(), Ok(VERSION));
         let bytes = encode(&status_request(1)).unwrap();
         assert_eq!(bytes.as_slice(), &[0x08, 1, 0x10, 1, 0x52, 0]);
         assert_eq!(decode::<Request>(&bytes).unwrap(), status_request(1));
@@ -136,6 +151,7 @@ mod tests {
     fn bounded_boot_inventory_and_timings_fit_a_control_frame() {
         let text = core::str::from_utf8(&[b'x'; 64]).unwrap();
         let mut current = status(text, text, text, u64::MAX).unwrap();
+        current.management_state = "abcdefghijklmnop".try_into().unwrap();
         current.set_timings(DeviceTimings {
             request_read_us: u64::MAX,
             decode_us: u64::MAX,

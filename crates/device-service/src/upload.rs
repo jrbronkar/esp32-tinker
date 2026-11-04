@@ -5,16 +5,19 @@ use crate::{
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{with_timeout, Duration};
 use ota_protocol::{
-    Request, RequestPayload as Op, Response, ResponsePayload, UploadAck, UploadPhase, VERSION,
+    Request, RequestPayload as Op, Response, ResponsePayload, UploadAck, UploadPhase,
+    SESSION_TIMEOUT_SECS, VERSION,
 };
 
 pub async fn session(
     socket: &mut TcpSocket<'_>,
     first: Request,
     target: &mut FlashTarget,
+    runtime: &crate::runtime::Runtime,
 ) -> Result<(), ()> {
+    let _guard = crate::runtime::UploadGuard::new(runtime);
     let mut last_id = first.request_id;
-    let result = transfer(socket, first, target, &mut last_id).await;
+    let result = transfer(socket, first, target, &mut last_id, runtime).await;
     if let Err(error) = result {
         // Best effort error, then abandon all in-memory transfer state.
         let message: heapless::String<64> = match error {
@@ -46,6 +49,7 @@ async fn transfer(
     first: Request,
     target: &mut FlashTarget,
     last_id: &mut u32,
+    runtime: &crate::runtime::Runtime,
 ) -> Result<(), ota_core::Error> {
     use ota_core::Error;
     if first.protocol_version != VERSION {
@@ -62,20 +66,27 @@ async fn transfer(
         begin.image_size,
         &begin.sha256,
     )?;
+    runtime.transition(crate::runtime::State::Receiving);
     let mut id = first.request_id;
     ack(socket, id, UploadPhase::Receiving, 0, target.offset).await?;
     loop {
         let mut prefix = [0; 4];
-        with_timeout(Duration::from_secs(5), read_exact(socket, &mut prefix))
-            .await
-            .map_err(|_| Error::State)?
-            .map_err(|_| Error::State)?;
+        with_timeout(
+            Duration::from_secs(SESSION_TIMEOUT_SECS),
+            read_exact(socket, &mut prefix),
+        )
+        .await
+        .map_err(|_| Error::State)?
+        .map_err(|_| Error::State)?;
         let n = ota_protocol::upload_frame_length(prefix).map_err(|_| Error::Bounds)?;
         let mut body = [0; ota_protocol::UPLOAD_FRAME];
-        with_timeout(Duration::from_secs(5), read_exact(socket, &mut body[..n]))
-            .await
-            .map_err(|_| Error::State)?
-            .map_err(|_| Error::State)?;
+        with_timeout(
+            Duration::from_secs(SESSION_TIMEOUT_SECS),
+            read_exact(socket, &mut body[..n]),
+        )
+        .await
+        .map_err(|_| Error::State)?
+        .map_err(|_| Error::State)?;
         let request = ota_protocol::decode_upload(&body[..n]).map_err(|_| Error::Metadata)?;
         if request.protocol_version != VERSION
             || request.request_id != id.checked_add(1).ok_or(Error::State)?
@@ -98,6 +109,7 @@ async fn transfer(
             }
             Op::Finish(_) => {
                 update.finish(target)?;
+                runtime.transition(crate::runtime::State::Verified);
                 ack(
                     socket,
                     id,
@@ -119,6 +131,7 @@ async fn transfer(
                 return Ok(());
             }
             Op::Commit(_) => {
+                runtime.transition(crate::runtime::State::Committing);
                 update.commit(target)?;
                 // Boot selection has changed even if the response is lost.
                 let _ = ack(
@@ -161,7 +174,7 @@ async fn send(socket: &mut TcpSocket<'_>, response: &Response) -> Result<(), ()>
     let bytes = ota_protocol::encode(response).map_err(|_| ())?;
     write_all(socket, &(bytes.len() as u32).to_be_bytes()).await?;
     write_all(socket, &bytes).await?;
-    with_timeout(Duration::from_secs(5), socket.flush())
+    with_timeout(Duration::from_secs(SESSION_TIMEOUT_SECS), socket.flush())
         .await
         .map_err(|_| ())?
         .map_err(|_| ())

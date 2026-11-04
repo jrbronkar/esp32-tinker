@@ -39,6 +39,8 @@ message StatusResponse {
   // Absent on older firmware or when timing was not requested.
   DeviceTimings timings = 7;
   BootInfo boot = 8;
+  // Empty on older firmware. Snapshot, not a health guarantee.
+  string management_state = 9;
 }
 // Device monotonic elapsed wall time, including executor preemption.
 // Encoding, enqueue, ACK, and close occur later and are logged over serial.

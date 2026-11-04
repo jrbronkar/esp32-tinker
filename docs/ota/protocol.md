@@ -335,3 +335,9 @@ is advertised through ota_available and requires the supported partition layout.
 The earlier development-only status-v1/upload-v2 split is superseded. The
 capability marker `rust-dev-ota-v1` rejects incompatible old images. See
 [validation status](testing.md#validation-status) for the current build.
+
+## LAN discovery and management state
+
+Discovery uses standard mDNS/DNS-SD records. StatusResponse field 9 adds a
+bounded management-state string; older firmware omits it. See [service discovery](../device-management/discovery.md) for PTR/SRV/A/
+TXT records and cache semantics. TCP framing/version are unchanged.
