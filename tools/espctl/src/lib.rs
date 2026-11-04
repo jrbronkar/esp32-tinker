@@ -196,7 +196,7 @@ pub fn read_logs(
     let request = Request {
         protocol_version: VERSION,
         request_id: 1,
-        payload: Some(ota_protocol::RequestPayload::ReadLogs(cursor)),
+        payload: Some(ota_protocol::RequestPayload::ReadLogs(cursor.clone())),
     };
     write_request(&mut stream, &request, deadline)?;
     let mut prefix = [0; 4];
@@ -211,7 +211,22 @@ pub fn read_logs(
         return Err(invalid("log response version or request ID mismatch"));
     }
     match response.payload {
-        Some(ResponsePayload::Logs(logs)) if logs.boot_id != 0 => Ok(logs),
+        Some(ResponsePayload::Logs(logs)) if logs.boot_id != 0 => {
+            if cursor.boot_id != 0 && logs.boot_id != cursor.boot_id && !logs.reset {
+                return Err(invalid("changed log boot ID without cursor reset"));
+            }
+            let mut previous = if logs.reset { 0 } else { cursor.after_sequence };
+            for entry in &logs.entries {
+                if entry.sequence <= previous {
+                    return Err(invalid("log entries are not strictly increasing"));
+                }
+                previous = entry.sequence;
+            }
+            if logs.next_sequence != previous {
+                return Err(invalid("log cursor does not match returned entries"));
+            }
+            Ok(logs)
+        }
         Some(ResponsePayload::Error(error)) => Err(invalid(format!(
             "device error: {}",
             error.message.escape_debug()

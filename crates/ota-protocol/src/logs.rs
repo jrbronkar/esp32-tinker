@@ -9,25 +9,31 @@ pub struct LogBuffer {
 }
 impl LogBuffer {
     pub fn new(boot_id: u64) -> Self {
-        assert!(boot_id != 0);
         Self {
-            boot_id,
+            boot_id: boot_id.max(1),
             next: 1,
             entries: heapless::Deque::new(),
         }
     }
     pub fn push(&mut self, uptime_ms: u64, severity: LogSeverity, message: &str) {
-        // Truncate at a UTF-8 boundary rather than dropping long messages.
-        let mut end = message.len().min(64);
-        while !message.is_char_boundary(end) {
-            end -= 1;
+        // Start a new cursor epoch before sequence overflow.
+        if self.next == u64::MAX {
+            self.boot_id = self.boot_id.wrapping_add(1).max(1);
+            self.next = 1;
+            self.entries.clear();
         }
-        let entry = LogEntry {
+        let mut entry = LogEntry {
             sequence: self.next,
             uptime_ms,
             severity,
-            message: message[..end].try_into().unwrap(),
+            ..Default::default()
         };
+        // Stop at the generated field's capacity, preserving UTF-8 boundaries.
+        for ch in message.chars() {
+            if entry.message.push(ch).is_err() {
+                break;
+            }
+        }
         self.next += 1;
         if self.entries.is_full() {
             self.entries.pop_front();
@@ -78,6 +84,20 @@ mod tests {
         });
         assert!(reset.reset);
         assert_eq!(reset.entries[0].sequence, 9);
+    }
+    #[test]
+    fn zero_boot_id_and_sequence_exhaustion_do_not_panic() {
+        let mut logs = LogBuffer::new(0);
+        assert_eq!(logs.read(&ReadLogsRequest::default()).boot_id, 1);
+        logs.next = u64::MAX;
+        logs.push(0, LogSeverity::Info, "new epoch");
+        let response = logs.read(&ReadLogsRequest {
+            boot_id: 1,
+            after_sequence: u64::MAX - 1,
+        });
+        assert!(response.reset);
+        assert_eq!(response.boot_id, 2);
+        assert_eq!(response.entries[0].sequence, 1);
     }
     #[test]
     fn worst_case_batch_fits_control_frame_and_utf8_is_preserved() {

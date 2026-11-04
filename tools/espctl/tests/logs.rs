@@ -11,7 +11,7 @@ use std::{
 
 #[test]
 fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
-    for variant in 0..5 {
+    for variant in 0..9 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -47,6 +47,36 @@ fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
                 4 => {
                     if let Some(ResponsePayload::Logs(ref mut logs)) = reply.payload {
                         logs.boot_id = 0;
+                    }
+                }
+                5..=8 => {
+                    if let Some(ResponsePayload::Logs(ref mut logs)) = reply.payload {
+                        match variant {
+                            5 => logs.boot_id = 9,       // Must signal a reset on reboot.
+                            6 => logs.next_sequence = 9, // No entries to advance over.
+                            7 => {
+                                for _ in 0..4 {
+                                    logs.entries
+                                        .push(ota_protocol::LogEntry {
+                                            sequence: 8,
+                                            ..Default::default()
+                                        })
+                                        .unwrap();
+                                }
+                            }
+                            8 => {
+                                for sequence in [10, 9] {
+                                    logs.entries
+                                        .push(ota_protocol::LogEntry {
+                                            sequence,
+                                            ..Default::default()
+                                        })
+                                        .unwrap();
+                                }
+                                logs.next_sequence = 9;
+                            }
+                            _ => unreachable!(),
+                        }
                     }
                 }
                 _ => {}
