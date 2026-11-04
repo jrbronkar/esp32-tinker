@@ -1,5 +1,6 @@
 //! Browse standard DNS-SD services; do not implement DNS or assume a management port.
 use mdns_sd::{IfKind, ResolvedService, ServiceDaemon, ServiceEvent};
+use ota_protocol::txt;
 use std::{
     collections::BTreeMap,
     io,
@@ -50,24 +51,24 @@ impl Collector {
         self.devices.retain(|(instance, _), _| instance != name);
         if info.ty_domain != ota_protocol::SERVICE_TYPE
             || info.get_port() == 0
-            || info.get_property_val_str("protocol") != Some(ota_protocol::VERSION_TXT)
+            || info.get_property_val_str(txt::PROTOCOL) != Some(ota_protocol::VERSION_TXT)
         {
             return;
         }
         let Some(id) = info
-            .get_property_val_str("id")
+            .get_property_val_str(txt::ID)
             .filter(|s| !s.is_empty() && s.len() <= MAX_ID_BYTES)
         else {
             return;
         };
         let Some(firmware) = info
-            .get_property_val_str("firmware")
+            .get_property_val_str(txt::FIRMWARE)
             .filter(|s| !s.is_empty() && s.len() <= MAX_FIRMWARE_BYTES)
         else {
             return;
         };
         let state = info
-            .get_property_val_str("state")
+            .get_property_val_str(txt::STATE)
             .filter(|s| s.len() <= MAX_STATE_BYTES)
             .unwrap_or("unknown");
         for ip in info.get_addresses_v4() {
@@ -86,7 +87,7 @@ impl Collector {
                     device_id: id.to_owned(),
                     firmware: firmware.to_owned(),
                     management_state: state.to_owned(),
-                    ota_available: info.get_property_val_str("ota") == Some("1"),
+                    ota_available: info.get_property_val_str(txt::OTA) == Some("1"),
                 },
             );
         }
@@ -153,11 +154,11 @@ mod tests {
             ip,
             port,
             [
-                ("id", "board"),
-                ("firmware", "test"),
-                ("protocol", "1"),
-                ("state", "verified"),
-                ("ota", "1"),
+                (txt::ID, "board"),
+                (txt::FIRMWARE, "test"),
+                (txt::PROTOCOL, "1"),
+                (txt::STATE, "verified"),
+                (txt::OTA, "1"),
             ]
             .as_slice(),
         )
@@ -209,7 +210,12 @@ mod tests {
             "device.local.",
             "192.0.2.1",
             123,
-            [("id", "board"), ("firmware", "test"), ("protocol", "2")].as_slice(),
+            [
+                (txt::ID, "board"),
+                (txt::FIRMWARE, "test"),
+                (txt::PROTOCOL, "2"),
+            ]
+            .as_slice(),
         )
         .unwrap()
         .as_resolved_service();

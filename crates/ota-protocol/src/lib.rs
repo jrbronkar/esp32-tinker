@@ -17,6 +17,17 @@ pub const VERSION: u32 = 1;
 pub const VERSION_TXT: &str = "1";
 pub const PORT: u16 = 7779;
 pub const SERVICE_TYPE: &str = "_espctl._tcp.local.";
+
+/// DNS-SD TXT keys shared by the advertiser and discovery client.
+pub mod txt {
+    pub const ID: &str = "id";
+    pub const APPLICATION: &str = "application";
+    pub const FIRMWARE: &str = "firmware";
+    pub const PROTOCOL: &str = "protocol";
+    pub const STATE: &str = "state";
+    pub const OTA: &str = "ota";
+}
+
 pub const MAX_FRAME: usize = 512;
 pub const SESSION_TIMEOUT_SECS: u64 = 5;
 pub type Frame = heapless::Vec<u8, MAX_FRAME>;

@@ -18,6 +18,7 @@ use embassy_net::{
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{ErrorKind, ErrorType};
+use ota_protocol::txt;
 
 // RFC 6762 requires link-local mDNS packets to use this IP hop limit.
 const MDNS_HOP_LIMIT: u8 = 255;
@@ -93,13 +94,13 @@ impl HostAnswers for Advertisement<'_> {
         E: From<MdnsError>,
     {
         let txt = [
-            ("id", self.identity.device_id.as_str()),
-            ("application", self.identity.application.as_str()),
-            ("firmware", self.identity.firmware_version.as_str()),
-            ("protocol", ota_protocol::VERSION_TXT),
-            ("state", self.runtime.state()),
+            (txt::ID, self.identity.device_id.as_str()),
+            (txt::APPLICATION, self.identity.application.as_str()),
+            (txt::FIRMWARE, self.identity.firmware_version.as_str()),
+            (txt::PROTOCOL, ota_protocol::VERSION_TXT),
+            (txt::STATE, self.runtime.state()),
             (
-                "ota",
+                txt::OTA,
                 if self.identity.ota_available {
                     "1"
                 } else {
