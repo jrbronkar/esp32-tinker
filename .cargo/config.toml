@@ -8,5 +8,8 @@ rustflags = [
   "-C", "link-arg=-Tlinkall.x",
 ]
 
-[unstable]
-build-std = ["core", "alloc"]
+# Rebuild core/alloc only for firmware commands, never for host tools or tests.
+[alias]
+esp-build = "build -Zbuild-std=core,alloc"
+esp-run = "run -Zbuild-std=core,alloc"
+esp-check = "check -Zbuild-std=core,alloc"

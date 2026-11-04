@@ -77,10 +77,15 @@ nix develop
 
 The flake pins the official esp-rs Rust compiler, Rust source component, and Espressif Xtensa linker. It does not install or modify a global Rust toolchain.
 
+Firmware commands use `cargo esp-build`, `cargo esp-run`, or `cargo esp-check`.
+These Cargo aliases rebuild `core` and `alloc` for the default ESP32 target.
+Host commands use ordinary Cargo with an explicit host `--target`; they can run
+from the repository root without inheriting firmware standard-library settings.
+
 ## Build
 
 ```sh
-cargo build --release -p hello-world
+cargo esp-build --release -p hello-world
 ```
 
 This produces an ELF firmware file at:
@@ -96,7 +101,7 @@ The ELF contains the program, ESP32-S3 memory layout, and an [ESP-IDF-compatible
 Connect the ESP32-S3 DevKitC-1 over its USB-to-UART port, then run:
 
 ```sh
-cargo run --release -p hello-world
+cargo esp-run --release -p hello-world
 ```
 
 Cargo knows how to run an ESP32-S3 binary because `.cargo/config.toml` defines this target runner:
@@ -106,7 +111,7 @@ Cargo knows how to run an ESP32-S3 binary because `.cargo/config.toml` defines t
 runner = "espflash flash --monitor"
 ```
 
-After compiling, `cargo run` effectively invokes:
+After compiling, `cargo esp-run` effectively invokes:
 
 ```sh
 espflash flash --monitor \
@@ -159,13 +164,13 @@ The LED pin depends on the [hardware revision](https://docs.espressif.com/projec
 This project defaults to the original/v1.0 board used here, so run:
 
 ```sh
-cargo run --release -p rgb-demo
+cargo esp-run --release -p rgb-demo
 ```
 
 To target a v1.1 board instead, disable the default feature and select v1.1:
 
 ```sh
-cargo run --release -p rgb-demo --no-default-features --features devkitc-v1_1
+cargo esp-run --release -p rgb-demo --no-default-features --features devkitc-v1_1
 ```
 
 The v1.1 [official schematic](https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-DevKitC-1_V1.1_20221130.pdf) identifies the onboard part as an SK68XXMINI-HS addressable LED. The demo uses the ESP32-S3 [RMT peripheral](https://docs.espressif.com/projects/rust/esp-hal/latest/esp32s3/esp_hal/rmt/) to generate its timed one-wire signal. It intentionally uses low brightness, and no external wiring is required.
@@ -196,7 +201,7 @@ From the repository root:
 ```sh
 nix develop
 # Export WIFI_SSID and WIFI_PASSWORD in your local environment before building.
-cargo build --locked --release -p device-demo
+cargo esp-build --locked --release -p device-demo
 ```
 
 Once the device firmware is installed and its Wi-Fi address is known:

@@ -31,7 +31,7 @@ The backup contains embedded credentials, so it is not a shared deliverable.
 In nix develop with Wi-Fi variables exported:
 
 ```sh
-FIRMWARE_VERSION=ota-a cargo build --locked --release -p device-demo --features dev-ota
+FIRMWARE_VERSION=ota-a cargo esp-build --locked --release -p device-demo --features dev-ota
 espflash flash --port /dev/cu.usbmodem5C4C1816511 --flash-size 16mb \
   --partition-table partitions/ota-16mb.csv --target-app-partition ota_0 \
   --erase-parts otadata target/xtensa-esp32s3-none-elf/release/device-demo
@@ -45,7 +45,7 @@ Back up a different board and inspect its data/layout before migrating it.
 ## Build and export the next release
 
 ```sh
-FIRMWARE_VERSION=ota-next cargo build --locked --release -p device-demo --features dev-ota
+FIRMWARE_VERSION=ota-next cargo esp-build --locked --release -p device-demo --features dev-ota
 mkdir -p target/ota
 espflash save-image --chip esp32s3 --flash-size 16mb \
   --partition-table partitions/ota-16mb.csv --target-app-partition ota_0 \

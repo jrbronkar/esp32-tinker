@@ -14,8 +14,7 @@ nix develop
 ./tools/espctl/run.sh status --host 192.168.1.123
 ```
 
-`run.sh` selects the host target and runs Cargo outside the firmware configuration
-folder. It preserves the development shell and builds from this workspace's lock
+`run.sh` selects the host target and runs Cargo from the repository root. It preserves the development shell and builds from this workspace's lock
 file. For repeated queries, run `target/aarch64-apple-darwin/debug/espctl` directly
 on the Mac after the first build.
 
@@ -90,7 +89,7 @@ phases; do not add all durations together or treat them as pure CPU time.
 Build and flash the instrumented version with your exported Wi-Fi settings:
 
 ```sh
-FIRMWARE_VERSION=status-profile-v1 cargo build --locked --release -p device-demo
+FIRMWARE_VERSION=status-profile-v1 cargo esp-build --locked --release -p device-demo
 ```
 
 Flash/monitor as below, keep serial open, then run `profile --samples 10
@@ -116,7 +115,7 @@ can stay on disk, git-ignored, but plain Cargo does not read it.
 From the repository root in the development shell:
 
 ```sh
-cargo build --locked --release -p device-demo
+cargo esp-build --locked --release -p device-demo
 espflash flash --monitor --port /dev/cu.usbmodem5C4C1816511 \
   target/xtensa-esp32s3-none-elf/release/device-demo
 ```
@@ -147,12 +146,12 @@ an existing network stack, so it will not require another radio or duplicate DHC
 
 The host-only mock uses the same Protobuf contract and handler. It does not emulate
 Wi-Fi, the Embassy listener, flash, or sensors. In a development shell, from the
-repository root, build and run it outside the firmware Cargo configuration:
+repository root, build and run it with the host target:
 
 ```sh
-repo="$PWD"
-(cd /tmp && cargo run --locked --manifest-path "$repo/Cargo.toml" \
-  -p espctl --target aarch64-apple-darwin --example mock-device -- 127.0.0.1:7779)
+host=$(rustc -vV | sed -n 's/^host: //p')
+cargo run --locked \
+  -p espctl --target "$host" --example mock-device -- 127.0.0.1:7779
 ```
 
 In a second terminal:
@@ -166,16 +165,16 @@ Stop the mock with Ctrl+C. The response is explicitly identified as `mock-esp32s
 Run host protocol/client tests from the repository root in the development shell:
 
 ```sh
-repo="$PWD"
-(cd /tmp && cargo test --locked --manifest-path "$repo/Cargo.toml" \
-  -p ota-protocol -p espctl --target aarch64-apple-darwin)
+host=$(rustc -vV | sed -n 's/^host: //p')
+cargo test --locked \
+  -p ota-core -p ota-protocol -p espctl --target "$host"
 ```
 
 Cross-compile firmware without a board using nonsecret build-only placeholders:
 
 ```sh
 WIFI_SSID=build-check WIFI_PASSWORD=build-check \
-  cargo build --locked --release -p device-demo
+  cargo esp-build --locked --release -p device-demo
 ```
 
 Rebuild with real network settings before flashing. Placeholder builds cannot

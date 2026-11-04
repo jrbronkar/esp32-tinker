@@ -10,14 +10,13 @@ and rollback are also pending implementation/configuration.
 Inside `nix develop`, from the repo root:
 
 ```sh
-repo="$PWD"
 host=$(rustc -vV | sed -n 's/^host: //p')
-(cd "${TMPDIR:-/tmp}" && cargo test --locked --manifest-path "$repo/Cargo.toml" \
-  --target "$host" -p ota-core -p ota-protocol -p espctl)
+cargo test --locked \
+  --target "$host" -p ota-core -p ota-protocol -p espctl
 ```
 
-Run outside the repository directory to avoid inheriting the firmware-only
-Cargo target/build-std configuration. Tests require no board or credentials.
+Run from the repository root. The explicit host target selects the Mac; firmware
+`build-std` settings are confined to the `esp-*` aliases. Tests require no board or credentials.
 They cover bounded protocol decoding, fragmented/truncated TCP messages, bad
 correlation and phases, request deadlines, explicit activation, lost commit reply,
 ordered chunks, image corruption and injected storage read/write/commit failures.
@@ -30,12 +29,12 @@ application-only candidate binary with a distinct embedded version, following
 [the provisioning guide](partitions/README.md). Keep the known-good image and
 partition CSV for USB recovery. Record a baseline with `espctl status --boot`.
 
-From `nix develop`, set the repository and host as above, then run one case:
+From `nix develop`, select the host as above, then run one case:
 
 ```sh
-(cd "${TMPDIR:-/tmp}" && cargo run --locked --manifest-path "$repo/Cargo.toml" \
+cargo run --locked \
   --target "$host" -p espctl --example upload-fault-probe -- \
-  <board-ip> <absolute-candidate.bin> <embedded-version> disconnect)
+  <board-ip> <absolute-candidate.bin> <embedded-version> disconnect
 ```
 
 The probe connects directly to port 7779. It validates the candidate locally,
