@@ -1293,11 +1293,17 @@ dependencies = [
 name = "espctl"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "clap",
+ "device-grpc",
  "edge-mdns",
  "mdns-sd",
  "ota-core",
  "ota-protocol",
+ "protolink",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

@@ -1,5 +1,11 @@
 # Device management API: Protobuf over TCP
 
+Current transport update: normal uploads now use gRPC/HTTP2 on TCP 7780,
+including optional concurrent logs and explicit Commit/reboot. See the
+[current Protolink implementation and validation](../device-management/protolink.md)
+and [upload commands](provisioning.md). The legacy wire/harness descriptions below
+remain applicable only to the explicit `--legacy` recovery/migration path.
+
 Status: status and unsigned development uploads are implemented. Both the
 earlier split-version build and unified version 1 have real ESP32-S3 evidence;
 see the testing guide for the exact cases and remaining gaps.

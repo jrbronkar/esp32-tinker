@@ -17,4 +17,5 @@ esp-println = { version = "0.17.0", features = ["esp32s3"] }
 esp-rtos = { version = "0.3.0", features = ["embassy", "esp-radio", "esp32s3"] }
 
 [features]
+default = ["experimental-grpc"]
 experimental-grpc = ["device-service/experimental-grpc"]

@@ -97,6 +97,22 @@ impl HostAnswers for Advertisement<'_> {
             (txt::APPLICATION, self.identity.application.as_str()),
             (txt::FIRMWARE, self.identity.firmware_version.as_str()),
             (txt::PROTOCOL, ota_protocol::VERSION_TXT),
+            (
+                txt::UPLOAD,
+                if cfg!(feature = "experimental-grpc") {
+                    "grpc"
+                } else {
+                    "legacy"
+                },
+            ),
+            (
+                txt::GRPC_PORT,
+                if cfg!(feature = "experimental-grpc") {
+                    "7780"
+                } else {
+                    "0"
+                },
+            ),
             (txt::STATE, self.runtime.state()),
             (
                 txt::OTA,

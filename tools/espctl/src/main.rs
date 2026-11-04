@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     version,
     about = "Manage ESP32 status and development firmware updates",
-    long_about = "Protobuf device status, profiling, and unsigned development uploads over plain TCP. Device identity is not authenticated. Uploads write the inactive slot; activation requires --commit."
+    long_about = "Device status and profiling, plus unsigned development uploads over gRPC/HTTP2. Device identity is not authenticated. Uploads write the inactive slot; activation requires --commit."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -84,8 +84,14 @@ struct ProfileArgs {
 
 #[derive(Args)]
 struct UploadArgs {
+    /// Use the legacy OTA recovery/migration transport instead of gRPC
+    #[arg(long)]
+    legacy: bool,
+    /// Stream management logs over the same HTTP/2 connection during upload
+    #[arg(long, conflicts_with = "legacy")]
+    logs: bool,
     #[command(flatten)]
-    target: TargetArgs,
+    target: UploadTargetArgs,
     /// Application-only .bin exported by espflash (not ELF or a merged image)
     #[arg(long)]
     image: std::path::PathBuf,
@@ -95,6 +101,18 @@ struct UploadArgs {
     /// Activate the verified image and reboot; otherwise leave the current image selected
     #[arg(long)]
     commit: bool,
+}
+
+#[derive(Args)]
+struct UploadTargetArgs {
+    #[arg(long, value_name = "IP")]
+    host: IpAddr,
+    /// Upload port (default: gRPC 7780; --legacy uses 7779)
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    port: Option<u16>,
+    /// Per-operation timeout in milliseconds (180-second total upload deadline)
+    #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..=60000))]
+    timeout_ms: u64,
 }
 
 #[derive(Args)]
@@ -119,13 +137,60 @@ fn run(command: Commands) -> Result<(), String> {
         Commands::Discover(args) => run_discover(args),
         Commands::Profile(args) => run_profile(args),
         Commands::Upload(args) => {
-            let result = espctl::upload::upload(
-                SocketAddr::new(args.target.host, args.target.port),
-                Duration::from_millis(args.target.timeout_ms),
-                &args.image,
-                &args.firmware_version,
-                args.commit,
-            )
+            let address = SocketAddr::new(
+                args.target.host,
+                args.target.port.unwrap_or(if args.legacy {
+                    ota_protocol::PORT
+                } else {
+                    device_grpc::PORT
+                }),
+            );
+            let timeout = Duration::from_millis(args.target.timeout_ms);
+            let result = if args.legacy {
+                espctl::legacy_upload::upload(
+                    address,
+                    timeout,
+                    &args.image,
+                    &args.firmware_version,
+                    args.commit,
+                )
+            } else if args.logs {
+                espctl::upload::upload_with_logs(
+                    address,
+                    timeout,
+                    &args.image,
+                    &args.firmware_version,
+                    args.commit,
+                    &mut |batch| match batch {
+                        Ok(batch) => {
+                            if batch.reset {
+                                eprintln!("Log cursor reset.");
+                            }
+                            if batch.dropped {
+                                eprintln!("Older log entries were overwritten.");
+                            }
+                            for entry in batch.entries {
+                                eprintln!(
+                                    "{} {:>10} {:?} {}",
+                                    entry.sequence,
+                                    entry.uptime_ms,
+                                    entry.severity,
+                                    entry.message.escape_debug()
+                                );
+                            }
+                        }
+                        Err(error) => eprintln!("Log stream unavailable: {}", error.escape_debug()),
+                    },
+                )
+            } else {
+                espctl::upload::upload(
+                    address,
+                    timeout,
+                    &args.image,
+                    &args.firmware_version,
+                    args.commit,
+                )
+            }
             .map_err(|e| e.to_string())?;
             println!(
                 "Verified {} bytes in slot at 0x{:x}",
@@ -155,14 +220,18 @@ fn run_discover(args: DiscoverArgs) -> Result<(), String> {
             );
         } else {
             println!(
-                "{:<34} {:<22} {:<22} {:<14} OTA",
-                "Device", "Address", "Firmware", "Advertised state"
+                "{:<34} {:<22} {:<22} {:<22} {:<14} OTA",
+                "Device", "Status address", "Upload (gRPC)", "Firmware", "Advertised state"
             );
             for device in result.devices {
                 println!(
-                    "{:<34} {:<22} {:<22} {:<14} {}",
+                    "{:<34} {:<22} {:<22} {:<22} {:<14} {}",
                     device.device_id.escape_debug().to_string(),
                     device.address,
+                    device
+                        .upload_address
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "-".into()),
                     device.firmware.escape_debug().to_string(),
                     device.management_state.escape_debug().to_string(),
                     if device.ota_available { "yes" } else { "no" }
@@ -445,7 +514,7 @@ fn main() -> ExitCode {
 
 fn run_logs(args: LogsArgs) -> Result<(), String> {
     if args.follow {
-        eprintln!("Log polling pauses during OTA uploads and resumes when the device is available.");
+        eprintln!("Following management logs; reconnecting after device resets or network loss.");
     }
     let mut cursor = ota_protocol::ReadLogsRequest::default();
     loop {

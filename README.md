@@ -189,16 +189,21 @@ The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telem
 
 ## Device management and development OTA
 
-The sensor-free `device-demo` firmware hosts a device-management service on TCP
-port **7779** and advertises `_espctl._tcp.local.` through mDNS/DNS-SD. Find boards
-with `cargo run -p espctl -- discover`. The Mac initiates requests with `espctl`; no cloud service or
-separate backend is required. The API uses **Protobuf over length-prefixed TCP**.
-gRPC (client, server, or gateway) and HTTP/2 integration are explicitly out of
-scope. Use `espctl` rather than `curl`.
+The sensor-free `device-demo` firmware serves gRPC management and OTA over
+HTTP/2 on TCP **7780**, enabled in the default build. The existing Protobuf TCP
+status/log service remains on **7779**. DNS-SD advertises `_espctl._tcp.local.`;
+`espctl discover` displays the status and gRPC upload endpoints. The Mac connects
+directly to the board without a cloud service or separate backend.
 
-The firmware exposes read-only status: device identity, firmware version, uptime,
-OTA availability, and optional boot inventory and timing diagnostics. Uploads
-are included in every `device-demo` build and require the supported partition layout.
+`espctl upload` uses gRPC by default. Add `--logs` to stream management logs over
+the same HTTP/2 connection during transfer, and `--commit` to activate the
+verified image and reboot. Without `--commit`, the current application remains
+selected. `--legacy` explicitly selects the retained OTA recovery/migration
+transport on 7779; it is never an automatic fallback or retry.
+
+The firmware exposes device identity, version, uptime, OTA availability and boot
+inventory. Uploads require the supported partition layout. USB/BOOT/RESET remains
+the independent recovery method when network firmware cannot run.
 
 From the repository root:
 
@@ -233,7 +238,8 @@ remain the recovery path.
 | `crates/device-demo` | Standalone management firmware without sensors or telemetry |
 | `crates/wifi-network` | Shared Wi-Fi connection, reconnection, DHCP, and network runner |
 | `crates/wifi-telemetry` | UDP telemetry sender attached to an existing network stack |
-| `crates/device-service` | TCP status/upload handling, partition inspection, flash access, and boot selection |
+| `crates/device-service` | gRPC/TCP listeners, partition inspection, flash access, reboot and boot selection |
+| `crates/device-grpc` | Bounded HTTP/2/gRPC status, upload and streaming-log handlers |
 | `crates/ota-core` | Portable update validation and transfer rules |
 | `crates/ota-protocol`, `protocol/ota.proto` | Shared fixed-capacity micropb messages and framing helpers |
 | `tools/espctl` | Clap-based status, profiling, and upload CLI |

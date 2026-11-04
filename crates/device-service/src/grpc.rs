@@ -1,4 +1,4 @@
-//! Opt-in cleartext HTTP/2 status experiment; legacy OTA stays available.
+//! Default HTTP/2/gRPC management and OTA; explicit legacy recovery remains available.
 use core::time::Duration as CoreDuration;
 use device_grpc::protolink;
 use device_grpc::{Environment, StreamingManagement};
@@ -39,16 +39,31 @@ pub async fn serve(
                 target_offset,
                 DeviceEnvironment { identity, runtime },
             );
-            let (reader, writer) = socket.split();
-            let _ = with_timeout(
-                Duration::from_secs(180),
-                protolink::server_split(reader, writer)
-                    .with_config(device_grpc::config())
-                    .with_deadline_timer(EmbassyClock)
-                    .build()
-                    .serve(&mut handler),
-            )
-            .await;
+            {
+                let (reader, writer) = socket.split();
+                let connection = with_timeout(
+                    Duration::from_secs(180),
+                    protolink::server_split(reader, writer)
+                        .with_config(device_grpc::config())
+                        .with_deadline_timer(EmbassyClock)
+                        .build()
+                        .serve(&mut handler),
+                );
+                let reboot = async {
+                    runtime.reboot.wait().await;
+                    // Give the driver a bounded opportunity to send the commit ACK and
+                    // trailers even when another RPC (such as Logs) remains open.
+                    Timer::after_secs(2).await;
+                };
+                embassy_futures::select::select(connection, reboot).await;
+            }
+            drop(handler);
+            if runtime.activation_pending.get() {
+                // Flush bytes already handed to TCP before reset. This is best
+                // effort: a lost ACK still leaves commit outcome uncertain.
+                let _ = with_timeout(Duration::from_millis(500), socket.flush()).await;
+                esp_hal::system::software_reset();
+            }
         }
         let stats = esp_alloc::HEAP.stats();
         use core::fmt::Write;
@@ -86,7 +101,15 @@ impl Environment for DeviceEnvironment<'_> {
         *self.runtime.log_waker.borrow_mut() = Some(cx.waker().clone());
         self.runtime.logs.borrow().read(cursor)
     }
+    fn activation_pending(&self) -> bool {
+        self.runtime.activation_pending.get()
+    }
     fn event(&self, message: &str) {
+        if message == "gRPC activation pending" {
+            self.runtime.activation_pending.set(true);
+            self.runtime.transition(crate::runtime::State::Committing);
+            self.runtime.reboot.signal(());
+        }
         if message == "gRPC upload receiving" {
             self.runtime.transition(crate::runtime::State::Receiving);
         }

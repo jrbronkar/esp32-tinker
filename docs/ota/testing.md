@@ -1,5 +1,11 @@
 # OTA validation and manual fault harness
 
+Current transport update: normal uploads now use gRPC/HTTP2 on TCP 7780,
+including optional concurrent logs and explicit Commit/reboot. See the
+[current Protolink implementation and validation](../device-management/protolink.md)
+and [upload commands](provisioning.md). The legacy wire/harness descriptions below
+remain applicable only to the explicit `--legacy` recovery/migration path.
+
 This is a test plan, not a claim that every case has passed. Use a development
 board with USB recovery available. Authentication and TLS are not implemented;
 they cannot receive a passing security test result yet. Sensor-app integration

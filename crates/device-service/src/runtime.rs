@@ -13,6 +13,8 @@ pub enum State {
 pub struct Runtime {
     // Both consumers are joined futures within the same executor task.
     state: Cell<State>,
+    pub activation_pending: Cell<bool>,
+    pub reboot: Signal<CriticalSectionRawMutex, ()>,
     pub log_waker: core::cell::RefCell<Option<core::task::Waker>>,
     pub logs: core::cell::RefCell<ota_protocol::logs::LogBuffer>,
     pub announce: Signal<CriticalSectionRawMutex, ()>,
@@ -23,6 +25,8 @@ impl Runtime {
         let boot_id = ((rng.random() as u64) << 32 | rng.random() as u64).max(1);
         Self {
             state: Cell::new(State::Idle),
+            activation_pending: Cell::new(false),
+            reboot: Signal::new(),
             log_waker: core::cell::RefCell::new(None),
             logs: core::cell::RefCell::new(ota_protocol::logs::LogBuffer::new(boot_id)),
             announce: Signal::new(),

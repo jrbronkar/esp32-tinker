@@ -1,5 +1,8 @@
 //! Blocking host client, independent of CLI presentation and reusable by a future GUI.
 pub mod discovery;
+mod grpc_codec;
+/// Explicit legacy recovery/migration transport; normal uploads use gRPC.
+pub mod legacy_upload;
 use ota_protocol::{Request, Response, ResponsePayload, StatusResponse, MAX_FRAME, VERSION};
 use std::{
     io::{self, Read, Write},

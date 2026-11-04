@@ -1,5 +1,11 @@
 # OTA design
 
+Current transport update: normal uploads now use gRPC/HTTP2 on TCP 7780,
+including optional concurrent logs and explicit Commit/reboot. See the
+[current Protolink implementation and validation](../device-management/protolink.md)
+and [upload commands](provisioning.md). The legacy wire/harness descriptions below
+remain applicable only to the explicit `--legacy` recovery/migration path.
+
 The development OTA path is implemented for ESP32-S3 in bare-metal Rust. Every
 `device-demo` build includes status and unsigned updates over Protobuf/TCP.
 Authentication, reliable rollback, and power-loss recovery remain unfinished.

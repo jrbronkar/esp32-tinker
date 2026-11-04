@@ -27,6 +27,8 @@ pub mod txt {
     pub const PROTOCOL: &str = "protocol";
     pub const STATE: &str = "state";
     pub const OTA: &str = "ota";
+    pub const UPLOAD: &str = "upload";
+    pub const GRPC_PORT: &str = "grpc_port";
 }
 
 pub const MAX_FRAME: usize = 512;

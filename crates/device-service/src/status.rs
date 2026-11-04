@@ -163,6 +163,9 @@ async fn session(
             )
         )
     {
+        if runtime.activation_pending.get() {
+            return Err(());
+        }
         let mut target = target.try_borrow_mut().map_err(|_| ())?;
         return crate::upload::session(socket, request, &mut target, runtime).await;
     }

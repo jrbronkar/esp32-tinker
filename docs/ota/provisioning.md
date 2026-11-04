@@ -61,6 +61,15 @@ The image is built with your Wi-Fi credentials: keep it private. Nothing loads
 
 ## Upload, verify, then optionally activate
 
+Uploads use gRPC/HTTP2 on port **7780** by default, including the status preflight
+on that same connection. Add `--logs` for concurrent server-push logs. `--port`
+overrides the gRPC endpoint. The separate status/profiling commands still use
+7779. `--legacy` explicitly selects the retained legacy OTA transport on 7779;
+there is no automatic protocol fallback and no replay after an operation fails.
+
+Boards running pre-commit Protolink firmware need one `upload --legacy --commit`
+migration (or a normal USB update) before gRPC activation can be used.
+
 ```sh
 cargo run -p espctl -- upload --host <board-ip> \
   --image target/ota/ota-next.bin --firmware-version ota-next
@@ -74,7 +83,7 @@ To upload and activate in the same session:
 
 ```sh
 cargo run -p espctl -- upload --host <board-ip> \
-  --image target/ota/ota-next.bin --firmware-version ota-next --commit
+  --image target/ota/ota-next.bin --firmware-version ota-next --logs --commit
 ```
 
 Reconnect after reboot and verify version/slot:
@@ -82,6 +91,12 @@ Reconnect after reboot and verify version/slot:
 ```sh
 cargo run -p espctl -- status --host <board-ip> --boot
 ```
+
+Commit is accepted only after flash readback/image verification in the same
+stream. Once activation begins, further flash writes are blocked until reset.
+The server allows up to two seconds for the ACK/trailers, then attempts a bounded
+TCP flush and reboots; disconnects also trigger the pending reboot. Delivery
+is best effort, so a lost ACK cannot prove activation failed.
 
 No request is replayed once sent. If commit's response is lost, the outcome is
 uncertain: check the running version before retrying. Wi-Fi reconnection/DHCP may

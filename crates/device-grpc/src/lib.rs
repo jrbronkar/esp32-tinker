@@ -64,6 +64,9 @@ pub trait Environment {
     fn status(&self) -> StatusResponse;
     fn logs(&self, cursor: &ReadLogsRequest, cx: &mut Context<'_>) -> ReadLogsResponse;
     fn event(&self, message: &str);
+    fn activation_pending(&self) -> bool {
+        false
+    }
 }
 struct Subscription {
     id: CallId,
@@ -78,6 +81,7 @@ struct Upload<'a, T> {
     update: ota_core::Update,
     pending: Option<Vec<u8>>,
     ended: bool,
+    verified: bool,
 }
 /// One connection, bounded subscription state and a single exclusive flash lease.
 /// The same RefCell is used by the legacy OTA listener, so competing transports
@@ -85,6 +89,7 @@ struct Upload<'a, T> {
 pub struct StreamingManagement<'a, T: ota_core::Target, E: Environment> {
     target: &'a RefCell<T>,
     target_offset: u32,
+    activation_pending: bool,
     env: E,
     upload: Option<Upload<'a, T>>,
     subscriptions: [Option<Subscription>; 2],
@@ -94,13 +99,14 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
         Self {
             target,
             target_offset,
+            activation_pending: false,
             env,
             upload: None,
             subscriptions: [None, None],
         }
     }
     fn release(&mut self) {
-        if self.upload.take().is_some() {
+        if self.upload.take().is_some() && !self.activation_pending {
             self.env.event("gRPC upload released");
         }
     }
@@ -126,6 +132,11 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                 first: true,
             });
             return Ok(());
+        }
+        if self.activation_pending || self.env.activation_pending() {
+            return Err(Status::failed_precondition(
+                "activation pending; reconnect after reboot",
+            ));
         }
         let op = request
             .payload
@@ -161,6 +172,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                         .update
                         .finish(&mut *upload.target)
                         .map_err(upload_error)?;
+                    upload.verified = true;
                     self.env.event("gRPC image verified");
                     UploadPhase::Verified
                 }
@@ -168,9 +180,23 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                     upload.ended = true;
                     UploadPhase::Aborted
                 }
-                // Activation is deliberately separate from transport evaluation.
                 RequestPayload::Commit(_) => {
-                    return Err(Status::failed_precondition("activate using legacy OTA"));
+                    if !upload.verified {
+                        return Err(Status::failed_precondition(
+                            "image must be verified before commit",
+                        ));
+                    }
+                    // A failed metadata operation or lost ACK can still leave boot
+                    // selection changed. Block all further writes until reboot.
+                    self.activation_pending = true;
+                    self.env.event("gRPC activation pending");
+                    upload
+                        .update
+                        .commit(&mut *upload.target)
+                        .map_err(upload_error)?;
+                    upload.ended = true;
+                    self.env.event("gRPC upload committed");
+                    UploadPhase::Committed
                 }
                 _ => return Err(Status::invalid_argument("unexpected upload operation")),
             };
@@ -199,6 +225,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                 update,
                 pending: None,
                 ended: false,
+                verified: false,
             });
             self.env.event("gRPC upload receiving");
             (UploadPhase::Receiving, 0)

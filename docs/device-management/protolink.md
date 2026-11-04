@@ -1,8 +1,10 @@
 # Experimental concurrent Protolink transport
 
-The opt-in `experimental-grpc` feature on `device-demo` serves cleartext HTTP/2
+The default `device-demo` build enables the `experimental-grpc` feature and serves cleartext HTTP/2
 on TCP 7780, alongside the legacy management/OTA listener on 7779. Discovery
-continues to advertise the legacy endpoint. Protolink is pinned to
+advertises the status endpoint plus `upload=grpc` and `grpc_port=7780`.
+The CLI displays both addresses. The original feature/package names remain
+stable for compatibility; gRPC is now the normal upload transport. Protolink is pinned to
 `62cc2c87a687ba65fc6885e7c9691cefacf2d064`; Cargo.lock pins zerodds HTTP/2 and
 HPACK to 1.0.0-rc.7. The raw Handler keeps existing micropb 0.7 protobuf bodies
 independent of Protolink's optional micropb 0.6 codec.
@@ -18,10 +20,14 @@ prefix. Protolink supplies HTTP/2 and gRPC framing/status trailers.
   four records. A first snapshot is always sent; later batches arrive when
   records are available, including reset/overwritten-history indications.
 - `Upload`: bidirectional streaming. Send Begin, ordered sector-sized chunks,
-  Finish, then Abort or half-close. Wait for the matching ACK before sending
+  Finish, then Commit to activate, or Abort/half-close to leave selection unchanged. Wait for the matching ACK before sending
   each operation. Finish hashes and validates the image read back from flash.
   Abort/half-close releases the lease without changing boot selection. Commit
-  is rejected; activation still requires the legacy explicit OTA path.
+  requires verification, latches activation pending before the metadata write,
+  blocks further writes and returns a Committed ACK. The firmware allows a
+  bounded two-second response grace period, then flushes TCP best effort and
+  resets; a disconnect during activation also resets. Lost ACKs are uncertain
+  outcomes, and the CLI never replays Commit.
 
 One task owns the flash target behind a RefCell. Either transport borrows it
 exclusively for the upload's lifetime; competing uploads fail before writing.
@@ -44,8 +50,9 @@ absolute lifetime. Clients must reconnect after expiry or network loss.
 
 ## Automated tests
 
-`cargo test` includes `device-grpc` by default. The existing 48 tests plus five
-Tonic transport tests pass (53 total). The new tests use independent Tonic/h2
+`cargo test` includes `device-grpc` by default. The suite includes 61 tests: the existing portable/status tests, five
+Handler transport tests, eight gRPC CLI upload tests and three legacy-upload
+fallback tests. The new tests use independent Tonic/h2
 clients against the actual Handler over TCP; each fixture accepts exactly ONE
 connection, so requests cannot silently move to separate sockets.
 
@@ -60,6 +67,12 @@ Coverage:
   flash ownership, invalid chunk order and teardown during an active upload.
 - Competing RPC upload streams cannot release each other's lease; log deadlines
   produce DEADLINE_EXCEEDED trailers.
+- CLI upload/commit and concurrent logs share a connection. Malformed log batches
+  cannot erase commit uncertainty. Commit before Finish is rejected, subsequent
+  writes are blocked after activation, and lost ACK/storage-failure cases are
+  reported as uncertain without replay. Real TCP output cuts immediately before
+  and after Commit distinguish unselected images from uncertain activation.
+  Explicit legacy fallback remains tested.
 
 Both legacy and experimental release firmware builds pass. Formatting and
 patch whitespace checks pass. Clippy was unavailable: the default installation
@@ -102,6 +115,32 @@ Final allocator estimates were 47920 bytes used, a 71872-byte boot-wide peak
 and 54480 currently free. The observed peak leaves 30528 bytes of the configured
 heap; this is still not a worst-case memory guarantee.
 
+## Current activation path
+
+`espctl upload --host BOARD_IP --image IMAGE.bin --firmware-version VERSION`
+uses gRPC on 7780. `--logs` consumes server-streamed management logs alongside the
+bidirectional upload; `--commit` activates in the same verified session. A valid
+Committed ACK is authoritative even if reset truncates the stream's trailers.
+The CLI validates request IDs, protocol versions, phases, offsets and target
+partition against boot inventory before reporting success. Every operation has
+a deadline; the complete upload has a 180-second limit.
+
+`--legacy` is an explicit recovery/migration option on 7779, mutually exclusive
+with `--logs`. Legacy OTA is retained; it is never tried automatically following
+a gRPC failure. Removing that independent network fallback is a separate change.
+
+Hardware activation through the normal gRPC CLI with concurrent logs verified
+637776 bytes, returned Committed and booted `grpc-commit-3` in ota_0 from ota_1.
+The default build `grpc-ota-1` was then activated over gRPC into ota_1 (638048
+bytes). A verify-only `grpc-ota-2` upload left `grpc-ota-1` running in ota_1;
+a subsequent explicit gRPC commit activated `grpc-ota-2` into ota_0. Both activation
+commands consumed live management logs on their upload connection. Discovery
+reported status `10.128.248.68:7779` and gRPC upload `10.128.248.68:7780`.
+The tests and hardware captures are the evidence for the new default path;
+legacy OTA has not been removed. Post-reboot status confirmed `grpc-ota-2` in
+ota_0, idle and OTA available. Four cancellation/resubscription cycles and a
+subsequent Begin/Abort passed on the final firmware.
+
 ## Reproduce
 
 Enter `nix develop` at the repository root. Export Wi-Fi credentials locally
@@ -114,7 +153,9 @@ FIRMWARE_VERSION=grpc-streams-2 cargo build --target xtensa-esp32s3-none-elf \
 # Export an application-only image with espflash; keep credential-bearing images private.
 ```
 
-After identity/layout checks and explicit activation through legacy OTA:
+After identity/layout checks, deploy with `espctl upload --logs --commit` (or
+use `--legacy` once to migrate a board without gRPC Commit). The diagnostic probes
+below remain verify-only:
 
 ```sh
 cargo run -p device-grpc --example concurrent -- BOARD_IP IMAGE.bin VERSION
@@ -130,7 +171,7 @@ channel while both RPC streams are active on the single-listener connection.
 
 ## Remaining limits
 
-TLS/authentication, full serial-log capture, gRPC activation, power interruption
+TLS/authentication, full serial-log capture, power interruption
 and Wi-Fi outage tests, worst-case heap/stack analysis and sensor-task latency
 instrumentation remain outstanding. Flash verification is synchronous and can
 pause the executor. The endpoint is an unauthenticated development experiment;
