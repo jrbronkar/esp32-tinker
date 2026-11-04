@@ -5,9 +5,10 @@ package ota;
 message Request {
   uint32 protocol_version = 1;
   uint32 request_id = 2;
+  // Former private UDP discovery operation; discovery now uses DNS-SD.
+  reserved 12;
   oneof payload {
     StatusRequest status = 10;
-    DiscoveryRequest discovery = 12;
     BeginUpdate begin = 20;
     FirmwareChunk chunk = 21;
     FinishUpdate finish = 22;
@@ -96,6 +97,3 @@ message UploadAck {
   uint32 next_offset = 2;
   uint32 target_offset = 3;
 }
-
-// Accepted only on the discovery UDP port; response is the existing StatusResponse.
-message DiscoveryRequest {}

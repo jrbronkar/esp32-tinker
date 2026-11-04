@@ -1,42 +1,198 @@
-use embassy_net::{
-    udp::{PacketMetadata, UdpSocket},
-    Stack,
+//! Standard mDNS/DNS-SD responder; edge-mdns owns DNS parsing and record encoding.
+use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use edge_mdns::{
+    HostAnswer, HostAnswers, HostAnswersMdnsHandler, MdnsError, MdnsHandler, MdnsRequest,
+    MdnsResponse,
+    buf::VecBufAccess,
+    domain::base::{
+        Ttl,
+        iana::{Class, Rtype},
+    },
+    host::{Host, Service, ServiceAnswers},
 };
-use embassy_time::{with_timeout, Duration, Instant, Timer};
-use ota_protocol::{Request, StatusResponse, DISCOVERY_PORT, MAX_FRAME};
+use embassy_net::{
+    Stack,
+    udp::{PacketMetadata, UdpSocket},
+};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_time::{Duration, Timer};
+use embedded_io_async::{ErrorKind, ErrorType};
+
+// Only socket I/O is adapted here. DNS and DNS-SD wire behavior come from edge-mdns.
+#[derive(Clone, Copy)]
+struct Socket<'a, 'd>(&'a UdpSocket<'d>);
+impl ErrorType for Socket<'_, '_> {
+    type Error = ErrorKind;
+}
+impl edge_nal::Readable for Socket<'_, '_> {
+    async fn readable(&mut self) -> Result<(), ErrorKind> {
+        self.0.wait_recv_ready().await;
+        Ok(())
+    }
+}
+impl edge_nal::UdpReceive for Socket<'_, '_> {
+    async fn receive(&mut self, buf: &mut [u8]) -> Result<(usize, SocketAddr), ErrorKind> {
+        // Oversized or truncated datagrams must not reach the DNS parser.
+        loop {
+            match self.0.recv_from(buf).await {
+                Ok((len, peer)) => return Ok((len, peer.endpoint.into())),
+                Err(embassy_net::udp::RecvError::Truncated) => continue,
+            }
+        }
+    }
+}
+impl edge_nal::UdpSend for Socket<'_, '_> {
+    async fn send(&mut self, peer: SocketAddr, buf: &[u8]) -> Result<(), ErrorKind> {
+        let SocketAddr::V4(peer) = peer else {
+            return Err(ErrorKind::Unsupported);
+        };
+        self.0
+            .send_to(buf, embassy_net::IpEndpoint::from(peer))
+            .await
+            .map_err(|_| ErrorKind::Other)
+    }
+}
+struct Random;
+impl rand_core::TryRng for Random {
+    type Error = core::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(esp_hal::rng::Rng::new().random())
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(((self.try_next_u32()? as u64) << 32) | self.try_next_u32()? as u64)
+    }
+    fn try_fill_bytes(&mut self, bytes: &mut [u8]) -> Result<(), Self::Error> {
+        for chunk in bytes.chunks_mut(4) {
+            chunk.copy_from_slice(&self.try_next_u32()?.to_le_bytes()[..chunk.len()]);
+        }
+        Ok(())
+    }
+}
+struct Advertisement<'a> {
+    host: Host<'a>,
+    identity: &'a ota_protocol::StatusResponse,
+    cache_flush: bool,
+}
+impl HostAnswers for Advertisement<'_> {
+    fn visit<F, E>(&self, mut f: F) -> Result<(), E>
+    where
+        F: FnMut(HostAnswer) -> Result<(), E>,
+        E: From<MdnsError>,
+    {
+        let txt = [
+            ("id", self.identity.device_id.as_str()),
+            ("application", self.identity.application.as_str()),
+            ("firmware", self.identity.firmware_version.as_str()),
+            ("protocol", "1"),
+            ("state", crate::runtime::state()),
+            (
+                "ota",
+                if self.identity.ota_available {
+                    "1"
+                } else {
+                    "0"
+                },
+            ),
+        ];
+        let service = Service {
+            name: self.host.hostname,
+            service: "_espctl",
+            protocol: "_tcp",
+            port: ota_protocol::PORT,
+            priority: 0,
+            weight: 0,
+            service_subtypes: &[],
+            txt_kvs: &txt,
+        };
+        ServiceAnswers::new(&self.host, &service).visit(|mut answer| {
+            // Unique records replace cached addresses, endpoints and state. PTR is shared.
+            if self.cache_flush && answer.rtype() != Rtype::PTR {
+                answer.set_class(Class::from_int(0x8001));
+            }
+            f(answer)
+        })
+    }
+}
+impl MdnsHandler for Advertisement<'_> {
+    fn handle<'a>(
+        &mut self,
+        request: MdnsRequest<'_>,
+        buffer: &'a mut [u8],
+    ) -> Result<MdnsResponse<'a>, MdnsError> {
+        // Legacy DNS replies must use ordinary IN records (RFC 6762 section 6.7).
+        self.cache_flush = !matches!(request, MdnsRequest::Request { legacy: true, .. });
+        HostAnswersMdnsHandler::new(&*self).handle(request, buffer)
+    }
+}
 #[embassy_executor::task]
-pub async fn server(stack: Stack<'static>, mut identity: StatusResponse) {
+pub async fn server(stack: Stack<'static>, identity: ota_protocol::StatusResponse) {
+    let mut name = heapless::String::<32>::new();
+    for ch in identity
+        .device_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+    {
+        if name.push(ch).is_err() {
+            esp_println::println!("mDNS hostname exceeds bound");
+            return;
+        }
+    }
     let mut rx_meta = [PacketMetadata::EMPTY; 2];
     let mut tx_meta = [PacketMetadata::EMPTY; 2];
-    let mut rx = [0; MAX_FRAME * 2];
-    let mut tx = [0; MAX_FRAME * 2];
+    let mut rx = [0; 3000];
+    let mut tx = [0; 3000];
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx, &mut tx_meta, &mut tx);
-    while socket.bind(DISCOVERY_PORT).is_err() {
+    socket.set_hop_limit(Some(255));
+    while socket.bind(5353).is_err() {
         Timer::after(Duration::from_secs(1)).await;
     }
-    identity.clear_boot();
-    identity.clear_timings();
-    let mut packet = [0; MAX_FRAME];
     loop {
         stack.wait_config_up().await;
-        let Ok((n, peer)) = socket.recv_from(&mut packet).await else {
+        let Some(config) = stack.config_v4() else {
             continue;
         };
-        let Ok(request) = ota_protocol::decode::<Request>(&packet[..n]) else {
+        let ip = config.address.address();
+        if stack
+            .join_multicast_group(embassy_net::IpAddress::Ipv4(Ipv4Addr::new(224, 0, 0, 251)))
+            .is_err()
+        {
+            Timer::after(Duration::from_secs(1)).await;
             continue;
-        };
-        identity.uptime_ms = Instant::now().as_millis();
-        identity.management_state = crate::runtime::state().try_into().unwrap_or_default();
-        let Some(response) = ota_protocol::discovery_response(request, identity.clone()) else {
-            continue;
-        };
-        if let Ok(body) = ota_protocol::encode(&response) {
-            // Received metadata carries the broadcast destination as local_address.
-            // Reply only to the remote endpoint so the stack selects our unicast IP.
-            let _ =
-                with_timeout(Duration::from_secs(1), socket.send_to(&body, peer.endpoint)).await;
         }
-        // Cap response rate; discovery is informational and unauthenticated.
-        Timer::after(Duration::from_millis(200)).await;
+        let recv = VecBufAccess::<NoopRawMutex, 1500>::new();
+        let send = VecBufAccess::<NoopRawMutex, 1500>::new();
+        let mdns = edge_mdns::io::Mdns::new(
+            Some(ip),
+            None,
+            Socket(&socket),
+            Socket(&socket),
+            &recv,
+            &send,
+            Random,
+            &crate::runtime::ANNOUNCE,
+        );
+        let advertisement = Advertisement {
+            host: Host {
+                hostname: &name,
+                ipv4: ip,
+                ipv6: Ipv6Addr::UNSPECIFIED,
+                ttl: Ttl::from_secs(60),
+            },
+            identity: &identity,
+            cache_flush: true,
+        };
+        let change = async {
+            loop {
+                Timer::after(Duration::from_millis(500)).await;
+                if stack.config_v4().map(|c| c.address.address()) != Some(ip) {
+                    break;
+                }
+            }
+        };
+        // Rebuild records if DHCP changes; never keep advertising a captured old address.
+        embassy_futures::select::select(mdns.run(advertisement), change).await;
+        let _ = stack
+            .leave_multicast_group(embassy_net::IpAddress::Ipv4(Ipv4Addr::new(224, 0, 0, 251)));
+        Timer::after(Duration::from_secs(1)).await;
     }
 }

@@ -9,8 +9,13 @@ pub fn state() -> &'static str {
         _ => "idle",
     }
 }
+pub static ANNOUNCE: embassy_sync::signal::Signal<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    (),
+> = embassy_sync::signal::Signal::new();
 pub fn transition(state: u8) {
     STATE.store(state, Ordering::Relaxed);
+    ANNOUNCE.signal(());
 }
 pub struct UploadGuard;
 impl UploadGuard {

@@ -339,8 +339,8 @@ capability marker `rust-dev-ota-v1` rejects incompatible old images. See
 
 ## LAN discovery and management state
 
-The additive discovery payload is accepted only over UDP 7780; the TCP listener
-continues to reject it as an unsupported operation. StatusResponse field 9 reports
-a bounded management-state string; older firmware omits it. See the
-[discovery contract](../device-management/discovery.md) for datagram framing,
-limits, client behavior, and state meanings. TCP framing/version are unchanged.
+Discovery uses standard mDNS/DNS-SD records, not this Protobuf transport. The old
+private UDP discovery field number 12 is reserved and its responder removed.
+StatusResponse field 9 remains a bounded management-state string; older firmware
+omits it. See [service discovery](../device-management/discovery.md) for PTR/SRV/A/
+TXT records and cache semantics. TCP framing/version are unchanged.

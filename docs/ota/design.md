@@ -135,4 +135,4 @@ assumptions. Treat it as a separate design and provisioning decision.
 - [Testing](testing.md): procedures, current evidence and gaps.
 
 Same-LAN [device discovery](../device-management/discovery.md) is implemented as
-a bounded UDP status responder sharing the network stack. Remote logs are deferred.
+a library-backed mDNS/DNS-SD responder sharing the network stack. Remote logs are deferred.

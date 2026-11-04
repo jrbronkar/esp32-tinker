@@ -12,10 +12,10 @@ cargo run -p espctl -- discover
 cargo run -p espctl -- discover --watch
 ```
 
-Lists boards that respond on the same IPv4 LAN, with address, firmware, management
-state, OTA availability, and uptime. Discovery uses bounded UDP probes, not an IP
-scan. Firmware must include discovery support. No response does not prove a board
-is offline. See [interface selection and discovery protocol](../../docs/device-management/discovery.md).
+Lists resolved DNS-SD services on the same IPv4 LAN, with their advertised port,
+firmware, management state, and OTA capability. The Mac uses `mdns-sd`; firmware
+uses `edge-mdns`. TXT metadata may be cached; use status for live uptime. An empty
+scan does not prove a board is offline. See [interface selection and DNS-SD records](../../docs/device-management/discovery.md).
 
 ## Build and query
 

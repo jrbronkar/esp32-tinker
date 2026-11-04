@@ -190,7 +190,7 @@ The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telem
 ## Device management and development OTA
 
 The sensor-free `device-demo` firmware hosts a device-management service on TCP
-port **7779** and a same-LAN discovery responder on UDP **7780**. Find boards
+port **7779** and advertises `_espctl._tcp.local.` through mDNS/DNS-SD. Find boards
 with `cargo run -p espctl -- discover`. The Mac initiates requests with `espctl`; no cloud service or
 separate backend is required. The API uses **Protobuf over length-prefixed TCP**.
 gRPC (client, server, or gateway) and HTTP/2 integration are explicitly out of

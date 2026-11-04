@@ -1,106 +1,214 @@
-//! Bounded IPv4 LAN discovery. Responses are observations, not authenticated identity.
-use ota_protocol::{Response, ResponsePayload, StatusResponse, MAX_FRAME, PORT, VERSION};
+//! Browse standard DNS-SD services; do not implement DNS or assume a management port.
+use mdns_sd::{IfKind, ResolvedService, ServiceDaemon, ServiceEvent};
 use std::{
     collections::BTreeMap,
     io,
-    net::{Ipv4Addr, SocketAddr, UdpSocket},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    net::{Ipv4Addr, SocketAddr},
+    time::{Duration, Instant},
 };
 
 const MAX_DEVICES: usize = 64;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Device {
     pub address: SocketAddr,
-    pub status: StatusResponse,
+    pub instance: String,
+    pub device_id: String,
+    pub firmware: String,
+    pub management_state: String,
+    pub ota_available: bool,
 }
 #[derive(Debug)]
 pub struct Discovery {
     pub devices: Vec<Device>,
     pub limit_reached: bool,
 }
-
-/// Send probes every 500 ms until the collection window expires. No address scan.
-/// `target` may be a subnet broadcast or loopback endpoint for tests.
-pub fn discover(target: SocketAddr, bind: Ipv4Addr, window: Duration) -> io::Result<Discovery> {
-    if !target.is_ipv4() || window.is_zero() || window > Duration::from_secs(60) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "IPv4 and a discovery window in 1..60000 ms are required",
-        ));
-    }
-    let socket = UdpSocket::bind((bind, 0))?;
-    socket.set_broadcast(true)?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos()
-        ^ std::process::id();
-    let request = ota_protocol::discovery_request(nonce);
-    let body = ota_protocol::encode(&request)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "encode discovery"))?;
-    let deadline = Instant::now() + window;
-    let mut next_probe = Instant::now();
-    let mut found = BTreeMap::new();
-    let mut limit_reached = false;
-    let mut packet = [0; MAX_FRAME + 1];
-    while Instant::now() < deadline {
-        let now = Instant::now();
-        if now >= next_probe {
-            socket.send_to(&body, target)?;
-            next_probe = now + Duration::from_millis(500);
-        }
-        let wait = deadline
-            .min(next_probe)
-            .saturating_duration_since(Instant::now());
-        socket.set_read_timeout(Some(wait.max(Duration::from_millis(1))))?;
-        match socket.recv_from(&mut packet) {
-            Ok((n, peer)) => {
-                let std::net::IpAddr::V4(ip) = peer.ip() else {
-                    continue;
-                };
-                if ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
-                    continue;
-                }
-                if peer.port() != target.port() {
-                    continue;
-                }
-                let Ok(response) = ota_protocol::decode::<Response>(&packet[..n]) else {
-                    continue;
-                };
-                if response.protocol_version != VERSION || response.request_id != request.request_id
-                {
-                    continue;
-                }
-                let Some(ResponsePayload::Status(status)) = response.payload else {
-                    continue;
-                };
-                if status.device_id.is_empty()
-                    || status.application.is_empty()
-                    || status.chip.is_empty()
-                    || status.firmware_version.is_empty()
-                {
-                    continue;
-                }
-                let address = SocketAddr::new(peer.ip(), PORT);
-                let key = (status.device_id.to_string(), address);
-                if found.contains_key(&key) || found.len() < MAX_DEVICES {
-                    found.insert(key, Device { address, status });
-                } else {
-                    limit_reached = true;
-                }
+#[derive(Default)]
+struct Collector {
+    devices: BTreeMap<(String, SocketAddr), Device>,
+    limit_reached: bool,
+}
+impl Collector {
+    fn event(&mut self, event: ServiceEvent) {
+        match event {
+            ServiceEvent::ServiceResolved(info) => self.resolved(&info),
+            ServiceEvent::ServiceRemoved(_, name) => {
+                self.devices.retain(|(instance, _), _| instance != &name)
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::Interrupted
-                ) => {}
-            Err(e) => return Err(e),
+            _ => {}
         }
     }
-    Ok(Discovery {
-        devices: found.into_values().collect(),
-        limit_reached,
-    })
+    fn resolved(&mut self, info: &ResolvedService) {
+        let name = info.get_fullname();
+        // Replace the instance snapshot, including addresses withdrawn by a newer record.
+        self.devices.retain(|(instance, _), _| instance != name);
+        if info.ty_domain != ota_protocol::SERVICE_TYPE
+            || info.get_port() == 0
+            || info.get_property_val_str("protocol") != Some("1")
+        {
+            return;
+        }
+        let Some(id) = info
+            .get_property_val_str("id")
+            .filter(|s| !s.is_empty() && s.len() <= 64)
+        else {
+            return;
+        };
+        let Some(firmware) = info
+            .get_property_val_str("firmware")
+            .filter(|s| !s.is_empty() && s.len() <= 64)
+        else {
+            return;
+        };
+        let state = info
+            .get_property_val_str("state")
+            .filter(|s| s.len() <= 16)
+            .unwrap_or("unknown");
+        for ip in info.get_addresses_v4() {
+            if ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
+                continue;
+            }
+            if self.devices.len() == MAX_DEVICES {
+                self.limit_reached = true;
+                break;
+            }
+            let address = SocketAddr::new(ip.into(), info.get_port());
+            self.devices.insert(
+                (name.to_owned(), address),
+                Device {
+                    address,
+                    instance: name.to_owned(),
+                    device_id: id.to_owned(),
+                    firmware: firmware.to_owned(),
+                    management_state: state.to_owned(),
+                    ota_available: info.get_property_val_str("ota") == Some("1"),
+                },
+            );
+        }
+    }
+    fn finish(self) -> Discovery {
+        Discovery {
+            devices: self.devices.into_values().collect(),
+            limit_reached: self.limit_reached,
+        }
+    }
+}
+struct Daemon(ServiceDaemon);
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.stop_browse(ota_protocol::SERVICE_TYPE);
+        if let Ok(done) = self.0.shutdown() {
+            let _ = done.recv_timeout(Duration::from_secs(1));
+        }
+    }
+}
+fn invalid(message: impl ToString) -> io::Error {
+    io::Error::other(message.to_string())
+}
+/// Resolve IPv4 service endpoints during a collection window. TXT is advertised metadata,
+/// not a live health assertion; use status for a direct query. mDNS owns its cache/packet limits.
+pub fn discover(interface: Option<Ipv4Addr>, window: Duration) -> io::Result<Discovery> {
+    if window < Duration::from_millis(1) || window > Duration::from_secs(60) {
+        return Err(invalid("discovery window must be 1..60000 ms"));
+    }
+    let daemon = Daemon(ServiceDaemon::new().map_err(invalid)?);
+    if let Some(ip) = interface {
+        daemon.0.disable_interface(IfKind::All).map_err(invalid)?;
+        daemon
+            .0
+            .enable_interface(IfKind::Addr(ip.into()))
+            .map_err(invalid)?;
+    }
+    let events = daemon
+        .0
+        .browse(ota_protocol::SERVICE_TYPE)
+        .map_err(invalid)?;
+    let deadline = Instant::now() + window;
+    let mut collector = Collector::default();
+    while Instant::now() < deadline {
+        match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(event) => collector.event(event),
+            Err(mdns_sd::RecvTimeoutError::Timeout) => break,
+            Err(error) => return Err(invalid(error)),
+        }
+    }
+    Ok(collector.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn info(name: &str, port: u16, ip: &str) -> ResolvedService {
+        mdns_sd::ServiceInfo::new(
+            ota_protocol::SERVICE_TYPE,
+            name,
+            "device.local.",
+            ip,
+            port,
+            [
+                ("id", "board"),
+                ("firmware", "test"),
+                ("protocol", "1"),
+                ("state", "verified"),
+                ("ota", "1"),
+            ]
+            .as_slice(),
+        )
+        .unwrap()
+        .as_resolved_service()
+    }
+    #[test]
+    fn uses_srv_port_and_txt_and_replaces_old_addresses() {
+        let mut c = Collector::default();
+        c.resolved(&info("test", 12345, "192.0.2.1"));
+        c.resolved(&info("test", 23456, "192.0.2.2"));
+        let r = c.finish();
+        assert_eq!(r.devices.len(), 1);
+        assert_eq!(r.devices[0].address, "192.0.2.2:23456".parse().unwrap());
+        assert_eq!(r.devices[0].management_state, "verified");
+        assert!(r.devices[0].ota_available);
+    }
+    #[test]
+    fn removal_clears_instance_and_duplicates_do_not_multiply() {
+        let mut c = Collector::default();
+        let i = info("test", 123, "192.0.2.1");
+        c.resolved(&i);
+        c.resolved(&i);
+        assert_eq!(c.devices.len(), 1);
+        c.event(ServiceEvent::ServiceRemoved(
+            ota_protocol::SERVICE_TYPE.into(),
+            i.fullname.clone(),
+        ));
+        assert!(c.finish().devices.is_empty());
+    }
+    #[test]
+    fn caps_results_and_rejects_incompatible_records() {
+        let mut c = Collector::default();
+        let bad = info("bad", 0, "192.0.2.1");
+        c.resolved(&bad);
+        assert!(c.devices.is_empty());
+        for i in 0..70 {
+            c.resolved(&info(&format!("device-{i}"), 123, "192.0.2.1"));
+        }
+        let r = c.finish();
+        assert_eq!(r.devices.len(), 64);
+        assert!(r.limit_reached);
+    }
+    #[test]
+    fn incompatible_protocol_is_ignored_and_bad_windows_fail_before_network() {
+        let bad = mdns_sd::ServiceInfo::new(
+            ota_protocol::SERVICE_TYPE,
+            "bad",
+            "device.local.",
+            "192.0.2.1",
+            123,
+            [("id", "board"), ("firmware", "test"), ("protocol", "2")].as_slice(),
+        )
+        .unwrap()
+        .as_resolved_service();
+        let mut c = Collector::default();
+        c.resolved(&bad);
+        assert!(c.finish().devices.is_empty());
+        assert!(discover(None, Duration::ZERO).is_err());
+        assert!(discover(None, Duration::from_secs(61)).is_err());
+    }
 }

@@ -5,16 +5,16 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/ota.rs"));
 }
 pub use generated::ota_::{
-    AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, DiscoveryRequest,
-    ErrorResponse, ErrorResponse_::Code as ErrorCode, FinishUpdate, FirmwareChunk, PartitionInfo,
-    Request, Request_::Payload as RequestPayload, Response, Response_::Payload as ResponsePayload,
+    AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, ErrorResponse,
+    ErrorResponse_::Code as ErrorCode, FinishUpdate, FirmwareChunk, PartitionInfo, Request,
+    Request_::Payload as RequestPayload, Response, Response_::Payload as ResponsePayload,
     StatusRequest, StatusResponse, UploadAck, UploadAck_::Phase as UploadPhase,
 };
 use micropb::{MessageDecode, MessageEncode, PbEncoder};
 
 pub const VERSION: u32 = 1;
 pub const PORT: u16 = 7779;
-pub const DISCOVERY_PORT: u16 = 7780;
+pub const SERVICE_TYPE: &str = "_espctl._tcp.local.";
 pub const MAX_FRAME: usize = 512;
 pub const SESSION_TIMEOUT_SECS: u64 = 5;
 pub type Frame = heapless::Vec<u8, MAX_FRAME>;
@@ -294,63 +294,5 @@ mod upload_tests {
         assert!(frame_length((bytes.len() as u32).to_be_bytes()).is_err());
         assert_eq!(decode_upload(&bytes).unwrap(), request);
         assert!(upload_frame_length(4609u32.to_be_bytes()).is_err());
-    }
-}
-
-/// Datagram body: no TCP length prefix. Request ID is correlation, not authentication.
-pub fn discovery_request(request_id: u32) -> Request {
-    Request {
-        protocol_version: VERSION,
-        request_id,
-        payload: Some(RequestPayload::Discovery(DiscoveryRequest {})),
-    }
-}
-/// Only the discovery operation may elicit a UDP reply. Inventory is omitted.
-pub fn discovery_response(request: Request, mut status: StatusResponse) -> Option<Response> {
-    if request.protocol_version != VERSION
-        || !matches!(request.payload, Some(RequestPayload::Discovery(_)))
-    {
-        return None;
-    }
-    status.clear_boot();
-    status.clear_timings();
-    Some(Response {
-        protocol_version: VERSION,
-        request_id: request.request_id,
-        payload: Some(ResponsePayload::Status(status)),
-    })
-}
-
-#[cfg(test)]
-mod discovery_tests {
-    use super::*;
-    #[test]
-    fn udp_only_discovery_strips_inventory_and_echoes_id() {
-        let mut info = status("board", "device-demo", "test", 10).unwrap();
-        info.management_state = "committing".try_into().unwrap();
-        info.set_boot(BootInfo::default());
-        info.set_timings(DeviceTimings::default());
-        assert!(discovery_response(status_request(7), info.clone()).is_none());
-        let mut request = discovery_request(7);
-        request.protocol_version = VERSION + 1;
-        assert!(discovery_response(request, info.clone()).is_none());
-        let response = discovery_response(discovery_request(7), info).unwrap();
-        assert_eq!(response.request_id, 7);
-        let Some(ResponsePayload::Status(info)) = response.payload else {
-            panic!()
-        };
-        assert!(info.boot().is_none());
-        assert!(info.timings().is_none());
-        assert_eq!(info.management_state, "committing");
-    }
-    #[test]
-    fn discovery_is_not_a_tcp_status_operation() {
-        let response = respond(
-            discovery_request(4),
-            status("board", "device-demo", "test", 0).unwrap(),
-        );
-        assert!(
-            matches!(response.payload,Some(ResponsePayload::Error(e)) if e.code==ErrorCode::InvalidRequest)
-        );
     }
 }

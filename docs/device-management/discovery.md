@@ -1,6 +1,7 @@
-# LAN device discovery
+# mDNS / DNS-SD device discovery
 
-Find ESP32 boards running `device-demo` on the same IPv4 LAN:
+Find ESP32 management services on the same IPv4 LAN without a board IP or
+management-port assumption:
 
 ```sh
 nix develop
@@ -8,77 +9,75 @@ cargo run -p espctl -- discover
 cargo run -p espctl -- discover --watch
 ```
 
-The output lists each responder's device ID, management address, firmware version,
-management state, OTA availability, and uptime. Use the discovered address for
-normal status/upload commands. Sensor demos do not yet start this service, and
-firmware predating discovery will not respond.
+The board advertises `_espctl._tcp.local.` using `edge-mdns`; the Mac browses and
+resolves services using `mdns-sd`. No custom DNS encoder, Protobuf discovery
+message, private UDP port, or IP sweep is used. The existing TCP management API
+is unchanged. Discovery-enabled `device-demo` firmware is required; sensor demos
+and older firmware do not advertise this service.
 
-## Interfaces and network limits
+## Advertised records
 
-By default the client sends IPv4 limited broadcasts to 255.255.255.255, UDP port
-7780, on the OS-selected route. To select a LAN explicitly:
+| Record | Purpose |
+| --- | --- |
+| PTR | Find instances of `_espctl._tcp.local.` |
+| SRV | Resolve the target hostname and actual management port |
+| A | Resolve the board's current IPv4 address |
+| TXT | Small application metadata: id, application, firmware, protocol, state, ota |
+
+Hostnames derive from the board's base MAC, such as
+`esp32s3-a4cb8fd813c8.local.`. Discovery follows SRV/A records, not a hardcoded
+management endpoint. The browser supports protocol=1 and validates bounded ID
+and firmware metadata. The responder uses fixed UDP and DNS buffers and sets IP
+TTL to 255. It rebuilds its address records when the network configuration changes.
+
+State changes request fresh announcements. Values are idle, receiving, verified,
+and committing, matching [the management lifecycle](../ota/protocol.md).
+TXT is cached advertised metadata, not a guaranteed live health check. For live
+uptime and boot details, query the resolved endpoint explicitly:
 
 ```sh
-cargo run -p espctl -- discover \
-  --broadcast 10.128.248.255 --bind 10.128.248.55 --timeout-ms 4000
+cargo run -p espctl -- status --host <resolved-ip> --port <resolved-port> --boot
 ```
 
-Replace these examples with your subnet's broadcast and the Mac's local address.
-The discovery window defaults to two seconds; probes repeat every 500 ms. Watch
-mode waits three seconds between completed scans and prints only that scan's
-responders. Ctrl+C stops it. No responses is a successful empty scan, not proof
-that devices are offline: packet loss, firewalls, client isolation, routing, and
-sleeping devices can hide them. There is no cross-subnet discovery or IP sweep.
-This is a small Protobuf discovery protocol, not mDNS/Bonjour.
+## Mac interfaces and collection
 
-## Wire contract
+The default browser searches available interfaces and displays resolved IPv4 endpoints. To restrict it to a specific
+interface, supply that interface's local IP address:
 
-- Client binds an ephemeral UDP socket and sends `Request` with protocol version
-  1, a scan correlation ID, and the `discovery` payload. One datagram contains the
-  Protobuf body directly, without the TCP length prefix.
-- Firmware accepts only this operation/version on UDP 7780. Invalid packets and
-  other operations elicit no reply. It replies by unicast to the sender address
-  and port with the existing `Response.status` envelope and matching ID.
-- Both bodies are bounded to 512 bytes. The reply omits boot inventory and timing
-  diagnostics. The management TCP port remains 7779.
-- The firmware caps responses at five per second. Socket buffers and task storage
-  are fixed-size. The host deduplicates by device ID plus address, keeps the latest
-  received snapshot, caps results at 64, and reports if further devices were omitted.
-- The host ignores malformed, oversized, wrong-version, wrong-ID, wrong-source-port,
-  wrong-payload, non-unicast-source, and empty-identity replies. A scan ID is correlation, not authentication.
+```sh
+cargo run -p espctl -- discover --interface 10.128.248.55 --timeout-ms 5000
+```
 
-The UDP task shares the existing Embassy stack but is independent of the single
-TCP listener. It can answer while an upload connection is active, subject to
-executor scheduling and synchronous flash operations delaying other tasks.
+The default collection window is three seconds, plus bounded daemon startup and
+shutdown overhead. Watch mode waits three seconds between scans. Ctrl+C stops
+it. The application deduplicates service instances/endpoints, applies replacement
+and removal events, caps displayed endpoints at 64, and reports overflow. DNS
+packet processing, caching, TTLs, and retransmissions belong to the library;
+this display cap is not a total memory bound for the host library's cache.
 
-## Management state
+macOS Bonjour can inspect the same service independently:
 
-StatusResponse field 9, `management_state`, is an additive string capped at 16
-bytes. Empty means unavailable on older firmware. Current values are:
+```sh
+dns-sd -B _espctl._tcp local.
+dns-sd -L <instance-name> _espctl._tcp local.
+dns-sd -G v4 <hostname>.local.
+```
 
-| Value | Meaning |
-| --- | --- |
-| `idle` | No upload session is active |
-| `receiving` | Begin accepted; receiving or validating candidate data |
-| `verified` | Stored image validated; awaiting Commit or Abort |
-| `committing` | Boot metadata commit started; reset follows success |
+Multicast DNS uses the standard 224.0.0.251:5353 address/port. Firewalls, AP client
+isolation, multicast filtering, and routing can hide services; an empty scan is
+not proof that boards are offline. Cross-subnet discovery and persistent inventory
+are outside this implementation. MAC-derived names reduce collisions; automatic
+hostname conflict renaming has not been validated. TXT metadata is unauthenticated.
 
-A dropped/failed/aborted/timed-out upload returns to idle through a guard, even
-when the session future is cancelled. State is an instantaneous management
-snapshot, not a sensor-health or rollback guarantee. It is not persistent.
+## Validation and scope
 
-## Validation
+Host tests cover resolved SRV ports (including non-default ports), TXT metadata,
+address replacement, deduplication, removal, invalid records, result limits, and
+CLI options. Multicast interoperability needs actual LAN tests; fixture tests do
+not establish it. See [current hardware validation](../ota/testing.md#validation-status).
+Remote logs and fleet inventory remain separate future work.
 
-The host suite includes real-UDP mock tests for multiple devices, deduplication,
-invalid replies, dropped initial probes, collection deadlines, CLI empty output,
-and the 64-device cap. Protocol tests verify that discovery strips inventory,
-echoes IDs, rejects unsupported operations/versions, and fits the control bound.
-On one real ESP32-S3, default and explicit-subnet discovery returned the unicast
-address. Discovery reported receiving and verified while the TCP listener was
-occupied, then idle after session close. Multiple-device handling is mock-tested,
-not yet a physical multi-board result. Hardware validation is summarized in
-[OTA testing](../ota/testing.md#validation-status).
-
-Discovery and management remain unauthenticated LAN development services. These
-are observations from responding peers, not cryptographically verified identities.
-Remote logs and fleet inventory are separate future work.
+The current LAN test is intermittent: direct DNS queries succeed, but repeated
+multicast scans sometimes miss the board in both espctl and native Bonjour.
+Multicast delivery needs further investigation before treating discovery as
+reliable. Changing host library versions did not resolve this behavior.
