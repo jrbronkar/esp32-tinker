@@ -2,7 +2,7 @@
 
 Status: v1 status and opt-in v2 unsigned development uploads are implemented and
 verified on a real ESP32-S3. Recovery after actual Wi-Fi loss remains untested.
-See [OTA_DESIGN.md](OTA_DESIGN.md) for hardware evidence.
+See [docs/ota/design.md](design.md) for hardware evidence.
 
 This is a custom request/response API using **Protobuf over length-prefixed TCP**,
 not gRPC. There is no HTTP/2 transport, gRPC service definition, or gRPC status
@@ -13,7 +13,7 @@ server; no separate backend is required.
 The diagrams below describe implemented behavior. Authentication, resumable
 uploads, and dependable automatic rollback are future work.
 
-The schema is [protocol/ota.proto](protocol/ota.proto). Both endpoints use the
+The schema is [protocol/ota.proto](../../protocol/ota.proto). Both endpoints use the
 shared `ota-protocol` crate, generated with micropb 0.7.0. `protoc` runs on the Mac
 at build time; firmware serialization uses fixed-capacity containers, no allocator.
 
@@ -100,7 +100,7 @@ through this service; opt-in `dev-ota` builds also expose the v2 write/commit pa
 below. Neither path updates the partition table. Wi-Fi credentials are never
 included in status.
 Future signed update authorization and optional TLS are covered by
-[OTA_DESIGN.md](OTA_DESIGN.md).
+[docs/ota/design.md](design.md).
 
 ## Wire example
 
@@ -129,7 +129,7 @@ Partition labels are limited to 16 bytes, matching ESP partition table storage.
 No inventory field establishes bootloader OTA or rollback support. Upload
 availability is reported separately through `ota_available`.
 The existing 512-byte bound is unchanged; maximal bounded inventory/identity/timing
-fields are covered by a control-frame roundtrip test. See `partitions/README.md`.
+fields are covered by a control-frame roundtrip test. See `docs/ota/provisioning.md`.
 
 ## Unsigned development upload protocol v2
 

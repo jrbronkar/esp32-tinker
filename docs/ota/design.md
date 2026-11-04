@@ -84,7 +84,7 @@ The OTA service must remain present in subsequent firmware images so that a
 successful update does not remove the next update path. Compatibility metadata
 identifies the application (for example, IMU versus soil) as well as the chip.
 
-See [the API contract, sequence and lifecycle diagrams](OTA_PROTOCOL.md#operation-contract-and-ownership)
+See [the API contract, sequence and lifecycle diagrams](protocol.md#operation-contract-and-ownership)
 for the implemented interactions and failure semantics.
 
 ### Device API and first client
@@ -98,7 +98,7 @@ exactly that many Protobuf bytes. Set a small maximum frame size and reject zero
 or oversized lengths before reading/decoding the body. Bound variable-length
 fields in generated firmware types and handle partial reads/writes, disconnects,
 and timeouts. Protocol versioning and unsupported-message behavior must be
-specified in [OTA_PROTOCOL.md](OTA_PROTOCOL.md).
+specified in [docs/ota/protocol.md](protocol.md).
 
 Start with `StatusRequest` and `StatusResponse`. The response should identify the
 protocol version, device, application, and running firmware version. Report OTA
@@ -106,7 +106,7 @@ capability explicitly as unavailable until implemented; do not invent slot or
 capacity values before the partition layout is established. Device identity in
 this unsigned phase is descriptive, not cryptographically authenticated.
 
-CLI usage (implemented; see [setup and hardware checks](tools/espctl/README.md)):
+CLI usage (implemented; see [setup and hardware checks](../../tools/espctl/README.md)):
 
 ```sh
 cargo run --locked -p espctl -- status --host <board-ip>
@@ -210,7 +210,7 @@ assumptions. Treat it as a separate design and provisioning decision.
 ### 1. Prove the status API with a CLI
 
 - [x] Reproduce Wi-Fi firmware builds using the pinned toolchain (placeholder credentials).
-- [x] Add `OTA_PROTOCOL.md` and a minimal `.proto` status schema with versioning,
+- [x] Add `docs/ota/protocol.md` and a minimal `.proto` status schema with versioning,
   frame limits, field bounds, timeouts, and error semantics.
 - [x] Generate Rust types using micropb and prove host/ESP32 cross-compilation.
 - [x] Add a read-only TCP status listener in shared `device-service`, started by
@@ -306,7 +306,7 @@ or private keys here.
 
 ### Current handoff: standalone device-management firmware
 
-- Schema: `protocol/ota.proto`; framing/semantics: `OTA_PROTOCOL.md`.
+- Schema: `protocol/ota.proto`; framing/semantics: `docs/ota/protocol.md`.
 - Shared bounded `no_std` codec/handler: `crates/ota-protocol` (micropb 0.7.0).
 - Networking: `crates/wifi-network`, returning an existing stack for services.
 - Listener: `crates/device-service/src/status.rs`. `device-service::start_status`
@@ -442,7 +442,7 @@ radio starts. It reports the configured image-header capacity, partition count,
 running partition (MMU-derived), OTA slot offsets/sizes, and metadata presence.
 No erase, write, boot-selection, or reboot operation has been enabled.
 
-Candidate layout and offline export commands are documented in `partitions/README.md`.
+Candidate layout and offline export commands are documented in `docs/ota/provisioning.md`.
 The baseline placeholder image exported at 484,880 bytes into either 3 MiB slot;
 slot-specific exports were identical. Actual table, bootloader OTA selection, and
 migration safety still need board checks. Next action is user-terminal flashing
@@ -472,7 +472,7 @@ security-fuse changes were made by the agent.
   locally at this chat's work/backup-before-ota.bin; it includes the entire old
   477,488-byte app (its ESP SHA footer verified), original table, bootloader, NVS,
   and PHY. It contains credentials and is not a shared artifact.
-- Installed layout is documented in partitions/README.md and ota-16mb.csv. The
+- Installed layout is documented in docs/ota/provisioning.md and ota-16mb.csv. The
   old 24 KiB NVS region is preserved, not shrunk. Post-test NVS read matched the
   pre-migration bytes exactly. No eFuses/security settings were changed.
 - Added crates/ota-core: bounded state machine, image structure/descriptor/version
@@ -499,7 +499,7 @@ security-fuse changes were made by the agent.
 - 29 host tests pass (14 status/client, 3 upload tests including acknowledgement
   rejection and lost commit reply, 5 core tests including storage fault injection,
   7 codec/framing tests). Eleven non-activating hardware fault probes and a full
-  verify-only upload pass; see OTA_TESTING.md for the recorded campaign. Release dev-ota
+  verify-only upload pass; see docs/ota/testing.md for the recorded campaign. Release dev-ota
   firmware links. Bootloader OTA selection is verified on this board; automatic
   rollback and power interruption during data/metadata writes are not verified.
 - Security deliberately pending: no signatures, TLS, or downgrade enforcement.
@@ -510,5 +510,5 @@ security-fuse changes were made by the agent.
   confirmation and power-loss tests, then update authentication. Latency/Wi-Fi
   loss recovery investigations remain parked follow-ups.
 
-See [OTA automated tests and manual fault harness](OTA_TESTING.md) for the validation
+See [OTA automated tests and manual fault harness](testing.md) for the validation
 matrix, board probe modes, physical fault procedures, and result template.

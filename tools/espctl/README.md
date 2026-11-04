@@ -37,7 +37,7 @@ The device is not authenticated.
 
 ## Development OTA uploads
 
-See [build, export, provisioning, and upload guide](../../partitions/README.md).
+See [build, export, provisioning, and upload guide](../../docs/ota/provisioning.md).
 An upload verifies but does not activate unless `--commit` is supplied:
 
 ```sh
@@ -59,7 +59,7 @@ cargo run --locked -p espctl -- status --host 10.128.248.68 --boot
 Requires `device-demo` firmware with boot inventory support. The query is
 read-only; OTA availability depends on the build feature and partition layout. The reported configured flash capacity comes from the image
 header,
-not a physical chip probe. See [partition foundations](../../partitions/README.md)
+not a physical chip probe. See [partition foundations](../../docs/ota/provisioning.md)
 for the build/flash command, candidate layout, and offline image export.
 
 ## Profile query latency
@@ -176,8 +176,8 @@ WIFI_SSID=build-check WIFI_PASSWORD=build-check \
 ```
 
 Rebuild with real network settings before flashing. Placeholder builds cannot
-connect to your Wi-Fi. See [OTA_PROTOCOL.md](../../OTA_PROTOCOL.md) for the contract
-and [OTA_DESIGN.md](../../OTA_DESIGN.md) for the remaining OTA milestones.
+connect to your Wi-Fi. See [docs/ota/protocol.md](../../docs/ota/protocol.md) for the contract
+and [docs/ota/design.md](../../docs/ota/design.md) for the remaining OTA milestones.
 
-See [OTA automated tests and manual fault harness](../../OTA_TESTING.md) for the validation
+See [OTA automated tests and manual fault harness](../../docs/ota/testing.md) for the validation
 matrix, board probe modes, physical fault procedures, and result template.

@@ -11,8 +11,8 @@ Mac visualization tools, and a development OTA update system over Wi-Fi.
 | Stream and visualize IMU measurements | [IMU guide](crates/imu-demo/README.md) and [visualizer](tools/imu-visualizer/README.md) |
 | Monitor soil moisture | [Sensor guide](crates/soil-sensor/README.md) and [dashboard](tools/soil-visualizer/README.md) |
 | Query a device or profile latency | [espctl CLI](tools/espctl/README.md) |
-| Provision a board and update it over Wi-Fi | [OTA provisioning and upload guide](partitions/README.md) |
-| Understand the update design and lifecycle | [Design and milestones](OTA_DESIGN.md), [API and diagrams](OTA_PROTOCOL.md) |
+| Provision a board and update it over Wi-Fi | [OTA provisioning and upload guide](docs/ota/provisioning.md) |
+| Understand the update design and lifecycle | [OTA documentation](docs/ota/README.md) |
 
 ## Inventory
 
@@ -216,7 +216,7 @@ cargo run --locked -p espctl -- profile --host <board-ip> --samples 10 --interva
 Host commands use the compiler's native target. Wi-Fi credentials are embedded at compile time; keep them out
 of tracked files and treat exported firmware images as containing credentials.
 
-For updates, follow the [provisioning and upload guide](partitions/README.md)
+For updates, follow the [provisioning and upload guide](docs/ota/provisioning.md)
 to install the 16 MiB board layout over USB and export an application binary.
 The updater writes the inactive 3 MiB app slot, reads back and verifies the image,
 then changes boot selection and resets only when `--commit` is requested.
@@ -251,11 +251,11 @@ Updates are currently **unsigned and unencrypted**. Hashes detect corruption,
 but do not authorize a sender. Authentication, dependable automatic rollback,
 health deadlines, and power-loss testing remain pending. Fleet discovery, a
 management dashboard, and the Wi-Fi latency investigation are deferred.
-See [OTA_DESIGN.md](OTA_DESIGN.md) for evidence and next steps, and
-[OTA_PROTOCOL.md](OTA_PROTOCOL.md) for operation contracts, sequence diagrams,
+See [docs/ota/design.md](docs/ota/design.md) for evidence and next steps, and
+[docs/ota/protocol.md](docs/ota/protocol.md) for operation contracts, sequence diagrams,
 upload states, and the boot lifecycle.
 
-See [OTA automated tests and manual fault harness](OTA_TESTING.md) for the validation
+See [OTA automated tests and manual fault harness](docs/ota/testing.md) for the validation
 matrix, board probe modes, physical fault procedures, and result template.
 
 ## References

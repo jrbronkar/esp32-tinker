@@ -26,7 +26,7 @@ The memory target cannot model torn flash writes or bootloader recovery.
 
 Prepare a provisioned `device-demo --features dev-ota` board and a compatible
 application-only candidate binary with a distinct embedded version, following
-[the provisioning guide](partitions/README.md). Keep the known-good image and
+[the provisioning guide](provisioning.md). Keep the known-good image and
 partition CSV for USB recovery. Record a baseline with `espctl status --boot`.
 
 From `nix develop` at the repository root, run one case:
@@ -134,7 +134,7 @@ Recovery performed / follow-up:
   different failure variants; storage injection exercises read, write, and commit.
 - Manual harness and other CLI examples compile for the Mac target.
 - Earlier board evidence: A → B → C activation, verify-only, disconnect,
-  digest rejection, and NVS comparison; see OTA_DESIGN.md.
+  digest rejection, and NVS comparison; see docs/ota/design.md.
 - Eleven non-activating board probe modes now pass on the connected ESP32-S3;
   see the hardware run below. Paused physical-fault and valid-commit modes remain
   unexecuted in this run.
