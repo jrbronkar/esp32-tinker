@@ -1,6 +1,18 @@
 # ESP32
 
-Rust firmware experiments for two ESP32-S3 DevKitC-1 boards. The first crate is a bare-metal serial hello-world baseline.
+Bare-metal Rust firmware for ESP32-S3 DevKitC-1 boards, with sensor demos,
+Mac visualization tools, and a development OTA update system over Wi-Fi.
+
+## Start here
+
+| Task | Starting point |
+| --- | --- |
+| Set up the toolchain and flash a first program | [Development shell](#enter-the-development-shell), [build](#build), and [flash](#flash-and-monitor) below |
+| Stream and visualize IMU measurements | [IMU guide](crates/imu-demo/README.md) and [visualizer](tools/imu-visualizer/README.md) |
+| Monitor soil moisture | [Sensor guide](crates/soil-sensor/README.md) and [dashboard](tools/soil-visualizer/README.md) |
+| Query a device or profile latency | [espctl CLI](tools/espctl/README.md) |
+| Provision a board and update it over Wi-Fi | [OTA provisioning and upload guide](partitions/README.md) |
+| Understand the update design and lifecycle | [Design and milestones](OTA_DESIGN.md), [API and diagrams](OTA_PROTOCOL.md) |
 
 ## Inventory
 
@@ -167,6 +179,79 @@ The host-side Rust application in `tools/imu-visualizer` consumes the IMU firmwa
 ## Live soil dashboard
 
 The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telemetry on port `7777`. It displays the current watering state, sensor readings, connection health, and a rolling moisture graph. Run it with `nix run .#soil-visualizer`; its [README](tools/soil-visualizer/README.md) has the details.
+
+## Device management and development OTA
+
+The sensor-free `device-demo` firmware hosts a device-management service on TCP
+port **7779**. The Mac initiates requests with `espctl`; no cloud service or
+separate backend is required. The API uses **Protobuf over length-prefixed TCP**.
+It does not use gRPC or HTTP, so use `espctl` rather than `curl`.
+
+Default builds expose read-only status: device identity, firmware version, uptime,
+OTA availability, and optional boot inventory and timing diagnostics. Uploads
+require the explicit `dev-ota` feature and the supported partition layout.
+
+From the repository root:
+
+```sh
+nix develop
+# Export WIFI_SSID and WIFI_PASSWORD in your local environment before building.
+cargo build --locked --release -p device-demo
+```
+
+Once the device firmware is installed and its Wi-Fi address is known:
+
+```sh
+./tools/espctl/run.sh status --host <board-ip> --boot
+./tools/espctl/run.sh status --host <board-ip> --timings
+./tools/espctl/run.sh profile --host <board-ip> --samples 10 --interval-ms 500
+```
+
+The host launcher selects the Mac target independently of the workspace's Xtensa
+firmware target. Wi-Fi credentials are embedded at compile time; keep them out
+of tracked files and treat exported firmware images as containing credentials.
+
+For updates, follow the [provisioning and upload guide](partitions/README.md)
+to install the 16 MiB board layout over USB and export an application binary.
+The updater writes the inactive 3 MiB app slot, reads back and verifies the image,
+then changes boot selection and resets only when `--commit` is requested.
+A verify-only upload leaves the existing application selected. USB/BOOT/RESET
+remain the recovery path.
+
+### Code layout
+
+| Component | Responsibility |
+| --- | --- |
+| `crates/device-demo` | Standalone management firmware without sensors or telemetry |
+| `crates/wifi-network` | Shared Wi-Fi connection, reconnection, DHCP, and network runner |
+| `crates/wifi-telemetry` | UDP telemetry sender attached to an existing network stack |
+| `crates/device-service` | TCP status/upload handling, partition inspection, flash access, and boot selection |
+| `crates/ota-core` | Portable update validation and transfer rules |
+| `crates/ota-protocol`, `protocol/ota.proto` | Shared fixed-capacity micropb messages and framing helpers |
+| `tools/espctl` | Clap-based status, profiling, and upload CLI |
+| `partitions` | Provisioning layout and operational guide |
+
+IMU and soil firmware use the shared networking layer for telemetry; they do not
+yet start the management service. OTA development stays in `device-demo` until
+that integration is ready.
+
+### Verification and remaining work
+
+The development update path has been exercised on a real ESP32-S3: USB-provisioned
+A → Wi-Fi B → Wi-Fi C, alternating slots. Disconnect and digest-mismatch tests
+left the running firmware selected, and NVS remained byte-identical. Host tests
+cover protocol bounds, TCP client behavior, and update validation.
+
+Updates are currently **unsigned and unencrypted**. Hashes detect corruption,
+but do not authorize a sender. Authentication, dependable automatic rollback,
+health deadlines, and power-loss testing remain pending. Fleet discovery, a
+management dashboard, and the Wi-Fi latency investigation are deferred.
+See [OTA_DESIGN.md](OTA_DESIGN.md) for evidence and next steps, and
+[OTA_PROTOCOL.md](OTA_PROTOCOL.md) for operation contracts, sequence diagrams,
+upload states, and the boot lifecycle.
+
+See [OTA automated tests and manual fault harness](OTA_TESTING.md) for the validation
+matrix, board probe modes, physical fault procedures, and result template.
 
 ## References
 

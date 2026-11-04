@@ -16,7 +16,7 @@ use esp_println::println;
 use heapless::String;
 use onboard_rgb::{breathing_rgb, DEFAULT_BRIGHTNESS};
 use soil_sensor::{Calibration, Smoother};
-use wifi_telemetry::Settings;
+use wifi_network::Settings;
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
@@ -37,7 +37,7 @@ async fn main(spawner: Spawner) -> ! {
     let destination: Ipv4Addr = SOIL_UDP_HOST
         .parse()
         .unwrap_or_else(|_| fatal("SOIL_UDP_HOST must be an IPv4 address"));
-    let mut telemetry = wifi_telemetry::connect(
+    let stack = wifi_network::connect(
         spawner,
         peripherals.WIFI,
         peripherals.TIMG0,
@@ -45,12 +45,13 @@ async fn main(spawner: Spawner) -> ! {
         Settings {
             ssid: WIFI_SSID,
             password: WIFI_PASSWORD,
-            destination,
-            port: SOIL_UDP_PORT,
         },
     )
     .await
     .unwrap_or_else(|_| fatal("Wi-Fi telemetry initialization failed"));
+
+    let mut telemetry = wifi_telemetry::UdpTelemetry::new(stack, destination, SOIL_UDP_PORT)
+        .unwrap_or_else(|_| fatal("UDP telemetry initialization failed"));
 
     let mut adc_config = AdcConfig::new();
     let mut soil_pin = adc_config.enable_pin(peripherals.GPIO4, Attenuation::_11dB);
