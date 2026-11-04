@@ -66,7 +66,7 @@ a lost reply or metadata-write interruption has an uncertain outcome. Check the
 running version before retrying; no transmitted operation is automatically replayed.
 
 The confirmation hook attempts to mark a selected, actually running PendingVerify
-image Valid after networking starts. It ignores confirmation errors and has no
+image Valid after networking starts. It logs confirmation errors and continues; it has no
 bounded health policy. Two slots and checksums do not establish automatic rollback.
 See [API contracts and lifecycle diagrams](protocol.md) for exact wire behavior.
 

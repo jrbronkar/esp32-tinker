@@ -100,7 +100,7 @@ do not prove the Embassy implementation handles these cases.
 1. Build/provision a bootloader with rollback explicitly enabled and record the
    exact configuration. Do not infer support from two slots or `New` metadata.
 2. Implement a bounded health deadline and confirmation policy; the current hook
-   marks a matching PendingVerify image Valid after networking and ignores errors.
+   marks a matching PendingVerify image Valid after networking and logs errors while continuing.
 3. Build separate candidates that panic before network startup, hang before
    confirmation, and pass health checks. Give each a distinct version.
 4. Commit each candidate, capture serial boot states, and force the reset required

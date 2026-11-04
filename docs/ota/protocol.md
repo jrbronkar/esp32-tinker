@@ -319,7 +319,7 @@ it does not call the ESP-IDF OTA C runtime. `FlashStorage` writes the image,
 to chip startup. The bootloader, not the `Ota` object, starts the chosen image.
 
 The current confirmation hook runs after networking is initialized, attempts to
-mark a matching `PendingVerify` image `Valid`, and ignores confirmation errors.
+mark a matching `PendingVerify` image `Valid`, and logs confirmation errors while continuing to serve requests.
 It is not a complete health policy. Rollback support in the installed bootloader,
 a bounded health deadline, and reset/power-loss recovery are not yet verified.
 The diagrams do not claim automatic fallback works today.

@@ -16,7 +16,9 @@ pub async fn server(
     let mut identity = identity;
     let mut target = crate::flash_target::FlashTarget::new(flash);
     identity.ota_available = target.available;
-    let _ = target.confirm_running();
+    if let Err(error) = target.confirm_running() {
+        println!("Running image confirmation failed: {error:?}");
+    }
     let mut rx = [0u8; 1024];
     let mut tx = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
