@@ -108,3 +108,29 @@ Next, compare on another LAN/AP if available, or capture at the AP/wireless
 boundary to distinguish forwarding from radio reception. macOS packet capture
 requires administrator access. Keep packet captures and temporary diagnostic firmware outside the
 repository; the production TXT contract excludes these counters.
+
+### Alternate-network comparison
+
+The same mDNS implementation, rebuilt with iPhone hotspot credentials as
+`mdns-hotspot-1`, was found in 10/10 independent scans, including scans well
+after startup. Direct TCP status and boot inventory also passed once the Mac had
+a local IPv4 address. On the original WLAN, a fresh startup passed 3/3 scans and
+a later round passed 2/3. This strengthens the case for an original-network
+forwarding or radio interoperability issue; it does not identify the exact AP
+setting or driver defect.
+
+The startup capture saw an IGMPv2 report with Router Alert from another device,
+not the ESP32. It therefore does not verify the ESP32 report on the wire. An AP
+may consume membership reports without forwarding them to the Mac.
+
+The hotspot exposed a separate addressing problem: the Mac initially had a
+translated IPv4 address (`192.0.0.2`) and routed the advertised board address
+through its gateway. Discovery succeeded but direct status timed out. After a
+temporary IPv6-off test and restoring IPv6 to Automatic, the Mac obtained
+`172.20.10.7/28`, directly reached the board at `172.20.10.6`, and status passed.
+Do not confuse successful DNS-SD resolution with endpoint reachability.
+
+Normal `mdns-3` firmware and original Wi-Fi credentials were restored afterward.
+A later mDNS scan rediscovered the board at `10.128.248.68:7779`; direct status
+and boot inventory confirmed ota_0 and OTA available. No USB connection was
+needed to complete the recovery check.
