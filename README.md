@@ -194,9 +194,9 @@ separate backend is required. The API uses **Protobuf over length-prefixed TCP**
 gRPC (client, server, or gateway) and HTTP/2 integration are explicitly out of
 scope. Use `espctl` rather than `curl`.
 
-Default builds expose read-only status: device identity, firmware version, uptime,
+The firmware exposes read-only status: device identity, firmware version, uptime,
 OTA availability, and optional boot inventory and timing diagnostics. Uploads
-require the explicit `dev-ota` feature and the supported partition layout.
+are included in every `device-demo` build and require the supported partition layout.
 
 From the repository root:
 

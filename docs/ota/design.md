@@ -29,7 +29,7 @@ Mac CLI to one board and a decoded response, without any flash writes.
   Sensor demos use networking/telemetry and do not start the management service.
 - `espflash` currently installs firmware over USB. The Nix flake pins the
   Xtensa toolchain.
-- The opt-in `dev-ota` firmware now supports unsigned uploads using protocol version 1. The tested
+- The `device-demo` firmware supports unsigned uploads using protocol version 1. The tested
   board is provisioned with two 3 MiB app slots and OTA metadata; status and uploads share that version.
 - Work in this checkout, `~/sources/esp32`. A separate `esp32-tinker` checkout
   was present at the same commit when this design was drafted.
@@ -173,8 +173,7 @@ idle -> inspect request -> accept -> receive -> verify -> ready to commit
 
 Anyone able to reach the enabled updater can request a compatible firmware
 installation. SHA-256 and compatibility checks protect against mistakes and
-corruption, not a malicious sender. Keep this mode explicitly opt-in and make its
-status visible. Do not describe this milestone as secure OTA.
+corruption, not a malicious sender. Keep its unauthenticated development status visible. Do not describe this milestone as secure OTA.
 
 ### Next: signed releases and update authorization
 
@@ -260,7 +259,7 @@ GUI, or discovery is required for this milestone.
 - [x] Validate metadata/descriptor, stream sectors to the inactive slot, and
   read back SHA-256 plus ESP segment checksum/footer before activation.
 - [x] Implement explicit commit/reboot and confirm A -> B -> C release identities.
-- [x] Integrate standalone device-demo behind the explicit dev-ota feature.
+- [x] Integrate standalone device-demo (OTA is now unconditional; the initial feature gate was removed).
 
 Acceptance: provision once by USB, install distinguishable release B over Wi-Fi,
 verify B is running, then install release C over Wi-Fi. The second update proves
@@ -480,7 +479,7 @@ security-fuse changes were made by the agent.
 - Added crates/ota-core: bounded state machine, image structure/descriptor/version
   and dev-ota capability marker, sequential sector chunks, stored-image hash,
   segment XOR checksum, ESP image SHA footer, and explicit verified-state commit.
-- Device-service dev-ota is off by default. Its backend accepts only the exact
+- Device-service includes development OTA unconditionally. Its backend accepts only the exact
   installed layout and only the opposite of the MMU-identified running app. App
   writes cannot address bootloader/table/NVS/PHY; commit changes OTA metadata only.
 - Upload sessions use a separate 4608-byte bound for 4096-byte chunks; status keeps
@@ -505,7 +504,8 @@ security-fuse changes were made by the agent.
   firmware links. Bootloader OTA selection is verified on this board; automatic
   rollback and power interruption during data/metadata writes are not verified.
 - Security deliberately pending: no signatures, TLS, or downgrade enforcement.
-  dev-ota enables unauthenticated writes on this LAN; ordinary builds omit it.
+  Every device-demo build includes unauthenticated updates on this LAN when the
+  supported layout is present. Sensor demos do not start the service.
   Future authentication must be designed around exact signed bytes and proper
   provisioning/replacement of verification keys. Do not call this production OTA.
 - Next implementation milestone: rollback-enabled bootloader plus bounded health
@@ -547,3 +547,13 @@ prototype is superseded. See [versioning and development-board migration](protoc
 
 Unified version 1 was USB-flashed as `unified-1` and passed the eleven non-activating
 fault probes on the ESP32-S3. See [the hardware migration record](testing.md#unified-firmware-usb-migration-2026-11-03) for build identity, initial reachability failures, harness retry correction, and validation limits.
+
+
+### OTA feature removal
+
+The dev-ota Cargo feature has been removed from device-demo and device-service.
+Every device-demo build includes the updater and existing capability marker.
+Partition/running-slot checks still govern ota_available, and activation still
+requires explicit Commit. Historical test entries that name the old feature or
+two firmware configurations describe earlier builds. The current no-feature
+build passes the firmware check and all 30 host tests; it has not been flashed by this change.

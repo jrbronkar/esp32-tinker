@@ -9,8 +9,8 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Query ESP32 device status",
-    long_about = "Read-only Protobuf device status over plain TCP. Device identity is not authenticated. No flash writes."
+    about = "Manage ESP32 status and development firmware updates",
+    long_about = "Protobuf device status, profiling, and unsigned development uploads over plain TCP. Device identity is not authenticated. Uploads write the inactive slot; activation requires --commit."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -147,7 +147,7 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
         if status.ota_available {
             "available"
         } else {
-            "unavailable (status only)"
+            "unavailable (unsupported boot layout)"
         }
     );
     if args.boot {

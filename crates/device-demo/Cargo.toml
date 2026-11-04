@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[features]
-dev-ota = ["device-service/dev-ota"]
-
 [dependencies]
 device-service = { path = "../device-service" }
 wifi-network = { path = "../wifi-network" }

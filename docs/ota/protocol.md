@@ -1,6 +1,6 @@
 # Device management API: Protobuf over TCP
 
-Status: status and opt-in unsigned development uploads are implemented. Both the
+Status: status and unsigned development uploads are implemented. Both the
 earlier split-version build and unified version 1 have real ESP32-S3 evidence;
 see the testing guide for the exact cases and remaining gaps.
 Recovery after actual Wi-Fi loss remains untested.
@@ -30,13 +30,11 @@ at build time; firmware serialization uses fixed-capacity containers, no allocat
 - All strings are valid UTF-8 and limited to **64 bytes**, enforced by generated
   fixed-capacity types. The schema alone does not express those bounds; generator
   settings in `crates/ota-protocol/build.rs` are part of the contract.
-- Firmware allows one active session. In default status-only builds, a **five-second total session deadline**
-  begins after accept and includes reads, writes, and response acknowledgement.
-  Its socket also has a five-second receive inactivity timeout. Slow partial
-  requests cannot extend the total deadline. Pending TCP handshakes and network
-  availability are handled by the underlying network stack. Opt-in `dev-ota`
-  builds use a 180-second total bound, including for status connections; individual
-  request reads remain bounded to five seconds.
+- Firmware allows one active session with a **180-second total session deadline**
+  after accept, including reads, writes and response acknowledgement. Socket
+  inactivity and individual request-prefix/body reads are bounded to five seconds.
+  Slow partial requests cannot extend the total deadline. Pending handshakes and
+  network availability are handled by the underlying stack.
 - Mac defaults to a **five-second total deadline**, including connect and I/O;
   `--timeout-ms` can select 1..60000 ms. Host argument parsing accepts IP literals,
   not DNS names, so name resolution cannot escape that deadline.
@@ -69,7 +67,7 @@ only one request; the ID is correlation, not authentication or replay protection
 | `application` | `device-demo` for the standalone test firmware |
 | `firmware_version` | Build-time `FIRMWARE_VERSION`, or package version if unset |
 | `uptime_ms` | Milliseconds since the firmware monotonic timer epoch; not wall-clock time |
-| `ota_available` | True only in an opt-in `dev-ota` build with the supported layout and an identifiable inactive slot |
+| `ota_available` | True when the supported layout and an identifiable inactive slot are present |
 
 Ordinary status omits partition inventory; `include_boot` requests it explicitly. Status is
 service liveness and build identity, not a sensor-health assertion. Application
@@ -97,9 +95,9 @@ identity and version must be nonempty on a successful CLI response.
 
 Status v1 is **read-only, unauthenticated plain TCP**, started by the dedicated
 `device-demo` firmware. Sensor demos do not start it. It exposes identity and
-version to reachable LAN peers. Default builds cannot install firmware or reboot
-through this service; opt-in `dev-ota` builds also expose the write/commit path
-below. Neither path updates the partition table. Wi-Fi credentials are never
+version to reachable LAN peers. Every `device-demo` build includes the upload
+and commit path below, available only with the supported partition layout.
+Neither path updates the partition table. Wi-Fi credentials are never
 included in status.
 Future signed update authorization and optional TLS are covered by
 [docs/ota/design.md](design.md).
@@ -136,8 +134,8 @@ fields are covered by a control-frame roundtrip test. See `docs/ota/provisioning
 ## Unsigned development uploads
 
 All requests use protocol_version 1. Upload dispatch uses the payload operation,
-not a separate version number. Status uses one request per connection. The default build exposes no upload path.
-A dev-ota build only advertises ota_available when its exact provisioned layout
+not a separate version number. Status uses one request per connection. Uploads are included in every `device-demo` build.
+The device only advertises ota_available when its exact provisioned layout
 matches and it can identify a different inactive slot. No signature verification
 or TLS is implemented in this milestone.
 
@@ -164,15 +162,14 @@ byte capacity, SHA-256 has capacity 32. Request IDs increment by exactly one per
 frame within the session, and responses echo the corresponding ID/version.
 Error responses are best effort; invalid framing may simply close the connection.
 
-The first chunk's chip, descriptor/project, version, and dev-ota marker are checked
+The first chunk's chip, descriptor/project, version, and OTA capability marker are checked
 before the first flash write. Complete verification happens after all writes and
 reads flash back; receiving a hash from a sender is not authentication. The target
 backend also enforces slot bounds and sector-aligned writes. No transfer can
 select the currently running partition as its target.
 
-The dev-ota service has a 180-second total session bound and five-second receive
-inactivity/per-prefix/per-body deadlines. Status-only builds retain the original
-five-second session bound. The host upload has a 180-second total deadline and
+The device service has a 180-second total session bound and five-second receive
+inactivity/per-prefix/per-body deadlines. The host upload has a 180-second total deadline and
 bounded I/O waits. Initial connection refusals may be retried; no transmitted
 upload operation is automatically retried. Resumable uploads, persistent verified
 sessions, automatic fleet rollout, and remote partition-table updates are absent.
@@ -308,7 +305,7 @@ flowchart TD
     Entry --> Init[Rust startup and peripheral initialization]
     Init --> WiFi[Connect Wi-Fi and obtain DHCP address]
     WiFi --> Service[Start device service]
-    Service --> Confirm{dev-ota: selected equals running and PendingVerify?}
+    Service --> Confirm{selected equals running and PendingVerify?}
     Confirm -->|Yes| Valid[Attempt to mark image Valid]
     Confirm -->|No| Serve[Accept status and optional update requests]
     Valid --> Serve
@@ -333,7 +330,7 @@ The diagrams do not claim automatic fallback works today.
 Status and upload share protocol version 1. Protobuf field numbers and unknown
 field handling support additive schema evolution; protocol_version rejects
 incompatible framing or semantics, not individual capabilities. Upload capability
-is advertised through ota_available and enabled by the dev-ota build feature.
+is advertised through ota_available and requires the supported partition layout.
 
 This supersedes the development-only status-v1/upload-v2 split. Old v2 upload
 clients/firmware are intentionally unsupported. The application capability marker

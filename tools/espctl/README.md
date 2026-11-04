@@ -2,7 +2,7 @@
 
 A Mac CLI for querying and updating one board by IP using
 bounded Protobuf messages over TCP. The optional unsigned development uploader
-shares protocol version 1 with status and requires a provisioned dev-ota firmware.
+shares protocol version 1 with status and requires provisioned `device-demo` firmware.
 
 ## Build and query
 
@@ -46,8 +46,8 @@ cargo run -p espctl -- upload --host 10.128.248.68 \
 ```
 
 The release string must match the embedded version. Images must be exported
-application binaries built with `--features dev-ota`; ordinary sensor/status
-images, ELF files, and merged images are rejected. After commit, reconnect and
+application binaries built from `device-demo`; sensor images, ELF files,
+and merged images are rejected. After commit, reconnect and
 check version and running slot. Commit-response loss is an uncertain outcome.
 
 ## Inspect flash/boot layout

@@ -24,7 +24,7 @@ The memory target cannot model torn flash writes or bootloader recovery.
 
 ## Board harness
 
-Prepare a provisioned `device-demo --features dev-ota` board and a compatible
+Prepare a provisioned `device-demo` board and a compatible
 application-only candidate binary with a distinct embedded version, following
 [the provisioning guide](provisioning.md). Keep the known-good image and
 partition CSV for USB recovery. Record a baseline with `espctl status --boot`.

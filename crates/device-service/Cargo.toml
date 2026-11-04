@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[features]
-dev-ota = []
-
 [dependencies]
 ota-protocol = { path = "../ota-protocol" }
 embassy-executor = "0.10.0"

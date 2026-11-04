@@ -7,9 +7,6 @@ use esp_backtrace as _;
 use esp_hal::{clock::CpuClock, ram};
 use esp_println::println;
 
-#[cfg(not(feature = "dev-ota"))]
-esp_bootloader_esp_idf::esp_app_desc!();
-#[cfg(feature = "dev-ota")]
 esp_bootloader_esp_idf::esp_app_desc!(
     match option_env!("FIRMWARE_VERSION") {
         Some(version) => version,
@@ -61,9 +58,6 @@ async fn main(spawner: Spawner) -> ! {
         println!("Device service initialization failed: {error}");
         restart_initialization().await;
     }
-    #[cfg(not(feature = "dev-ota"))]
-    println!("device-demo ready: status only; no sensors, telemetry, or flash writes");
-    #[cfg(feature = "dev-ota")]
     println!("device-demo ready: UNSIGNED DEVELOPMENT OTA; requires provisioned layout");
     loop {
         Timer::after(Duration::from_secs(10)).await;

@@ -1,4 +1,4 @@
-//! Device status service with opt-in unsigned development OTA uploads.
+//! Device status service with unsigned development OTA uploads.
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use esp_println::println;
@@ -13,23 +13,15 @@ pub async fn server(
     identity: StatusResponse,
     flash: esp_storage::FlashStorage<'static>,
 ) {
-    #[cfg(feature = "dev-ota")]
     let mut identity = identity;
-    #[cfg(feature = "dev-ota")]
     let mut target = crate::flash_target::FlashTarget::new(flash);
-    #[cfg(feature = "dev-ota")]
-    {
-        identity.ota_available = target.available;
-        let _ = target.confirm_running();
-    }
-    #[cfg(not(feature = "dev-ota"))]
-    let _ = flash;
+    identity.ota_available = target.available;
+    let _ = target.confirm_running();
     let mut rx = [0u8; 1024];
     let mut tx = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
     socket.set_timeout(Some(Duration::from_secs(SESSION_TIMEOUT_SECS)));
     println!("Protobuf device service on TCP port {PORT} (unauthenticated)");
-    #[cfg(feature = "dev-ota")]
     println!("Development OTA available: {}", identity.ota_available);
     let mut sequence = 0u64;
     loop {
@@ -40,18 +32,8 @@ pub async fn server(
             // Absolute session deadline, including reads, writes, and ACKs. A
             // trickle of bytes must not monopolize the sole listener forever.
             match with_timeout(
-                Duration::from_secs(if cfg!(feature = "dev-ota") {
-                    180
-                } else {
-                    SESSION_TIMEOUT_SECS
-                }),
-                session(
-                    &mut socket,
-                    &identity,
-                    &mut trace,
-                    #[cfg(feature = "dev-ota")]
-                    &mut target,
-                ),
+                Duration::from_secs(180),
+                session(&mut socket, &identity, &mut trace, &mut target),
             )
             .await
             {
@@ -94,7 +76,7 @@ async fn session(
     socket: &mut TcpSocket<'_>,
     identity: &StatusResponse,
     trace: &mut Trace,
-    #[cfg(feature = "dev-ota")] target: &mut crate::flash_target::FlashTarget,
+    target: &mut crate::flash_target::FlashTarget,
 ) -> Result<(), ()> {
     trace.phase = "read";
     let accepted = Instant::now();
@@ -116,7 +98,6 @@ async fn session(
     let decoded = Instant::now();
     let request: Request = ota_protocol::decode(&body[..length]).map_err(|_| ())?;
     trace.decode_us = decoded.elapsed().as_micros();
-    #[cfg(feature = "dev-ota")]
     if request.protocol_version == ota_protocol::VERSION
         && matches!(
             &request.payload,

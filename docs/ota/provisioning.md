@@ -39,7 +39,7 @@ The hardware results below describe the earlier build, not this migration.
 In nix develop with Wi-Fi variables exported:
 
 ```sh
-FIRMWARE_VERSION=ota-a cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo --features dev-ota
+FIRMWARE_VERSION=ota-a cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
 espflash flash --port /dev/cu.usbmodem5C4C1816511 --flash-size 16mb \
   --partition-table partitions/ota-16mb.csv --target-app-partition ota_0 \
   --erase-parts otadata target/xtensa-esp32s3-none-elf/release/device-demo
@@ -53,7 +53,7 @@ Back up a different board and inspect its data/layout before migrating it.
 ## Build and export the next release
 
 ```sh
-FIRMWARE_VERSION=ota-next cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo --features dev-ota
+FIRMWARE_VERSION=ota-next cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
 mkdir -p target/ota
 espflash save-image --chip esp32s3 --flash-size 16mb \
   --partition-table partitions/ota-16mb.csv --target-app-partition ota_0 \
@@ -61,7 +61,7 @@ espflash save-image --chip esp32s3 --flash-size 16mb \
 ```
 
 Export an application-only .bin, not an ELF or merged image. It works in either
-slot. The dev-ota build embeds a descriptor marker (`rust-dev-ota-v1`) and release
+slot. The device-demo build embeds a descriptor marker (`rust-dev-ota-v1`) and release
 version so host/device can reject incompatible images or firmware missing the
 update capability. The validated A/B/C images were 503,392 bytes each.
 
@@ -106,7 +106,7 @@ take several seconds. Uploads currently take tens of seconds on this network.
   matched the original 24 KiB exactly.
 - Generic engine tests cover order/size, incompatible descriptors, corrupted flash,
   segment checksum/footer, and rejecting commit before verification.
-- Uploads are unsigned/unencrypted and enabled only by `--features dev-ota`.
+- Uploads are unsigned/unencrypted and included in every `device-demo` build.
   Authentication, signed manifests, downgrade policy, power-cut fault testing,
   and reliable automatic rollback remain subsequent milestones.
 - The bootloader's OTA slot selection is now verified on this board. Automatic

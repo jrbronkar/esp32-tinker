@@ -35,7 +35,7 @@ pub fn upload(
     }
     let image = fs::read(path)?;
     ota_core::validate_image(&mut ota_core::SliceImage(&image),image.len() as u32,version)
-        .map_err(|e|invalid(format!("image validation: {e:?}; build device-demo --features dev-ota and export an application-only image")))?;
+        .map_err(|e|invalid(format!("image validation: {e:?}; build device-demo and export an application-only image")))?;
     let device = super::query_status_with_options(address, timeout, false, true)?.status;
     if !device.ota_available || device.application.as_str() != ota_core::APP {
         return Err(invalid(

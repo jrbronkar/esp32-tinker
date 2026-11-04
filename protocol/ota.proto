@@ -1,7 +1,7 @@
 syntax = "proto3";
 package ota;
 
-// All operations use protocol version 1. Uploads require explicit dev-ota firmware.
+// All operations use protocol version 1. Uploads require a supported OTA partition layout.
 message Request {
   uint32 protocol_version = 1;
   uint32 request_id = 2;

@@ -2,13 +2,11 @@
 
 use embassy_executor::Spawner;
 pub mod boot;
-#[cfg(feature = "dev-ota")]
 mod flash_target;
 mod status;
-#[cfg(feature = "dev-ota")]
 mod upload;
 
-/// Start status and optional development OTA on an existing network stack.
+/// Start status and development OTA on an existing network stack.
 pub fn start_status(
     spawner: Spawner,
     stack: embassy_net::Stack<'static>,
