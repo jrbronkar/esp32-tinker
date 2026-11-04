@@ -91,7 +91,9 @@ for the implemented interactions and failure semantics.
 
 The Mac is the TCP client; the ESP32 hosts the service. No central server is
 required. Protobuf defines message contents, not transport or RPC behavior; this
-design does not require gRPC or HTTP.
+design uses length-prefixed Protobuf over TCP. gRPC client/server runtimes,
+HTTP/2 integration, gateways, and gRPC migration are explicitly out of scope.
+Protobuf and micropb remain the message contract and codec.
 
 Frame each message as a four-byte unsigned big-endian body length followed by
 exactly that many Protobuf bytes. Set a small maximum frame size and reject zero
@@ -527,9 +529,11 @@ replayed by this startup retry. Panics from programming errors still use the
 backtrace panic handler and do not intentionally reboot.
 
 
-### Native gRPC investigation
+### gRPC scope decision
 
-See [gRPC feasibility](grpc-feasibility.md) for the published-library compile
-experiment and proposed migration gates. Protolink 0.0.5 with Embassy TCP/timers
-cross-compiles for ESP32-S3. Memory, codec integration, standard-client interop,
-and actual device service behavior are unverified; current transport is unchanged.
+Decision: gRPC is explicitly out of scope for this OTA implementation and PR.
+Keep the existing bounded Protobuf-over-TCP protocol. There is no planned gRPC
+server/client spike, gateway, runtime dependency, or transport migration.
+The [feasibility investigation](grpc-feasibility.md) is retained as historical
+reference only; it does not add an implementation milestone. Reopening this
+choice requires a separate scope decision.

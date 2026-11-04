@@ -191,7 +191,8 @@ The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telem
 The sensor-free `device-demo` firmware hosts a device-management service on TCP
 port **7779**. The Mac initiates requests with `espctl`; no cloud service or
 separate backend is required. The API uses **Protobuf over length-prefixed TCP**.
-It does not use gRPC or HTTP, so use `espctl` rather than `curl`.
+gRPC (client, server, or gateway) and HTTP/2 integration are explicitly out of
+scope. Use `espctl` rather than `curl`.
 
 Default builds expose read-only status: device identity, firmware version, uptime,
 OTA availability, and optional boot inventory and timing diagnostics. Uploads

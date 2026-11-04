@@ -1,10 +1,12 @@
 # Native gRPC feasibility
 
-Investigated 2026-11-03. Result: a native gRPC server is a plausible next
-experiment in the existing bare-metal Rust stack. A published implementation
-cross-compiles with our Embassy socket and timer. This is **not** a linked
-firmware, memory-budget, interoperability, or hardware result. The existing
-status/update transport is unchanged.
+Status: **out of scope**, decided 2026-11-03. Historical research only.
+Neither gRPC server/client work nor a gateway or transport migration is planned
+for this implementation or PR. Keep the current Protobuf-over-TCP transport.
+
+The investigation found a candidate that cross-compiles with our Embassy socket
+and timer. It did not establish linked firmware, memory-budget, interoperability,
+or hardware results. The hypothetical steps below are not an active roadmap.
 
 ## Candidate assessment
 
@@ -91,7 +93,7 @@ No TLS feature or codec backend was enabled. No code was flashed.
 See [HTTP/2 API](https://docs.rs/protolink-http2/0.0.4/protolink_http2/) and
 [server configuration](https://docs.rs/protolink-grpc/0.0.5/protolink_grpc/struct.ServerConfig.html).
 
-## Proposed progression and gates
+## Historical evaluation outline (not scheduled)
 
 1. **Read-only status spike.** Add an opt-in experimental gRPC endpoint on a
    separate port, retaining the proven TCP service. Add a service/method to a
@@ -121,6 +123,5 @@ See [HTTP/2 API](https://docs.rs/protolink-http2/0.0.4/protolink_http2/) and
    streaming gates pass on hardware and the regression/fault suite is ported.
    Keep authentication and reliable rollback as explicit requirements.
 
-This investigation recommends a **status-only Protolink spike**, not an immediate
-rewrite of the functioning OTA transport. HTTP/2/gRPC adds useful standard client
-interoperability but also a dependency and memory-validation burden.
+The earlier status-spike proposal is superseded by the explicit out-of-scope
+decision. No gRPC implementation work is scheduled.
