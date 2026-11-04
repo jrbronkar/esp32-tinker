@@ -9,7 +9,6 @@ use ota_protocol::{
 
 #[embassy_executor::task]
 pub async fn server(
-    spawner: embassy_executor::Spawner,
     stack: Stack<'static>,
     identity: StatusResponse,
     flash: esp_storage::FlashStorage<'static>,
@@ -21,12 +20,22 @@ pub async fn server(
     if let Err(error) = target.confirm_running() {
         println!("Running image confirmation failed: {error:?}");
     }
-    let discovery = crate::discovery::server(stack, identity.clone());
-    match discovery {
-        Ok(task) => spawner.spawn(task),
-        Err(_) => println!("Discovery task unavailable"),
-    }
+    let runtime = crate::runtime::Runtime::new();
+    // Both futures borrow task-owned state. Joining keeps them concurrent without
+    // requiring a global runtime or a separate spawned task with a static borrow.
+    embassy_futures::join::join(
+        crate::discovery::serve(stack, identity.clone(), &runtime),
+        serve(stack, &identity, &mut target, &runtime),
+    )
+    .await;
+}
 
+async fn serve(
+    stack: Stack<'static>,
+    identity: &StatusResponse,
+    target: &mut crate::flash_target::FlashTarget,
+    runtime: &crate::runtime::Runtime,
+) {
     let mut rx = [0u8; 1024];
     let mut tx = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
@@ -43,7 +52,7 @@ pub async fn server(
             // trickle of bytes must not monopolize the sole listener forever.
             match with_timeout(
                 Duration::from_secs(180),
-                session(&mut socket, &identity, &mut trace, &mut target),
+                session(&mut socket, identity, &mut trace, target, runtime),
             )
             .await
             {
@@ -87,6 +96,7 @@ async fn session(
     identity: &StatusResponse,
     trace: &mut Trace,
     target: &mut crate::flash_target::FlashTarget,
+    runtime: &crate::runtime::Runtime,
 ) -> Result<(), ()> {
     trace.phase = "read";
     let accepted = Instant::now();
@@ -120,7 +130,7 @@ async fn session(
             )
         )
     {
-        return crate::upload::session(socket, request, target).await;
+        return crate::upload::session(socket, request, target, runtime).await;
     }
     trace.request_id = request.request_id;
     trace.enabled =
@@ -128,7 +138,7 @@ async fn session(
     trace.phase = "prepare";
     let prepared = Instant::now();
     let mut current = identity.clone();
-    current.management_state = crate::runtime::state().try_into().unwrap_or_default();
+    current.management_state = runtime.state().try_into().unwrap_or_default();
     current.uptime_ms = Instant::now().as_millis();
     let include_boot =
         matches!(&request.payload, Some(RequestPayload::Status(status)) if status.include_boot);

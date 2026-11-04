@@ -1,18 +1,18 @@
 //! Standard mDNS/DNS-SD responder; edge-mdns owns DNS parsing and record encoding.
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use edge_mdns::{
-    HostAnswer, HostAnswers, HostAnswersMdnsHandler, MdnsError, MdnsHandler, MdnsRequest,
-    MdnsResponse,
     buf::VecBufAccess,
     domain::base::{
-        Ttl,
         iana::{Class, Rtype},
+        Ttl,
     },
     host::{Host, Service, ServiceAnswers},
+    HostAnswer, HostAnswers, HostAnswersMdnsHandler, MdnsError, MdnsHandler, MdnsRequest,
+    MdnsResponse,
 };
 use embassy_net::{
-    Stack,
     udp::{PacketMetadata, UdpSocket},
+    Stack,
 };
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
@@ -72,6 +72,7 @@ struct Advertisement<'a> {
     host: Host<'a>,
     identity: &'a ota_protocol::StatusResponse,
     cache_flush: bool,
+    runtime: &'a crate::runtime::Runtime,
 }
 impl HostAnswers for Advertisement<'_> {
     fn visit<F, E>(&self, mut f: F) -> Result<(), E>
@@ -84,7 +85,7 @@ impl HostAnswers for Advertisement<'_> {
             ("application", self.identity.application.as_str()),
             ("firmware", self.identity.firmware_version.as_str()),
             ("protocol", "1"),
-            ("state", crate::runtime::state()),
+            ("state", self.runtime.state()),
             (
                 "ota",
                 if self.identity.ota_available {
@@ -124,8 +125,11 @@ impl MdnsHandler for Advertisement<'_> {
         HostAnswersMdnsHandler::new(&*self).handle(request, buffer)
     }
 }
-#[embassy_executor::task]
-pub async fn server(stack: Stack<'static>, identity: ota_protocol::StatusResponse) {
+pub async fn serve(
+    stack: Stack<'static>,
+    identity: ota_protocol::StatusResponse,
+    runtime: &crate::runtime::Runtime,
+) {
     let mut name = heapless::String::<32>::new();
     for ch in identity
         .device_id
@@ -169,7 +173,7 @@ pub async fn server(stack: Stack<'static>, identity: ota_protocol::StatusRespons
             &recv,
             &send,
             Random,
-            &crate::runtime::ANNOUNCE,
+            &runtime.announce,
         );
         let advertisement = Advertisement {
             host: Host {
@@ -180,6 +184,7 @@ pub async fn server(stack: Stack<'static>, identity: ota_protocol::StatusRespons
             },
             identity: &identity,
             cache_flush: true,
+            runtime,
         };
         let change = async {
             loop {

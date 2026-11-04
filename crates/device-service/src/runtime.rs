@@ -1,30 +1,39 @@
-//! Management state observed by TCP status and the independent discovery task.
+//! Runtime owned by the service task and borrowed by TCP and discovery.
 use core::sync::atomic::{AtomicU8, Ordering};
-static STATE: AtomicU8 = AtomicU8::new(0);
-pub fn state() -> &'static str {
-    match STATE.load(Ordering::Relaxed) {
-        1 => "receiving",
-        2 => "verified",
-        3 => "committing",
-        _ => "idle",
-    }
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+
+pub struct Runtime {
+    state: AtomicU8,
+    pub announce: Signal<CriticalSectionRawMutex, ()>,
 }
-pub static ANNOUNCE: embassy_sync::signal::Signal<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    (),
-> = embassy_sync::signal::Signal::new();
-pub fn transition(state: u8) {
-    STATE.store(state, Ordering::Relaxed);
-    ANNOUNCE.signal(());
-}
-pub struct UploadGuard;
-impl UploadGuard {
+impl Runtime {
     pub fn new() -> Self {
-        Self
+        Self {
+            state: AtomicU8::new(0),
+            announce: Signal::new(),
+        }
+    }
+    pub fn state(&self) -> &'static str {
+        match self.state.load(Ordering::Relaxed) {
+            1 => "receiving",
+            2 => "verified",
+            3 => "committing",
+            _ => "idle",
+        }
+    }
+    pub fn transition(&self, state: u8) {
+        self.state.store(state, Ordering::Relaxed);
+        self.announce.signal(());
     }
 }
-impl Drop for UploadGuard {
+pub struct UploadGuard<'a>(&'a Runtime);
+impl<'a> UploadGuard<'a> {
+    pub fn new(runtime: &'a Runtime) -> Self {
+        Self(runtime)
+    }
+}
+impl Drop for UploadGuard<'_> {
     fn drop(&mut self) {
-        transition(0);
+        self.0.transition(0);
     }
 }

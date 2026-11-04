@@ -32,6 +32,11 @@ TTL to 255. It rebuilds its address records when the network configuration chang
 
 State changes request fresh announcements. Values are idle, receiving, verified,
 and committing, matching [the management lifecycle](../ota/protocol.md).
+The service task owns a runtime object containing the management state and
+announcement signal. TCP and mDNS run concurrently as joined async functions
+that borrow this object; neither reads global management state. The upload
+guard borrows the same runtime and restores idle on exit or cancellation.
+
 TXT is cached advertised metadata, not a guaranteed live health check. For live
 uptime and boot details, query the resolved endpoint explicitly:
 

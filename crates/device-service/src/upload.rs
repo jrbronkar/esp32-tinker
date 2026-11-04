@@ -12,10 +12,11 @@ pub async fn session(
     socket: &mut TcpSocket<'_>,
     first: Request,
     target: &mut FlashTarget,
+    runtime: &crate::runtime::Runtime,
 ) -> Result<(), ()> {
-    let _guard = crate::runtime::UploadGuard::new();
+    let _guard = crate::runtime::UploadGuard::new(runtime);
     let mut last_id = first.request_id;
-    let result = transfer(socket, first, target, &mut last_id).await;
+    let result = transfer(socket, first, target, &mut last_id, runtime).await;
     if let Err(error) = result {
         // Best effort error, then abandon all in-memory transfer state.
         let message: heapless::String<64> = match error {
@@ -47,6 +48,7 @@ async fn transfer(
     first: Request,
     target: &mut FlashTarget,
     last_id: &mut u32,
+    runtime: &crate::runtime::Runtime,
 ) -> Result<(), ota_core::Error> {
     use ota_core::Error;
     if first.protocol_version != VERSION {
@@ -63,7 +65,7 @@ async fn transfer(
         begin.image_size,
         &begin.sha256,
     )?;
-    crate::runtime::transition(1);
+    runtime.transition(1);
     let mut id = first.request_id;
     ack(socket, id, UploadPhase::Receiving, 0, target.offset).await?;
     loop {
@@ -100,7 +102,7 @@ async fn transfer(
             }
             Op::Finish(_) => {
                 update.finish(target)?;
-                crate::runtime::transition(2);
+                runtime.transition(2);
                 ack(
                     socket,
                     id,
@@ -122,7 +124,7 @@ async fn transfer(
                 return Ok(());
             }
             Op::Commit(_) => {
-                crate::runtime::transition(3);
+                runtime.transition(3);
                 update.commit(target)?;
                 // Boot selection has changed even if the response is lost.
                 let _ = ack(
