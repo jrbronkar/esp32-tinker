@@ -4,6 +4,8 @@ use embassy_executor::Spawner;
 pub mod boot;
 mod discovery;
 mod flash_target;
+#[cfg(feature = "experimental-grpc")]
+mod grpc;
 mod mdns_filter;
 mod runtime;
 mod status;

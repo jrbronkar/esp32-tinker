@@ -1,0 +1,15 @@
+[package]
+name = "device-grpc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ota-protocol = { path = "../ota-protocol" }
+protolink = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false, features = ["async"] }
+
+[dev-dependencies]
+protolink = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["macros", "rt", "net", "time"] }
+tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"] }
+bytes = "1"

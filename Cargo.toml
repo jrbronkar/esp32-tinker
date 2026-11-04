@@ -12,6 +12,7 @@ members = [
     "crates/ota-core",
     "crates/wifi-network",
     "crates/device-service",
+    "crates/device-grpc",
     "crates/device-demo",
     "tools/espctl",
 ]

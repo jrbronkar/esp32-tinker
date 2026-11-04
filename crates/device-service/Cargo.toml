@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+device-grpc = { path = "../device-grpc", optional = true }
 ota-protocol = { path = "../ota-protocol" }
 embassy-executor = "0.10.0"
 embassy-net = { version = "0.9.0", features = ["medium-ethernet", "tcp", "udp", "multicast"] }
@@ -22,3 +23,6 @@ embassy-sync = "0.8"
 embassy-futures = "0.1"
 embedded-io-async = "0.7"
 rand_core = { version = "0.10", default-features = false }
+
+[features]
+experimental-grpc = ["dep:device-grpc"]

@@ -33,6 +33,14 @@ pub async fn server(
     runtime.log(ota_protocol::LogSeverity::Info, "Management service ready");
     // Both futures borrow task-owned state. Joining keeps them concurrent without
     // requiring a global runtime or a separate spawned task with a static borrow.
+    #[cfg(feature = "experimental-grpc")]
+    embassy_futures::join::join3(
+        crate::grpc::serve(stack, &identity, &runtime),
+        crate::discovery::serve(stack, &identity, &runtime),
+        serve(stack, &identity, &mut target, &runtime),
+    )
+    .await;
+    #[cfg(not(feature = "experimental-grpc"))]
     embassy_futures::join::join(
         crate::discovery::serve(stack, &identity, &runtime),
         serve(stack, &identity, &mut target, &runtime),

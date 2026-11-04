@@ -1,0 +1,7 @@
+syntax = "proto3";
+package esp.experimental;
+import "ota.proto";
+// Experimental cleartext HTTP/2 endpoint on port 7780. No OTA writes yet.
+service Management {
+  rpc Status(ota.Request) returns (ota.Response);
+}
