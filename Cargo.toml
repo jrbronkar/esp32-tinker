@@ -1,8 +1,35 @@
 [workspace]
 resolver = "2"
-members = ["crates/hello-world", "crates/imu-demo", "crates/onboard-rgb", "crates/rgb-demo", "crates/soil-demo", "crates/soil-sensor", "crates/wifi-telemetry", "crates/ota-protocol", "crates/ota-core", "crates/wifi-network", "crates/device-service", "crates/device-demo", "tools/espctl"]
+members = [
+    "crates/hello-world",
+    "crates/imu-demo",
+    "crates/onboard-rgb",
+    "crates/rgb-demo",
+    "crates/soil-demo",
+    "crates/soil-sensor",
+    "crates/wifi-telemetry",
+    "crates/ota-protocol",
+    "crates/ota-core",
+    "crates/wifi-network",
+    "crates/device-service",
+    "crates/device-demo",
+    "tools/espctl",
+]
 # Keep bare-metal default builds separate from the explicit host CLI target.
-default-members = ["crates/hello-world", "crates/imu-demo", "crates/onboard-rgb", "crates/rgb-demo", "crates/soil-demo", "crates/soil-sensor", "crates/wifi-telemetry", "crates/ota-protocol", "crates/ota-core", "crates/wifi-network", "crates/device-service", "crates/device-demo"]
+default-members = [
+    "crates/hello-world",
+    "crates/imu-demo",
+    "crates/onboard-rgb",
+    "crates/rgb-demo",
+    "crates/soil-demo",
+    "crates/soil-sensor",
+    "crates/wifi-telemetry",
+    "crates/ota-protocol",
+    "crates/ota-core",
+    "crates/wifi-network",
+    "crates/device-service",
+    "crates/device-demo",
+]
 
 [profile.dev]
 opt-level = "s"
