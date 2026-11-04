@@ -7,6 +7,7 @@ message Request {
   uint32 request_id = 2;
   oneof payload {
     StatusRequest status = 10;
+    DiscoveryRequest discovery = 12;
     BeginUpdate begin = 20;
     FirmwareChunk chunk = 21;
     FinishUpdate finish = 22;
@@ -39,6 +40,8 @@ message StatusResponse {
   // Absent on older firmware or when timing was not requested.
   DeviceTimings timings = 7;
   BootInfo boot = 8;
+  // Empty on older firmware. Snapshot, not a health guarantee.
+  string management_state = 9;
 }
 // Device monotonic elapsed wall time, including executor preemption.
 // Encoding, enqueue, ACK, and close occur later and are logged over serial.
@@ -93,3 +96,6 @@ message UploadAck {
   uint32 next_offset = 2;
   uint32 target_offset = 3;
 }
+
+// Accepted only on the discovery UDP port; response is the existing StatusResponse.
+message DiscoveryRequest {}

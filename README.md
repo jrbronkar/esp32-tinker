@@ -10,6 +10,7 @@ Mac visualization tools, and a development OTA update system over Wi-Fi.
 | Set up the toolchain and flash a first program | [Development shell](#enter-the-development-shell), [build](#build), and [flash](#flash-and-monitor) below |
 | Stream and visualize IMU measurements | [IMU guide](crates/imu-demo/README.md) and [visualizer](tools/imu-visualizer/README.md) |
 | Monitor soil moisture | [Sensor guide](crates/soil-sensor/README.md) and [dashboard](tools/soil-visualizer/README.md) |
+| Find boards on the same LAN | [Device discovery](docs/device-management/discovery.md) |
 | Query a device or profile latency | [espctl CLI](tools/espctl/README.md) |
 | Provision a board and update it over Wi-Fi | [OTA provisioning and upload guide](docs/ota/provisioning.md) |
 | Understand the update design and lifecycle | [OTA documentation](docs/ota/README.md) |
@@ -189,7 +190,8 @@ The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telem
 ## Device management and development OTA
 
 The sensor-free `device-demo` firmware hosts a device-management service on TCP
-port **7779**. The Mac initiates requests with `espctl`; no cloud service or
+port **7779** and a same-LAN discovery responder on UDP **7780**. Find boards
+with `cargo run -p espctl -- discover`. The Mac initiates requests with `espctl`; no cloud service or
 separate backend is required. The API uses **Protobuf over length-prefixed TCP**.
 gRPC (client, server, or gateway) and HTTP/2 integration are explicitly out of
 scope. Use `espctl` rather than `curl`.
@@ -250,7 +252,7 @@ cover protocol bounds, TCP client behavior, and update validation.
 
 Updates are currently **unsigned and unencrypted**. Hashes detect corruption,
 but do not authorize a sender. Authentication, dependable automatic rollback,
-health deadlines, and power-loss testing remain pending. Fleet discovery, a
+health deadlines, and power-loss testing remain pending. Cross-network inventory, a
 management dashboard, and the Wi-Fi latency investigation are deferred.
 See [docs/ota/design.md](docs/ota/design.md) for evidence and next steps, and
 [docs/ota/protocol.md](docs/ota/protocol.md) for operation contracts, sequence diagrams,

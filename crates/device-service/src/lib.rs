@@ -2,7 +2,9 @@
 
 use embassy_executor::Spawner;
 pub mod boot;
+mod discovery;
 mod flash_target;
+mod runtime;
 mod status;
 mod upload;
 
@@ -22,7 +24,8 @@ pub fn start_status(
     let mut identity = ota_protocol::status(&id, application, firmware_version, 0)
         .map_err(|_| "status identity exceeds protocol bounds")?;
     identity.set_boot(boot);
-    let task = status::server(stack, identity, flash).map_err(|_| "status task unavailable")?;
+    let task =
+        status::server(spawner, stack, identity, flash).map_err(|_| "status task unavailable")?;
     spawner.spawn(task);
     Ok(())
 }

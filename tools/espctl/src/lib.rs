@@ -1,4 +1,5 @@
 //! Blocking host client, independent of CLI presentation and reusable by a future GUI.
+pub mod discovery;
 use ota_protocol::{Request, Response, ResponsePayload, StatusResponse, MAX_FRAME, VERSION};
 use std::{
     io::{self, Read, Write},

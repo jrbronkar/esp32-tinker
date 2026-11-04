@@ -17,7 +17,7 @@ Authentication, reliable rollback, and power-loss recovery remain unfinished.
   Commit in the same verified session; verify-only is the CLI default.
 - USB provisioning and physical BOOT/RESET remain the recovery path.
 - gRPC clients/servers, HTTP/2 integration, and gateways are explicitly out of
-  scope. Discovery, fleet rollout, a dashboard, resume and remote release fetching
+  scope. Fleet rollout, a dashboard, resume and remote release fetching
   are deferred. Native gRPC would add HTTP/2/runtime integration and memory
   costs without a validated benefit for this milestone. No gRPC dependency is included.
 
@@ -125,7 +125,7 @@ assumptions. Treat it as a separate design and provisioning decision.
 2. Add signed releases and installation authorization, key provisioning/recovery,
    downgrade policy, and negative security tests.
 3. Integrate IMU and soil firmware and verify telemetry behavior during writes.
-4. Reassess TLS, discovery, a dashboard and fleet workflows after the local update
+4. Reassess TLS, a dashboard and fleet workflows after the local update
    path is reliable. Wi-Fi loss recovery and latency profiling remain follow-ups.
 
 ## Guides and evidence
@@ -133,3 +133,6 @@ assumptions. Treat it as a separate design and provisioning decision.
 - [Protocol](protocol.md): framing, operations, errors and state/sequence diagrams.
 - [Provisioning](provisioning.md): layout, build/export, USB setup and upload.
 - [Testing](testing.md): procedures, current evidence and gaps.
+
+Same-LAN [device discovery](../device-management/discovery.md) is implemented as
+a bounded UDP status responder sharing the network stack. Remote logs are deferred.

@@ -4,6 +4,19 @@ A Mac CLI for querying and updating one board by IP using
 bounded Protobuf messages over TCP. The optional unsigned development uploader
 shares protocol version 1 with status and requires provisioned `device-demo` firmware.
 
+## Discover boards
+
+```sh
+nix develop
+cargo run -p espctl -- discover
+cargo run -p espctl -- discover --watch
+```
+
+Lists boards that respond on the same IPv4 LAN, with address, firmware, management
+state, OTA availability, and uptime. Discovery uses bounded UDP probes, not an IP
+scan. Firmware must include discovery support. No response does not prove a board
+is offline. See [interface selection and discovery protocol](../../docs/device-management/discovery.md).
+
 ## Build and query
 
 From the repository root:

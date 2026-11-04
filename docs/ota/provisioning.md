@@ -100,5 +100,5 @@ bootloader, partition table, NVS, or PHY regions.
 
 [Current validation and gaps](testing.md#validation-status) distinguish the latest
 build from earlier activation tests. Old split-version prototypes require a USB
-upgrade to unified protocol 1. The tested board now runs `ota-merge-check-1` in ota_1 after a successful Wi-Fi
+upgrade to unified protocol 1. The tested board now runs `discovery-2` in ota_1 after a successful Wi-Fi
 commit and reboot.

@@ -17,6 +17,10 @@ fn main() {
         ".ota.BeginUpdate.sha256",
         micropb_gen::Config::new().max_bytes(32),
     );
+    generator.configure(
+        ".ota.StatusResponse.management_state",
+        micropb_gen::Config::new().max_bytes(16),
+    );
     generator
         .compile_protos(
             &["../../protocol/ota.proto"],

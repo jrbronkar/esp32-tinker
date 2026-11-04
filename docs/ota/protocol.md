@@ -335,3 +335,12 @@ is advertised through ota_available and requires the supported partition layout.
 The earlier development-only status-v1/upload-v2 split is superseded. The
 capability marker `rust-dev-ota-v1` rejects incompatible old images. See
 [validation status](testing.md#validation-status) for the current build.
+
+
+## LAN discovery and management state
+
+The additive discovery payload is accepted only over UDP 7780; the TCP listener
+continues to reject it as an unsupported operation. StatusResponse field 9 reports
+a bounded management-state string; older firmware omits it. See the
+[discovery contract](../device-management/discovery.md) for datagram framing,
+limits, client behavior, and state meanings. TCP framing/version are unchanged.

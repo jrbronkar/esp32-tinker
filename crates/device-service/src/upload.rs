@@ -13,6 +13,7 @@ pub async fn session(
     first: Request,
     target: &mut FlashTarget,
 ) -> Result<(), ()> {
+    let _guard = crate::runtime::UploadGuard::new();
     let mut last_id = first.request_id;
     let result = transfer(socket, first, target, &mut last_id).await;
     if let Err(error) = result {
@@ -62,6 +63,7 @@ async fn transfer(
         begin.image_size,
         &begin.sha256,
     )?;
+    crate::runtime::transition(1);
     let mut id = first.request_id;
     ack(socket, id, UploadPhase::Receiving, 0, target.offset).await?;
     loop {
@@ -98,6 +100,7 @@ async fn transfer(
             }
             Op::Finish(_) => {
                 update.finish(target)?;
+                crate::runtime::transition(2);
                 ack(
                     socket,
                     id,
@@ -119,6 +122,7 @@ async fn transfer(
                 return Ok(());
             }
             Op::Commit(_) => {
+                crate::runtime::transition(3);
                 update.commit(target)?;
                 // Boot selection has changed even if the response is lost.
                 let _ = ack(

@@ -131,9 +131,10 @@ Recovery performed / follow-up:
 
 | Build / check | Evidence | Limits |
 | --- | --- | --- |
-| Current host suite | 30 tests pass: 14 status/client, 3 upload/client, 5 core, 8 protocol | Mock I/O/storage cannot establish real flash or bootloader recovery |
+| Current host suite | 36 tests pass: 4 discovery/client, 14 status/client, 3 upload/client, 5 core, 10 protocol | Mock I/O/storage cannot establish real flash or bootloader recovery |
 | Current no-feature firmware | Firmware check and release link pass | Startup error reset path has not been fault-injected |
-| `ota-merge-check-1` on board | Latest no-feature release: 501,024 bytes uploaded, verified and committed over Wi-Fi from ota_0; post-reboot status confirms protocol 1, ota_1, OTA available | Latest activation verified; rollback and confirmation-error injection remain untested |
+| `ota-merge-check-1` on board | Earlier no-feature release: 501,024 bytes uploaded, verified and committed over Wi-Fi from ota_0; post-reboot status confirms protocol 1, ota_1, OTA available | Latest activation verified; rollback and confirmation-error injection remain untested |
+| `discovery-2` on board | OTA activation passed; default and explicit-subnet discovery return 10.128.248.68; receiving/verified snapshots work with TCP occupied and return to idle after close | One physical board tested; multiple-device handling uses host mocks; no cross-network discovery |
 | `unified-1` on board | Eleven non-activating probes and 500,560-byte verify-only upload pass | One socket timeout before a successful fresh transfer; activation/rollback not tested on this build |
 | Earlier A → B → C prototype | Wi-Fi activation alternated slots; earlier NVS comparison was identical | Predates unified protocol; not evidence for every later build |
 

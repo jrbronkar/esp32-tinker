@@ -21,10 +21,31 @@ struct Cli {
 enum Commands {
     /// Query one board's identity, firmware version, and uptime
     Status(StatusArgs),
+    /// Discover ESP32 management services on the same IPv4 LAN
+    Discover(DiscoverArgs),
     /// Sample fresh connections and summarize host-observed query phases
     Profile(ProfileArgs),
     /// Upload unsigned development firmware; activation requires --commit
     Upload(UploadArgs),
+}
+
+#[derive(Args)]
+struct DiscoverArgs {
+    /// IPv4 broadcast address; use the subnet broadcast when multiple interfaces exist
+    #[arg(long, default_value = "255.255.255.255")]
+    broadcast: std::net::Ipv4Addr,
+    /// Local IPv4 interface address (default: OS-selected interface)
+    #[arg(long, default_value = "0.0.0.0")]
+    bind: std::net::Ipv4Addr,
+    /// UDP discovery port, separate from the TCP management port
+    #[arg(long, default_value_t = ota_protocol::DISCOVERY_PORT, value_parser = clap::value_parser!(u16).range(1..))]
+    port: u16,
+    /// Collection window in milliseconds
+    #[arg(long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(1..=60000))]
+    timeout_ms: u64,
+    /// Repeat discovery until interrupted; each view contains only that scan's responders
+    #[arg(long)]
+    watch: bool,
 }
 
 #[derive(Args)]
@@ -89,6 +110,7 @@ struct TargetArgs {
 fn run(command: Commands) -> Result<(), String> {
     match command {
         Commands::Status(args) => run_status(args),
+        Commands::Discover(args) => run_discover(args),
         Commands::Profile(args) => run_profile(args),
         Commands::Upload(args) => {
             let result = espctl::upload::upload(
@@ -116,6 +138,52 @@ fn run(command: Commands) -> Result<(), String> {
     }
 }
 
+fn run_discover(args: DiscoverArgs) -> Result<(), String> {
+    loop {
+        let result = espctl::discovery::discover(
+            SocketAddr::new(args.broadcast.into(), args.port),
+            args.bind,
+            Duration::from_millis(args.timeout_ms),
+        )
+        .map_err(|e| format!("discovery: {e}"))?;
+        if result.devices.is_empty() {
+            println!(
+                "No devices responded in this scan (UDP loss or LAN isolation can hide devices)."
+            );
+        } else {
+            println!(
+                "{:<34} {:<22} {:<22} {:<14} {:<5} Uptime (ms)",
+                "Device", "Address", "Firmware", "State", "OTA"
+            );
+            for device in result.devices {
+                let s = device.status;
+                let state = if s.management_state.is_empty() {
+                    "unknown"
+                } else {
+                    s.management_state.as_str()
+                };
+                println!(
+                    "{:<34} {:<22} {:<22} {:<14} {:<5} {}",
+                    s.device_id.escape_debug().to_string(),
+                    device.address,
+                    s.firmware_version.escape_debug().to_string(),
+                    state.escape_debug().to_string(),
+                    if s.ota_available { "yes" } else { "no" },
+                    s.uptime_ms
+                );
+            }
+        }
+        if result.limit_reached {
+            eprintln!("Discovery result limit reached (64 devices); additional replies omitted.");
+        }
+        if !args.watch {
+            return Ok(());
+        }
+        println!();
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
@@ -140,6 +208,9 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     println!("Application: {}", status.application.escape_debug());
     println!("Firmware:    {}", status.firmware_version.escape_debug());
     println!("Protocol:    {}", ota_protocol::VERSION);
+    if !status.management_state.is_empty() {
+        println!("State:       {}", status.management_state.escape_debug());
+    }
     println!("Uptime:      {} ms", status.uptime_ms);
     println!("Latency:     {latency_ms:.2} ms (total query)");
     println!(

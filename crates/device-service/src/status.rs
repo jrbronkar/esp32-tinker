@@ -9,6 +9,7 @@ use ota_protocol::{
 
 #[embassy_executor::task]
 pub async fn server(
+    spawner: embassy_executor::Spawner,
     stack: Stack<'static>,
     identity: StatusResponse,
     flash: esp_storage::FlashStorage<'static>,
@@ -16,9 +17,16 @@ pub async fn server(
     let mut identity = identity;
     let mut target = crate::flash_target::FlashTarget::new(flash);
     identity.ota_available = target.available;
+
     if let Err(error) = target.confirm_running() {
         println!("Running image confirmation failed: {error:?}");
     }
+    let discovery = crate::discovery::server(stack, identity.clone());
+    match discovery {
+        Ok(task) => spawner.spawn(task),
+        Err(_) => println!("Discovery task unavailable"),
+    }
+
     let mut rx = [0u8; 1024];
     let mut tx = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
@@ -120,6 +128,7 @@ async fn session(
     trace.phase = "prepare";
     let prepared = Instant::now();
     let mut current = identity.clone();
+    current.management_state = crate::runtime::state().try_into().unwrap_or_default();
     current.uptime_ms = Instant::now().as_millis();
     let include_boot =
         matches!(&request.payload, Some(RequestPayload::Status(status)) if status.include_boot);
