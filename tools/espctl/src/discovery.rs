@@ -7,7 +7,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_DEVICES: usize = 64;
+pub const MAX_DEVICES: usize = 64;
+pub const MIN_SCAN_MS: u64 = 1;
+pub const MAX_SCAN_MS: u64 = 60_000;
+pub const DEFAULT_SCAN_MS: u64 = 3_000;
+pub const WATCH_INTERVAL: Duration = Duration::from_secs(3);
+const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_ID_BYTES: usize = 64;
+const MAX_FIRMWARE_BYTES: usize = 64;
+const MAX_STATE_BYTES: usize = 16;
 #[derive(Debug, Clone)]
 pub struct Device {
     pub address: SocketAddr,
@@ -43,25 +51,25 @@ impl Collector {
         self.devices.retain(|(instance, _), _| instance != name);
         if info.ty_domain != ota_protocol::SERVICE_TYPE
             || info.get_port() == 0
-            || info.get_property_val_str("protocol") != Some("1")
+            || info.get_property_val_str("protocol") != Some(ota_protocol::VERSION_TXT)
         {
             return;
         }
         let Some(id) = info
             .get_property_val_str("id")
-            .filter(|s| !s.is_empty() && s.len() <= 64)
+            .filter(|s| !s.is_empty() && s.len() <= MAX_ID_BYTES)
         else {
             return;
         };
         let Some(firmware) = info
             .get_property_val_str("firmware")
-            .filter(|s| !s.is_empty() && s.len() <= 64)
+            .filter(|s| !s.is_empty() && s.len() <= MAX_FIRMWARE_BYTES)
         else {
             return;
         };
         let state = info
             .get_property_val_str("state")
-            .filter(|s| s.len() <= 16)
+            .filter(|s| s.len() <= MAX_STATE_BYTES)
             .unwrap_or("unknown");
         for ip in info.get_addresses_v4() {
             if ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
@@ -97,7 +105,7 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.0.stop_browse(ota_protocol::SERVICE_TYPE);
         if let Ok(done) = self.0.shutdown() {
-            let _ = done.recv_timeout(Duration::from_secs(1));
+            let _ = done.recv_timeout(DAEMON_SHUTDOWN_TIMEOUT);
         }
     }
 }
@@ -107,8 +115,10 @@ fn invalid(message: impl ToString) -> io::Error {
 /// Resolve IPv4 service endpoints during a collection window. TXT is advertised metadata,
 /// not a live health assertion; use status for a direct query. mDNS owns its cache/packet limits.
 pub fn discover(interface: Option<Ipv4Addr>, window: Duration) -> io::Result<Discovery> {
-    if window < Duration::from_millis(1) || window > Duration::from_secs(60) {
-        return Err(invalid("discovery window must be 1..60000 ms"));
+    if window < Duration::from_millis(MIN_SCAN_MS) || window > Duration::from_millis(MAX_SCAN_MS) {
+        return Err(invalid(format!(
+            "discovery window must be {MIN_SCAN_MS}..{MAX_SCAN_MS} ms"
+        )));
     }
     let daemon = Daemon(ServiceDaemon::new().map_err(invalid)?);
     if let Some(ip) = interface {

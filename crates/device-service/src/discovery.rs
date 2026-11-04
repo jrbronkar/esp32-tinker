@@ -1,5 +1,5 @@
 //! Standard mDNS/DNS-SD responder; edge-mdns owns DNS parsing and record encoding.
-use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use core::net::{Ipv6Addr, SocketAddr};
 use edge_mdns::{
     buf::VecBufAccess,
     domain::base::{
@@ -7,6 +7,7 @@ use edge_mdns::{
         Ttl,
     },
     host::{Host, Service, ServiceAnswers},
+    io::{IP_BROADCAST_ADDR as MDNS_MULTICAST_ADDR, PORT as MDNS_PORT},
     HostAnswer, HostAnswers, HostAnswersMdnsHandler, MdnsError, MdnsHandler, MdnsRequest,
     MdnsResponse,
 };
@@ -17,6 +18,17 @@ use embassy_net::{
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{ErrorKind, ErrorType};
+
+// RFC 6762 requires link-local mDNS packets to use this IP hop limit.
+const MDNS_HOP_LIMIT: u8 = 255;
+const DNS_CACHE_FLUSH_BIT: u16 = 0x8000;
+const RECORD_TTL_SECS: u32 = 60;
+const HOSTNAME_CAPACITY: usize = 32;
+const DNS_MESSAGE_BYTES: usize = 1500;
+const UDP_PACKET_SLOTS: usize = 2;
+const UDP_BUFFER_BYTES: usize = UDP_PACKET_SLOTS * DNS_MESSAGE_BYTES;
+const RETRY_DELAY: Duration = Duration::from_secs(1);
+const ADDRESS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 // Only socket I/O is adapted here. DNS and DNS-SD wire behavior come from edge-mdns.
 #[derive(Clone, Copy)]
@@ -59,10 +71,10 @@ impl rand_core::TryRng for Random {
         Ok(esp_hal::rng::Rng::new().random())
     }
     fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-        Ok(((self.try_next_u32()? as u64) << 32) | self.try_next_u32()? as u64)
+        Ok(((self.try_next_u32()? as u64) << u32::BITS) | self.try_next_u32()? as u64)
     }
     fn try_fill_bytes(&mut self, bytes: &mut [u8]) -> Result<(), Self::Error> {
-        for chunk in bytes.chunks_mut(4) {
+        for chunk in bytes.chunks_mut(core::mem::size_of::<u32>()) {
             chunk.copy_from_slice(&self.try_next_u32()?.to_le_bytes()[..chunk.len()]);
         }
         Ok(())
@@ -84,7 +96,7 @@ impl HostAnswers for Advertisement<'_> {
             ("id", self.identity.device_id.as_str()),
             ("application", self.identity.application.as_str()),
             ("firmware", self.identity.firmware_version.as_str()),
-            ("protocol", "1"),
+            ("protocol", ota_protocol::VERSION_TXT),
             ("state", self.runtime.state()),
             (
                 "ota",
@@ -108,7 +120,7 @@ impl HostAnswers for Advertisement<'_> {
         ServiceAnswers::new(&self.host, &service).visit(|mut answer| {
             // Unique records replace cached addresses, endpoints and state. PTR is shared.
             if self.cache_flush && answer.rtype() != Rtype::PTR {
-                answer.set_class(Class::from_int(0x8001));
+                answer.set_class(Class::from_int(Class::IN.to_int() | DNS_CACHE_FLUSH_BIT));
             }
             f(answer)
         })
@@ -130,7 +142,7 @@ pub async fn serve(
     identity: ota_protocol::StatusResponse,
     runtime: &crate::runtime::Runtime,
 ) {
-    let mut name = heapless::String::<32>::new();
+    let mut name = heapless::String::<HOSTNAME_CAPACITY>::new();
     for ch in identity
         .device_id
         .chars()
@@ -141,14 +153,14 @@ pub async fn serve(
             return;
         }
     }
-    let mut rx_meta = [PacketMetadata::EMPTY; 2];
-    let mut tx_meta = [PacketMetadata::EMPTY; 2];
-    let mut rx = [0; 3000];
-    let mut tx = [0; 3000];
+    let mut rx_meta = [PacketMetadata::EMPTY; UDP_PACKET_SLOTS];
+    let mut tx_meta = [PacketMetadata::EMPTY; UDP_PACKET_SLOTS];
+    let mut rx = [0; UDP_BUFFER_BYTES];
+    let mut tx = [0; UDP_BUFFER_BYTES];
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx, &mut tx_meta, &mut tx);
-    socket.set_hop_limit(Some(255));
-    while socket.bind(5353).is_err() {
-        Timer::after(Duration::from_secs(1)).await;
+    socket.set_hop_limit(Some(MDNS_HOP_LIMIT));
+    while socket.bind(MDNS_PORT).is_err() {
+        Timer::after(RETRY_DELAY).await;
     }
     loop {
         stack.wait_config_up().await;
@@ -157,14 +169,14 @@ pub async fn serve(
         };
         let ip = config.address.address();
         if stack
-            .join_multicast_group(embassy_net::IpAddress::Ipv4(Ipv4Addr::new(224, 0, 0, 251)))
+            .join_multicast_group(embassy_net::IpAddress::Ipv4(MDNS_MULTICAST_ADDR))
             .is_err()
         {
-            Timer::after(Duration::from_secs(1)).await;
+            Timer::after(RETRY_DELAY).await;
             continue;
         }
-        let recv = VecBufAccess::<NoopRawMutex, 1500>::new();
-        let send = VecBufAccess::<NoopRawMutex, 1500>::new();
+        let recv = VecBufAccess::<NoopRawMutex, DNS_MESSAGE_BYTES>::new();
+        let send = VecBufAccess::<NoopRawMutex, DNS_MESSAGE_BYTES>::new();
         let mdns = edge_mdns::io::Mdns::new(
             Some(ip),
             None,
@@ -180,7 +192,7 @@ pub async fn serve(
                 hostname: &name,
                 ipv4: ip,
                 ipv6: Ipv6Addr::UNSPECIFIED,
-                ttl: Ttl::from_secs(60),
+                ttl: Ttl::from_secs(RECORD_TTL_SECS),
             },
             identity: &identity,
             cache_flush: true,
@@ -188,7 +200,7 @@ pub async fn serve(
         };
         let change = async {
             loop {
-                Timer::after(Duration::from_millis(500)).await;
+                Timer::after(ADDRESS_POLL_INTERVAL).await;
                 if stack.config_v4().map(|c| c.address.address()) != Some(ip) {
                     break;
                 }
@@ -196,8 +208,7 @@ pub async fn serve(
         };
         // Rebuild records if DHCP changes; never keep advertising a captured old address.
         embassy_futures::select::select(mdns.run(advertisement), change).await;
-        let _ = stack
-            .leave_multicast_group(embassy_net::IpAddress::Ipv4(Ipv4Addr::new(224, 0, 0, 251)));
-        Timer::after(Duration::from_secs(1)).await;
+        let _ = stack.leave_multicast_group(embassy_net::IpAddress::Ipv4(MDNS_MULTICAST_ADDR));
+        Timer::after(RETRY_DELAY).await;
     }
 }

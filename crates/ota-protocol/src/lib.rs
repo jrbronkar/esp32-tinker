@@ -13,6 +13,8 @@ pub use generated::ota_::{
 use micropb::{MessageDecode, MessageEncode, PbEncoder};
 
 pub const VERSION: u32 = 1;
+/// Decimal protocol version advertised in DNS-SD TXT records.
+pub const VERSION_TXT: &str = "1";
 pub const PORT: u16 = 7779;
 pub const SERVICE_TYPE: &str = "_espctl._tcp.local.";
 pub const MAX_FRAME: usize = 512;
@@ -119,6 +121,7 @@ mod tests {
 
     #[test]
     fn request_matches_protobuf_wire_format() {
+        assert_eq!(VERSION_TXT.parse::<u32>(), Ok(VERSION));
         let bytes = encode(&status_request(1)).unwrap();
         assert_eq!(bytes.as_slice(), &[0x08, 1, 0x10, 1, 0x52, 0]);
         assert_eq!(decode::<Request>(&bytes).unwrap(), status_request(1));

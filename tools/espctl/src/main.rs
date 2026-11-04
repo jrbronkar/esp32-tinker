@@ -35,7 +35,7 @@ struct DiscoverArgs {
     #[arg(long)]
     interface: Option<std::net::Ipv4Addr>,
     /// Collection window in milliseconds
-    #[arg(long, default_value_t = 3000, value_parser = clap::value_parser!(u64).range(1..=60000))]
+    #[arg(long, default_value_t = espctl::discovery::DEFAULT_SCAN_MS, value_parser = clap::value_parser!(u64).range(espctl::discovery::MIN_SCAN_MS..=espctl::discovery::MAX_SCAN_MS))]
     timeout_ms: u64,
     /// Repeat discovery until interrupted; each view contains only that scan's responders
     #[arg(long)]
@@ -158,13 +158,16 @@ fn run_discover(args: DiscoverArgs) -> Result<(), String> {
             }
         }
         if result.limit_reached {
-            eprintln!("Discovery result limit reached (64 devices); additional replies omitted.");
+            eprintln!(
+                "Discovery result limit reached ({} devices); additional replies omitted.",
+                espctl::discovery::MAX_DEVICES
+            );
         }
         if !args.watch {
             return Ok(());
         }
         println!();
-        std::thread::sleep(Duration::from_secs(3));
+        std::thread::sleep(espctl::discovery::WATCH_INTERVAL);
     }
 }
 
