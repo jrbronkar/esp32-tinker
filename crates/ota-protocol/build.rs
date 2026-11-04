@@ -21,6 +21,14 @@ fn main() {
         ".ota.StatusResponse.management_state",
         micropb_gen::Config::new().max_bytes(16),
     );
+    generator.configure(
+        ".ota.ReadLogsResponse.entries",
+        micropb_gen::Config::new().max_len(4),
+    );
+    generator.configure(
+        ".ota.LogEntry.message",
+        micropb_gen::Config::new().max_bytes(64),
+    );
     generator
         .compile_protos(
             &["../../protocol/ota.proto"],

@@ -6,7 +6,8 @@ mod generated {
 }
 pub use generated::ota_::{
     AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, ErrorResponse,
-    ErrorResponse_::Code as ErrorCode, FinishUpdate, FirmwareChunk, PartitionInfo, Request,
+    ErrorResponse_::Code as ErrorCode, FinishUpdate, FirmwareChunk, LogEntry,
+    LogEntry_::Severity as LogSeverity, PartitionInfo, ReadLogsRequest, ReadLogsResponse, Request,
     Request_::Payload as RequestPayload, Response, Response_::Payload as ResponsePayload,
     StatusRequest, StatusResponse, UploadAck, UploadAck_::Phase as UploadPhase,
 };
@@ -310,3 +311,5 @@ mod upload_tests {
         assert!(upload_frame_length(4609u32.to_be_bytes()).is_err());
     }
 }
+
+pub mod logs;

@@ -171,3 +171,51 @@ fn read_exact(stream: &mut TcpStream, mut bytes: &mut [u8], deadline: Instant) -
 }
 
 pub mod upload;
+
+/// Fetch one bounded log batch using the existing control-frame transport.
+pub fn read_logs(
+    address: SocketAddr,
+    timeout: Duration,
+    cursor: ota_protocol::ReadLogsRequest,
+) -> io::Result<ota_protocol::ReadLogsResponse> {
+    if timeout.is_zero() {
+        return Err(invalid("timeout must be positive"));
+    }
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| invalid("timeout too large"))?;
+    let mut stream = loop {
+        match TcpStream::connect_timeout(&address, remaining(deadline)?) {
+            Ok(stream) => break stream,
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                std::thread::sleep(Duration::from_millis(50).min(remaining(deadline)?));
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let request = Request {
+        protocol_version: VERSION,
+        request_id: 1,
+        payload: Some(ota_protocol::RequestPayload::ReadLogs(cursor)),
+    };
+    write_request(&mut stream, &request, deadline)?;
+    let mut prefix = [0; 4];
+    read_exact(&mut stream, &mut prefix, deadline)?;
+    let length =
+        ota_protocol::frame_length(prefix).map_err(|_| invalid("invalid log frame length"))?;
+    let mut body = [0; MAX_FRAME];
+    read_exact(&mut stream, &mut body[..length], deadline)?;
+    let response: Response =
+        ota_protocol::decode(&body[..length]).map_err(|_| invalid("invalid log response"))?;
+    if response.protocol_version != VERSION || response.request_id != request.request_id {
+        return Err(invalid("log response version or request ID mismatch"));
+    }
+    match response.payload {
+        Some(ResponsePayload::Logs(logs)) if logs.boot_id != 0 => Ok(logs),
+        Some(ResponsePayload::Error(error)) => Err(invalid(format!(
+            "device error: {}",
+            error.message.escape_debug()
+        ))),
+        _ => Err(invalid("missing log payload or boot ID")),
+    }
+}

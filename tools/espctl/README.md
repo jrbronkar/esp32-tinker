@@ -194,3 +194,26 @@ and [docs/ota/design.md](../../docs/ota/design.md) for the remaining OTA milesto
 
 See [OTA automated tests and manual fault harness](../../docs/ota/testing.md) for the validation
 matrix, board probe modes, physical fault procedures, and result template.
+
+## Recent management logs
+
+```sh
+cargo run -p espctl -- logs --host <device-ip>
+cargo run -p espctl -- logs --host <device-ip> --follow
+```
+
+Requires log-enabled firmware. A snapshot drains the retained entries; `--follow`
+polls every 500 ms when caught up and retries connection failures. The firmware
+keeps 32 entries in RAM, each with a boot-scoped sequence, uptime in milliseconds,
+severity, and up to 64 UTF-8 bytes of message text. Four entries fit in one existing
+512-byte control frame. Boot IDs are random correlation tokens, not authentication.
+A changed boot ID or invalid cursor resets pagination; overwritten entries produce
+a warning. Output escapes terminal control characters.
+
+This first version records management startup, image-confirmation failure, upload
+state transitions, and failed/timed-out sessions. It does not capture all serial
+output or pre-service Wi-Fi startup. Reading logs does not itself add an entry.
+Logs share the single management listener: polling pauses during an OTA upload
+and may miss overwritten entries. Follow retries during that pause. Old firmware
+returns an unsupported-operation error. The TUI can reuse `espctl::read_logs` and
+its cursor without a separate backend.

@@ -7,6 +7,7 @@ message Request {
   uint32 request_id = 2;
   oneof payload {
     StatusRequest status = 10;
+    ReadLogsRequest read_logs = 12;
     BeginUpdate begin = 20;
     FirmwareChunk chunk = 21;
     FinishUpdate finish = 22;
@@ -26,6 +27,7 @@ message Response {
   oneof payload {
     StatusResponse status = 10;
     ErrorResponse error = 11;
+    ReadLogsResponse logs = 12;
     UploadAck upload = 20;
   }
 }
@@ -94,4 +96,21 @@ message UploadAck {
   Phase phase = 1;
   uint32 next_offset = 2;
   uint32 target_offset = 3;
+}
+
+// Cursors are scoped to a boot. Supply the returned boot_id on subsequent polls.
+message ReadLogsRequest { uint64 boot_id = 1; uint64 after_sequence = 2; }
+message LogEntry {
+  uint64 sequence = 1;
+  uint64 uptime_ms = 2;
+  enum Severity { INFO = 0; WARN = 1; ERROR = 2; }
+  Severity severity = 3;
+  string message = 4;
+}
+message ReadLogsResponse {
+  uint64 boot_id = 1;
+  uint64 next_sequence = 2;
+  bool reset = 3;
+  bool dropped = 4;
+  repeated LogEntry entries = 5;
 }

@@ -21,12 +21,23 @@ struct Cli {
 enum Commands {
     /// Query one board's identity, firmware version, and uptime
     Status(StatusArgs),
+    /// Read recent device management logs
+    Logs(LogsArgs),
     /// Discover ESP32 management services on the same IPv4 LAN
     Discover(DiscoverArgs),
     /// Sample fresh connections and summarize host-observed query phases
     Profile(ProfileArgs),
     /// Upload unsigned development firmware; activation requires --commit
     Upload(UploadArgs),
+}
+
+#[derive(Args)]
+struct LogsArgs {
+    #[command(flatten)]
+    target: TargetArgs,
+    /// Poll until interrupted
+    #[arg(long)]
+    follow: bool,
 }
 
 #[derive(Args)]
@@ -104,6 +115,7 @@ struct TargetArgs {
 fn run(command: Commands) -> Result<(), String> {
     match command {
         Commands::Status(args) => run_status(args),
+        Commands::Logs(args) => run_logs(args),
         Commands::Discover(args) => run_discover(args),
         Commands::Profile(args) => run_profile(args),
         Commands::Upload(args) => {
@@ -428,5 +440,49 @@ fn main() -> ExitCode {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run_logs(args: LogsArgs) -> Result<(), String> {
+    let mut cursor = ota_protocol::ReadLogsRequest::default();
+    loop {
+        let logs = match espctl::read_logs(
+            SocketAddr::new(args.target.host, args.target.port),
+            Duration::from_millis(args.target.timeout_ms),
+            cursor.clone(),
+        ) {
+            Ok(logs) => logs,
+            Err(error) if args.follow && error.kind() != std::io::ErrorKind::InvalidData => {
+                eprintln!("Logs unavailable: {error}; retrying.");
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        if logs.reset {
+            eprintln!("Device boot or cursor changed; log cursor reset.");
+        }
+        if logs.dropped {
+            eprintln!("Older log entries were overwritten.");
+        }
+        for entry in &logs.entries {
+            println!(
+                "{} {:>10} {:?} {}",
+                entry.sequence,
+                entry.uptime_ms,
+                entry.severity,
+                entry.message.escape_debug()
+            );
+        }
+        cursor.boot_id = logs.boot_id;
+        cursor.after_sequence = logs.next_sequence;
+        // Drain available batches before sleeping or completing a snapshot.
+        if logs.entries.len() == 4 {
+            continue;
+        }
+        if !args.follow {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }

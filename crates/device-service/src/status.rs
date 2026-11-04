@@ -22,10 +22,15 @@ pub async fn server(
     let mut target = crate::flash_target::FlashTarget::new(flash);
     identity.ota_available = target.available;
 
+    let runtime = crate::runtime::Runtime::new();
     if let Err(error) = target.confirm_running() {
+        runtime.log(
+            ota_protocol::LogSeverity::Error,
+            "Running image confirmation failed",
+        );
         println!("Running image confirmation failed: {error:?}");
     }
-    let runtime = crate::runtime::Runtime::new();
+    runtime.log(ota_protocol::LogSeverity::Info, "Management service ready");
     // Both futures borrow task-owned state. Joining keeps them concurrent without
     // requiring a global runtime or a separate spawned task with a static borrow.
     embassy_futures::join::join(
@@ -62,8 +67,17 @@ async fn serve(
             .await
             {
                 Ok(Ok(())) => {}
-                Ok(Err(())) => println!("Status session closed: invalid frame or connection error"),
-                Err(_) => println!("Status session timed out"),
+                Ok(Err(())) => {
+                    runtime.log(
+                        ota_protocol::LogSeverity::Warn,
+                        "Session closed: invalid frame or connection error",
+                    );
+                    println!("Status session closed: invalid frame or connection error");
+                }
+                Err(_) => {
+                    runtime.log(ota_protocol::LogSeverity::Warn, "Session timed out");
+                    println!("Status session timed out");
+                }
             }
             // Logging is after response/close so serial output does not delay
             // that response. It can still delay rearming the single listener.
@@ -160,7 +174,19 @@ async fn session(
             prepare_us: 0,
         });
     }
-    let mut response = ota_protocol::respond(request, current);
+    let mut response = if request.protocol_version == ota_protocol::VERSION {
+        if let Some(RequestPayload::ReadLogs(ref cursor)) = request.payload {
+            ota_protocol::Response {
+                protocol_version: ota_protocol::VERSION,
+                request_id: request.request_id,
+                payload: Some(ResponsePayload::Logs(runtime.logs.borrow().read(cursor))),
+            }
+        } else {
+            ota_protocol::respond(request, current)
+        }
+    } else {
+        ota_protocol::respond(request, current)
+    };
     trace.prepare_us = prepared.elapsed().as_micros();
     if let Some(ResponsePayload::Status(status)) = &mut response.payload {
         if let Some(timing) = status.mut_timings() {
