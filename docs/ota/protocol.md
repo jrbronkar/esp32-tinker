@@ -332,9 +332,7 @@ field handling support additive schema evolution; protocol_version rejects
 incompatible framing or semantics, not individual capabilities. Upload capability
 is advertised through ota_available and requires the supported partition layout.
 
-This supersedes the development-only status-v1/upload-v2 split. Old v2 upload
-clients/firmware are intentionally unsupported. The application capability marker
-is now rust-dev-ota-v1 so the updater cannot silently install an image that expects
-the old upload protocol. Reprovision existing development boards over USB before
-using the unified client; existing hardware results describe the earlier build,
-not verification of this wire-version change.
+The earlier development-only status-v1/upload-v2 split is superseded. The
+capability marker `rust-dev-ota-v1` rejects incompatible old images. See
+[hardware history](history/hardware-validation.md) for migration evidence and
+[validation status](testing.md#validation-status) for the current build.

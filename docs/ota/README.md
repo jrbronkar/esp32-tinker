@@ -5,11 +5,10 @@ ESP32 application slot, then optionally select it for the next boot.
 
 | Document | Purpose |
 | --- | --- |
-| [Design](design.md) | Architecture, decisions, milestones, and hardware evidence |
+| [Design](design.md) | Current architecture, decisions, security plan, and remaining milestones |
 | [Protocol](protocol.md) | API contract, framing, sequence diagrams, upload states, and boot lifecycle |
 | [Provisioning](provisioning.md) | Partition layout, initial USB setup, image export, upload, and recovery |
-| [gRPC feasibility](grpc-feasibility.md) | Historical research only; gRPC is explicitly out of scope |
-| [Testing](testing.md) | Automated checks, board fault harness, manual procedures, results, and gaps |
+| [Testing](testing.md) | Automated checks, board harness, manual procedures, validation status, and gaps |
 
 Commands in these guides run from the repository root inside `nix develop`.
 Partition configuration stays in [`partitions/`](../../partitions), the schema in
@@ -18,3 +17,12 @@ Partition configuration stays in [`partitions/`](../../partitions), the schema i
 
 Uploads are unsigned and unencrypted development functionality. Authentication,
 reliable rollback, and power-loss validation remain pending.
+
+## Historical reference
+
+- [Hardware validation records](history/hardware-validation.md)
+- [Implementation and latency investigation notes](history/implementation-notes.md)
+- [gRPC feasibility research](history/grpc-feasibility.md) — explicitly out of scope
+
+Historical notes preserve earlier experiments; use the guides above for current
+commands and behavior.

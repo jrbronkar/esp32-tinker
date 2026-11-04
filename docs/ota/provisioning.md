@@ -1,8 +1,8 @@
 # Development OTA layout and provisioning
 
-Validated on the 16 MB ESP32-S3, MAC a4:cb:8f:d8:13:c8. The first USB migration
-is complete; two subsequent Wi-Fi updates booted successfully from alternating
-slots. This is the unsigned development tracer bullet, not authenticated OTA.
+For 16 MiB ESP32-S3 boards using the [partition CSV](../../partitions/ota-16mb.csv).
+All commands run from the repository root inside `nix develop`, with WIFI_SSID
+and WIFI_PASSWORD exported locally. Every device-demo build includes OTA.
 
 ## Installed layout
 
@@ -21,20 +21,11 @@ enough configured capacity, and the running app identified as ota_0 or ota_1.
 A different/invalid layout disables uploads. Running-partition identity is derived
 from the MMU, not merely the OTA selection record.
 
-The initial board used NVS 0x9000/0x6000, PHY 0xf000/0x1000, and a factory partition
-0x10000/0xfa0000. A local owner-only first-MiB backup included the entire old
-477,488-byte app, bootloader, table, NVS, and PHY; its image SHA footer verified.
-The backup contains embedded credentials, so it is not a shared deliverable.
+## Initial USB provisioning
 
-## Unified-protocol migration
-
-The earlier prototype used upload protocol 2 and marker `rust-dev-ota-v2`.
-Current status and uploads share protocol 1 with marker `rust-dev-ota-v1`.
-Reflash existing prototype boards over USB before using the updated uploader;
-the old and new upload implementations intentionally reject one another.
-The hardware results below describe the earlier build, not this migration.
-
-## Initial provisioning (already performed on this board for the earlier build)
+Inspect and back up a new board's existing layout/data before migration. This
+layout preserves the tested board's original NVS/PHY regions; do not assume an
+unrelated board uses those addresses. Backups may contain credentials.
 
 In nix develop with Wi-Fi variables exported:
 
@@ -63,7 +54,7 @@ espflash save-image --chip esp32s3 --flash-size 16mb \
 Export an application-only .bin, not an ELF or merged image. It works in either
 slot. The device-demo build embeds a descriptor marker (`rust-dev-ota-v1`) and release
 version so host/device can reject incompatible images or firmware missing the
-update capability. The validated A/B/C images were 503,392 bytes each.
+update capability.
 
 The image is built with your Wi-Fi credentials: keep it private. Nothing loads
 `.env` automatically; plain Cargo uses exported shell variables.
@@ -71,7 +62,7 @@ The image is built with your Wi-Fi credentials: keep it private. Nothing loads
 ## Upload, verify, then optionally activate
 
 ```sh
-cargo run -p espctl -- upload --host 10.128.248.68 \
+cargo run -p espctl -- upload --host <board-ip> \
   --image target/ota/ota-next.bin --firmware-version ota-next
 ```
 
@@ -82,36 +73,32 @@ there is no persistent commit token or resume facility.
 To upload and activate in the same session:
 
 ```sh
-cargo run -p espctl -- upload --host 10.128.248.68 \
+cargo run -p espctl -- upload --host <board-ip> \
   --image target/ota/ota-next.bin --firmware-version ota-next --commit
 ```
 
 Reconnect after reboot and verify version/slot:
 
 ```sh
-cargo run -p espctl -- status --host 10.128.248.68 --boot
+cargo run -p espctl -- status --host <board-ip> --boot
 ```
 
 No request is replayed once sent. If commit's response is lost, the outcome is
 uncertain: check the running version before retrying. Wi-Fi reconnection/DHCP may
 take several seconds. Uploads currently take tens of seconds on this network.
 
-## Verification and limitations
+## Recovery and limitations
 
-- A was provisioned by USB in ota_0. A verify-only upload of B left A running.
-- Wi-Fi B commit booted from ota_1 (0x310000); B subsequently updated to C over
-  Wi-Fi, which booted from ota_0 (0x10000) and still advertised OTA availability.
-- Hardware failure checks passed: first-sector disconnect and wrong expected
-  digest both left ota-c running without reboot. NVS readback after all tests
-  matched the original 24 KiB exactly.
-- Generic engine tests cover order/size, incompatible descriptors, corrupted flash,
-  segment checksum/footer, and rejecting commit before verification.
-- Uploads are unsigned/unencrypted and included in every `device-demo` build.
-  Authentication, signed manifests, downgrade policy, power-cut fault testing,
-  and reliable automatic rollback remain subsequent milestones.
-- The bootloader's OTA slot selection is now verified on this board. Automatic
-  rollback is not: no claim is made that this default prebuilt bootloader enables
-  it. Pending-verification state is confirmed only for the actually running slot
-  after Wi-Fi initialization if a rollback-enabled bootloader sets that state.
-- No network operations write the bootloader, partition table, NVS, or PHY. Only
-  the inactive app slot and OTA selection metadata are writable by the updater.
+If the application cannot start or join Wi-Fi, use physical BOOT/RESET and USB
+flashing with a known-good image. Initial provisioning clears OTA metadata;
+ordinary USB reflash should preserve metadata and target the intended selected
+slot. Do not blindly overwrite one slot and assume the bootloader will select it.
+
+Uploads are unsigned and unencrypted. Reliable rollback, bounded health checks,
+and power-cut recovery are not established. No network update writes the
+bootloader, partition table, NVS, or PHY regions.
+
+[Current validation and gaps](testing.md#validation-status) distinguish the latest
+build from earlier activation tests. [Hardware history](history/hardware-validation.md)
+records the old split-version migration; those prototype builds required a USB
+upgrade to unified protocol 1. The tested board now runs `ota-default-1`.
