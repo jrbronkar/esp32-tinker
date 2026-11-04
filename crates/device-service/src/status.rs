@@ -29,7 +29,7 @@ pub async fn server(
     // Both futures borrow task-owned state. Joining keeps them concurrent without
     // requiring a global runtime or a separate spawned task with a static borrow.
     embassy_futures::join::join(
-        crate::discovery::serve(stack, identity.clone(), &runtime),
+        crate::discovery::serve(stack, &identity, &runtime),
         serve(stack, &identity, &mut target, &runtime),
     )
     .await;

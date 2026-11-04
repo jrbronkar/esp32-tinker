@@ -139,7 +139,7 @@ impl MdnsHandler for Advertisement<'_> {
 }
 pub async fn serve(
     stack: Stack<'static>,
-    identity: ota_protocol::StatusResponse,
+    identity: &ota_protocol::StatusResponse,
     runtime: &crate::runtime::Runtime,
 ) {
     let mut name = heapless::String::<HOSTNAME_CAPACITY>::new();
@@ -194,7 +194,7 @@ pub async fn serve(
                 ipv6: Ipv6Addr::UNSPECIFIED,
                 ttl: Ttl::from_secs(RECORD_TTL_SECS),
             },
-            identity: &identity,
+            identity,
             cache_flush: true,
             runtime,
         };

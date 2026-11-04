@@ -19,7 +19,6 @@ const MAX_STATE_BYTES: usize = 16;
 #[derive(Debug, Clone)]
 pub struct Device {
     pub address: SocketAddr,
-    pub instance: String,
     pub device_id: String,
     pub firmware: String,
     pub management_state: String,
@@ -84,7 +83,6 @@ impl Collector {
                 (name.to_owned(), address),
                 Device {
                     address,
-                    instance: name.to_owned(),
                     device_id: id.to_owned(),
                     firmware: firmware.to_owned(),
                     management_state: state.to_owned(),

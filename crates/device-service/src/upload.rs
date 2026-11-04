@@ -66,7 +66,7 @@ async fn transfer(
         begin.image_size,
         &begin.sha256,
     )?;
-    runtime.transition(crate::runtime::RECEIVING);
+    runtime.transition(crate::runtime::State::Receiving);
     let mut id = first.request_id;
     ack(socket, id, UploadPhase::Receiving, 0, target.offset).await?;
     loop {
@@ -109,7 +109,7 @@ async fn transfer(
             }
             Op::Finish(_) => {
                 update.finish(target)?;
-                runtime.transition(crate::runtime::VERIFIED);
+                runtime.transition(crate::runtime::State::Verified);
                 ack(
                     socket,
                     id,
@@ -131,7 +131,7 @@ async fn transfer(
                 return Ok(());
             }
             Op::Commit(_) => {
-                runtime.transition(crate::runtime::COMMITTING);
+                runtime.transition(crate::runtime::State::Committing);
                 update.commit(target)?;
                 // Boot selection has changed even if the response is lost.
                 let _ = ack(

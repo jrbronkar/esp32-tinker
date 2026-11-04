@@ -1,33 +1,37 @@
 //! Runtime owned by the service task and borrowed by TCP and discovery.
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::cell::Cell;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
-pub const IDLE: u8 = 0;
-pub const RECEIVING: u8 = 1;
-pub const VERIFIED: u8 = 2;
-pub const COMMITTING: u8 = 3;
+#[derive(Clone, Copy)]
+pub enum State {
+    Idle,
+    Receiving,
+    Verified,
+    Committing,
+}
 
 pub struct Runtime {
-    state: AtomicU8,
+    // Both consumers are joined futures within the same executor task.
+    state: Cell<State>,
     pub announce: Signal<CriticalSectionRawMutex, ()>,
 }
 impl Runtime {
     pub fn new() -> Self {
         Self {
-            state: AtomicU8::new(IDLE),
+            state: Cell::new(State::Idle),
             announce: Signal::new(),
         }
     }
     pub fn state(&self) -> &'static str {
-        match self.state.load(Ordering::Relaxed) {
-            RECEIVING => "receiving",
-            VERIFIED => "verified",
-            COMMITTING => "committing",
-            _ => "idle",
+        match self.state.get() {
+            State::Receiving => "receiving",
+            State::Verified => "verified",
+            State::Committing => "committing",
+            State::Idle => "idle",
         }
     }
-    pub fn transition(&self, state: u8) {
-        self.state.store(state, Ordering::Relaxed);
+    pub fn transition(&self, state: State) {
+        self.state.set(state);
         self.announce.signal(());
     }
 }
@@ -39,6 +43,6 @@ impl<'a> UploadGuard<'a> {
 }
 impl Drop for UploadGuard<'_> {
     fn drop(&mut self) {
-        self.0.transition(IDLE);
+        self.0.transition(State::Idle);
     }
 }
