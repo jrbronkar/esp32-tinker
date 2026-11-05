@@ -136,12 +136,14 @@ impl device_grpc::Environment for Env {
         state.1 = Some(cx.waker().clone());
         state.0.read(cursor)
     }
-    fn event(&self, message: &str) {
-        if message == "gRPC activation pending" {
+    fn event(&self, event: device_grpc::UploadEvent) {
+        if event == device_grpc::UploadEvent::ActivationPending {
             self.0.pending.set(true)
         }
         let mut state = self.0.logs.borrow_mut();
-        state.0.push(1, ota_protocol::LogSeverity::Info, message);
+        state
+            .0
+            .push(1, ota_protocol::LogSeverity::Info, &event.to_string());
         if let Some(w) = state.1.take() {
             w.wake();
         }

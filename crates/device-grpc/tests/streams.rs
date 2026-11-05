@@ -48,23 +48,33 @@ impl device_grpc::Environment for Env {
         env.wake = Some(cx.waker().clone());
         env.logs.read(cursor)
     }
-    fn event(&self, message: &str) {
-        let mut env = self.0.borrow_mut();
-        if message == "gRPC upload receiving"
-            || message.starts_with("gRPC chunk id=")
-            || message == "gRPC image verified"
+    fn event(&self, event: device_grpc::UploadEvent) {
         {
-            env.watchdog.activity(protolink::Clock::now(&env.timer));
+            let env = self.0.borrow();
+            match event {
+                device_grpc::UploadEvent::Receiving
+                | device_grpc::UploadEvent::ChunkWritten { .. }
+                | device_grpc::UploadEvent::Verified => {
+                    env.watchdog.activity(protolink::Clock::now(&env.timer))
+                }
+                device_grpc::UploadEvent::Released
+                | device_grpc::UploadEvent::ActivationPending => env.watchdog.clear(),
+                device_grpc::UploadEvent::Committed => {}
+            }
         }
-        if message == "gRPC upload released" || message == "gRPC activation pending" {
-            env.watchdog.clear();
-        }
+        self.log(&event.to_string());
+    }
+}
+impl Env {
+    fn log(&self, message: &str) {
+        let mut env = self.0.borrow_mut();
         env.logs.push(0, ota_protocol::LogSeverity::Info, message);
         if let Some(w) = env.wake.take() {
             w.wake();
         }
     }
 }
+
 fn image() -> Vec<u8> {
     let size = 128 * 1024;
     let end = 32 + size;
@@ -235,7 +245,7 @@ async fn cancellation_errors_and_disconnect_release_flash() {
                     }
                     let mut stream = logs(&mut client, cursor).await.unwrap();
                     stream.message().await.unwrap().unwrap();
-                    device_grpc::Environment::event(&env, "external wake");
+                    env.log("external wake");
                     let Some(ResponsePayload::Logs(batch)) =
                         response(&stream.message().await.unwrap().unwrap()).payload
                     else {
@@ -380,7 +390,7 @@ async fn live_log_traffic_cannot_keep_an_abandoned_upload_holding_flash() {
             let mut count = 0;
             tokio::time::timeout(Duration::from_secs(7), async {
                 loop {
-                    device_grpc::Environment::event(&env, "external live log");
+                    env.log("external live log");
                     match logs.message().await {
                         Ok(Some(_)) => count += 1,
                         _ => break,

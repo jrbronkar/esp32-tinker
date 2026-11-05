@@ -25,7 +25,8 @@ decoded headers are capped at 1024, serialized output at 8192 and messages at
 4608. Responses are bounded to 512 bytes. Compression is disabled.
 
 The Embassy driver splits the TCP socket into independently polled halves.
-External log producers register/wake the connection task. Logs use a 32-record
+Typed lifecycle events drive watchdog, state and reboot behavior; log wording
+is presentation only. External log producers register/wake the connection task. Logs use a 32-record
 RAM ring, four-entry batches, boot-scoped cursors and overwritten-history flags.
 Slow log readers cannot consume the upload stream's receive window.
 
@@ -98,6 +99,12 @@ Expected layout: 16 MiB flash with two 3 MiB application slots.
   This update was performed by firmware with no legacy OTA writer present.
   Post-reboot grpc-only-2 passed the parity probe again (4.9982-second expiry),
   rejected all legacy write operations, and advertised the expected endpoints.
+
+The final review replaced string-matched lifecycle control with typed events.
+That source built and passed all 64 tests, uploaded/committed a 634064-byte image
+with live logs, and booted `grpc-review-1` in ota_1. The hardware idle probe
+expired in 4.9998 seconds despite PINGs; legacy-write rejection, lease release,
+four cancellation/resubscription cycles and empty-upload rejection passed.
 
 Earlier allocator estimates peaked at 71872 bytes of the configured 102400-byte
 heap. Those are boot-wide estimates from the previous build, not a current

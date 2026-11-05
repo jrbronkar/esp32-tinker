@@ -60,11 +60,37 @@ use protolink::{CallId, Next};
 pub const LOGS_PATH: &str = "/esp.experimental.Management/Logs";
 pub const UPLOAD_PATH: &str = "/esp.experimental.Management/Upload";
 
+/// Typed lifecycle notifications; log text is presentation, never control flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadEvent {
+    Receiving,
+    ChunkWritten { request_id: u32, next_offset: u32 },
+    Verified,
+    Released,
+    ActivationPending,
+    Committed,
+}
+impl core::fmt::Display for UploadEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Receiving => f.write_str("gRPC upload receiving"),
+            Self::ChunkWritten {
+                request_id,
+                next_offset,
+            } => write!(f, "gRPC chunk id={request_id} next={next_offset}"),
+            Self::Verified => f.write_str("gRPC image verified"),
+            Self::Released => f.write_str("gRPC upload released"),
+            Self::ActivationPending => f.write_str("gRPC activation pending"),
+            Self::Committed => f.write_str("gRPC upload committed"),
+        }
+    }
+}
+
 /// External log producers must wake the registered task when records arrive.
 pub trait Environment {
     fn status(&self) -> StatusResponse;
     fn logs(&self, cursor: &ReadLogsRequest, cx: &mut Context<'_>) -> ReadLogsResponse;
-    fn event(&self, message: &str);
+    fn event(&self, event: UploadEvent);
     fn activation_pending(&self) -> bool {
         false
     }
@@ -108,7 +134,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
     }
     fn release(&mut self) {
         if self.upload.take().is_some() && !self.activation_pending {
-            self.env.event("gRPC upload released");
+            self.env.event(UploadEvent::Released);
         }
     }
     fn message(&mut self, ctx: &CallContext<'_>, bytes: &[u8]) -> Result<(), Status> {
@@ -161,11 +187,10 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                         .update
                         .chunk(&mut *upload.target, chunk.offset, &chunk.data)
                         .map_err(upload_error)?;
-                    self.env.event(&alloc::format!(
-                        "gRPC chunk id={} next={}",
-                        request.request_id,
-                        upload.update.received()
-                    ));
+                    self.env.event(UploadEvent::ChunkWritten {
+                        request_id: request.request_id,
+                        next_offset: upload.update.received(),
+                    });
                     UploadPhase::Receiving
                 }
                 RequestPayload::Finish(_) => {
@@ -174,7 +199,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                         .finish(&mut *upload.target)
                         .map_err(upload_error)?;
                     upload.verified = true;
-                    self.env.event("gRPC image verified");
+                    self.env.event(UploadEvent::Verified);
                     UploadPhase::Verified
                 }
                 RequestPayload::Abort(_) => {
@@ -190,13 +215,13 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                     // A failed metadata operation or lost ACK can still leave boot
                     // selection changed. Block all further writes until reboot.
                     self.activation_pending = true;
-                    self.env.event("gRPC activation pending");
+                    self.env.event(UploadEvent::ActivationPending);
                     upload
                         .update
                         .commit(&mut *upload.target)
                         .map_err(upload_error)?;
                     upload.ended = true;
-                    self.env.event("gRPC upload committed");
+                    self.env.event(UploadEvent::Committed);
                     UploadPhase::Committed
                 }
                 _ => return Err(Status::invalid_argument("unexpected upload operation")),
@@ -228,7 +253,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                 ended: false,
                 verified: false,
             });
-            self.env.event("gRPC upload receiving");
+            self.env.event(UploadEvent::Receiving);
             (UploadPhase::Receiving, 0)
         };
         let response = Response {

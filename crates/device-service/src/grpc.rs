@@ -1,7 +1,7 @@
 //! HTTP/2/gRPC management and OTA; the TCP status/log endpoint is read-only.
 use core::time::Duration as CoreDuration;
 use device_grpc::protolink;
-use device_grpc::{Environment, StreamingManagement};
+use device_grpc::{Environment, StreamingManagement, UploadEvent};
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 
@@ -116,32 +116,32 @@ impl Environment for DeviceEnvironment<'_> {
     fn activation_pending(&self) -> bool {
         self.runtime.activation_pending.get()
     }
-    fn event(&self, message: &str) {
-        if message == "gRPC upload receiving"
-            || message.starts_with("gRPC chunk id=")
-            || message == "gRPC image verified"
-        {
-            self.runtime
-                .upload_watchdog
-                .activity(CoreDuration::from_micros(Instant::now().as_micros()));
+    fn event(&self, event: UploadEvent) {
+        match event {
+            UploadEvent::Receiving | UploadEvent::ChunkWritten { .. } | UploadEvent::Verified => {
+                self.runtime
+                    .upload_watchdog
+                    .activity(CoreDuration::from_micros(Instant::now().as_micros()));
+            }
+            UploadEvent::Released | UploadEvent::ActivationPending => {
+                self.runtime.upload_watchdog.clear()
+            }
+            UploadEvent::Committed => {}
         }
-        if message == "gRPC upload released" || message == "gRPC activation pending" {
-            self.runtime.upload_watchdog.clear();
+        match event {
+            UploadEvent::ActivationPending => {
+                self.runtime.activation_pending.set(true);
+                self.runtime.transition(crate::runtime::State::Committing);
+                self.runtime.reboot.signal(());
+            }
+            UploadEvent::Receiving => self.runtime.transition(crate::runtime::State::Receiving),
+            UploadEvent::Verified => self.runtime.transition(crate::runtime::State::Verified),
+            UploadEvent::Released => self.runtime.transition(crate::runtime::State::Idle),
+            UploadEvent::ChunkWritten { .. } | UploadEvent::Committed => {}
         }
-        if message == "gRPC activation pending" {
-            self.runtime.activation_pending.set(true);
-            self.runtime.transition(crate::runtime::State::Committing);
-            self.runtime.reboot.signal(());
-        }
-        if message == "gRPC upload receiving" {
-            self.runtime.transition(crate::runtime::State::Receiving);
-        }
-        if message == "gRPC image verified" {
-            self.runtime.transition(crate::runtime::State::Verified);
-        }
-        if message == "gRPC upload released" {
-            self.runtime.transition(crate::runtime::State::Idle);
-        }
-        self.runtime.log(ota_protocol::LogSeverity::Info, message);
+        use core::fmt::Write;
+        let mut message = heapless::String::<64>::new();
+        let _ = write!(message, "{event}");
+        self.runtime.log(ota_protocol::LogSeverity::Info, &message);
     }
 }
