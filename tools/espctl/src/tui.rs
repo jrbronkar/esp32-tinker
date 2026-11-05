@@ -168,6 +168,7 @@ async fn monitor(
 }
 
 struct LogRow {
+    prefix: String,
     severity: Option<LogSeverity>,
     text: String,
 }
@@ -259,6 +260,7 @@ struct Dashboard {
     targets: Vec<Target>,
     selected: usize,
     focus: Focus,
+    sidebar_focus: Focus,
     action: usize,
     activation_selected: bool,
     session: Option<Session>,
@@ -290,14 +292,22 @@ impl Dashboard {
         self.scroll = 0;
     }
 
-    fn push_log(&mut self, severity: Option<LogSeverity>, text: String) {
-        if self.scroll > 0 && self.filter.includes(severity) {
+    fn push_notice(&mut self, text: String) {
+        self.push_log(LogRow {
+            prefix: String::new(),
+            severity: None,
+            text,
+        });
+    }
+
+    fn push_log(&mut self, row: LogRow) {
+        if self.scroll > 0 && self.filter.includes(row.severity) {
             self.scroll += 1;
         }
         if self.logs.len() == LOG_HISTORY {
             self.logs.pop_front();
         }
-        self.logs.push_back(LogRow { severity, text });
+        self.logs.push_back(row);
     }
 
     fn update(&mut self, update: Update) {
@@ -313,36 +323,25 @@ impl Dashboard {
             Update::Logs(batch) => {
                 let same_boot = self.log_boot == batch.boot_id && !batch.reset;
                 if batch.reset || (self.log_boot != 0 && !same_boot) {
-                    self.push_log(None, "── Device restarted or log cursor reset ──".into());
+                    self.push_notice("── Device restarted or log cursor reset ──".into());
                 }
                 if !same_boot {
                     self.log_boot = batch.boot_id;
                     self.log_sequence = 0;
                 }
                 if batch.dropped && (!same_boot || batch.next_sequence > self.log_sequence) {
-                    self.push_log(None, "── Device overwrote older log entries ──".into());
+                    self.push_notice("── Device overwrote older log entries ──".into());
                 }
                 for entry in &batch.entries {
                     if entry.sequence <= self.log_sequence {
                         continue;
                     }
                     self.log_sequence = entry.sequence;
-                    let severity = match entry.severity {
-                        LogSeverity::Info => "INFO",
-                        LogSeverity::Warn => "WARN",
-                        LogSeverity::Error => "ERROR",
-                        _ => "?",
-                    };
-                    self.push_log(
-                        Some(entry.severity),
-                        format!(
-                            "#{:<6} {:>9}ms  {:<5}  {}",
-                            entry.sequence,
-                            entry.uptime_ms,
-                            severity,
-                            entry.message.escape_debug()
-                        ),
-                    );
+                    self.push_log(LogRow {
+                        prefix: format!("#{:<6} {:>9}ms  ", entry.sequence, entry.uptime_ms),
+                        severity: Some(entry.severity),
+                        text: entry.message.escape_debug().to_string(),
+                    });
                 }
             }
         }
@@ -581,13 +580,22 @@ impl Dashboard {
         let lines = visible[start..end]
             .iter()
             .map(|row| {
-                let color = match row.severity {
-                    Some(LogSeverity::Error) => RED,
-                    Some(LogSeverity::Warn) => AMBER,
-                    None => CYAN,
-                    _ => TEXT,
+                let (label, color) = match row.severity {
+                    Some(LogSeverity::Info) => ("INFO", CYAN),
+                    Some(LogSeverity::Warn) => ("WARN", AMBER),
+                    Some(LogSeverity::Error) => ("ERROR", RED),
+                    Some(_) => ("?", MUTED),
+                    None => return Line::styled(&row.text, Style::new().fg(VIOLET)),
                 };
-                Line::styled(&row.text, Style::default().fg(color))
+                Line::from(vec![
+                    Span::styled(&row.prefix, Style::new().fg(MUTED)),
+                    Span::styled(
+                        format!("{label:<5}"),
+                        Style::new().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::raw(&row.text),
+                ])
             })
             .collect::<Vec<_>>();
         let mode = if self.scroll == 0 { "live" } else { "scrolled" };
@@ -603,9 +611,9 @@ impl Dashboard {
             "↑↓ Scroll logs   PgUp/PgDn Page   End Live"
         } else {
             match self.focus {
-                Focus::Boards => "←→ Switch pane   ↑↓ Select board   Enter Actions",
-                Focus::Actions => "← Boards   → Logs   ↑↓ Choose   Enter Run   Esc Back",
-                Focus::Logs => "← Actions   → Boards   ↑↓ Scroll   Enter Live   Esc Boards",
+                Focus::Boards => "↑↓ Select board   ↓ past last or Enter Actions   → Logs",
+                Focus::Actions => "↑↓ Choose   ↑ past first or Esc Boards   → Logs   Enter Run",
+                Focus::Logs => "← Sidebar   ↑↓ Scroll   Enter Live   Esc Boards",
             }
         };
         let shortcuts = if self.workflow.busy() {
@@ -657,10 +665,10 @@ async fn dashboard(
         for _ in 0..32 {
             match app.workflow.next_log() {
                 Some(Ok(batch)) => app.update(Update::Logs(Box::new(batch))),
-                Some(Err(error)) => app.push_log(
-                    None,
-                    format!("Upload logs unavailable · {}", error.escape_debug()),
-                ),
+                Some(Err(error)) => app.push_notice(format!(
+                    "Upload logs unavailable · {}",
+                    error.escape_debug()
+                )),
                 None => break,
             }
             redraw = true;
@@ -820,12 +828,18 @@ async fn dashboard(
                             app.activation_selected = false;
                             app.workflow.ask_activation();
                         }
-                        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
-                            if !busy =>
-                        {
-                            app.focus = app
-                                .focus
-                                .shift(matches!(key.code, KeyCode::Right | KeyCode::Tab));
+                        KeyCode::Right if !busy && app.focus != Focus::Logs => {
+                            app.sidebar_focus = app.focus;
+                            app.focus = Focus::Logs;
+                        }
+                        KeyCode::Left if !busy && app.focus == Focus::Logs => {
+                            app.focus = app.sidebar_focus;
+                        }
+                        KeyCode::Tab | KeyCode::BackTab if !busy => {
+                            if app.focus != Focus::Logs {
+                                app.sidebar_focus = app.focus;
+                            }
+                            app.focus = app.focus.shift(key.code == KeyCode::Tab);
                         }
                         KeyCode::Up if !busy && app.focus == Focus::Boards && app.selected > 0 => {
                             app.select(app.selected - 1, timeout);
@@ -837,8 +851,15 @@ async fn dashboard(
                         {
                             app.select(app.selected + 1, timeout);
                         }
+                        KeyCode::Down if !busy && app.focus == Focus::Boards => {
+                            app.focus = Focus::Actions;
+                        }
                         KeyCode::Up if !busy && app.focus == Focus::Actions => {
-                            app.action = app.action.saturating_sub(1);
+                            if app.action == 0 {
+                                app.focus = Focus::Boards;
+                            } else {
+                                app.action -= 1;
+                            }
                         }
                         KeyCode::Down if !busy && app.focus == Focus::Actions => {
                             app.action =

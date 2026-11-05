@@ -26,10 +26,11 @@ cargo run -p espctl -- tui --host BOARD_IP
 
 Run the dashboard in an interactive terminal with a board running the gRPC
 management firmware. The dashboard uses its own dark palette on terminals
-with 256-color support. It scans the local network on launch. Use Left/Right
-or Tab to move between Boards, Actions, and Logs. Use Up/Down to select a board
-or action, and Enter to open or run the selection. From Actions, press Left
-or Esc to return to Boards. In Logs, Up/Down or Page
+with 256-color support. It scans the local network on launch. Use Up/Down to
+move through Boards and Actions. Down from the last board enters Actions, and
+Up from the first action returns to Boards. Enter opens or runs the selection.
+Right moves to Logs, Left returns to the sidebar, and Tab cycles through panes.
+Esc also returns from Actions to Boards. In Logs, Up/Down or Page
 Up/Page Down scroll the last 1,000 rows, and Enter or End returns to live
 output. Actions includes the severity filter and rescan. F, R, and Q are
 shortcuts for filtering, rescanning, and quitting. Status refreshes every two seconds alongside the live log
