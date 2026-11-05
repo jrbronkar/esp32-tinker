@@ -31,15 +31,16 @@ espflash flash --port "$SERIAL_PORT" --flash-size 16mb \
 ## Build and upload
 
 ```sh
-nix run .#ota-image -- ota-next
+nix run .#ota-image
 nix run .#espctl -- tui
 ```
 
 Press **U** to select an exported image. The TUI reads its embedded version
-and prompts before activation. For scripted updates, the same image works with
-the upload subcommand:
+and prompts before activation. The image version defaults to a Git hash. For a
+scripted update with a fixed version, pass an override when exporting:
 
 ```sh
+nix run .#ota-image -- ota-next
 cargo run -p espctl -- upload --host BOARD_IP \
   --image target/ota/ota-next.bin --firmware-version ota-next --logs --commit
 cargo run -p espctl -- status --host BOARD_IP --boot

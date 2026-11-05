@@ -45,12 +45,13 @@ From the repository root, export `WIFI_SSID` and `WIFI_PASSWORD`, then build
 and export the image with the pinned Nix tools:
 
 ```sh
-nix run .#ota-image -- VERSION
+nix run .#ota-image
 nix run .#espctl -- tui
 ```
 
-The export lands in `target/ota/VERSION.bin`. Select a board and press **U** to
-browse compatible application binaries in `target/ota`. Use **↑/↓** to choose
+The version defaults to the short Git commit hash, with a second hash when
+tracked files have local changes. Pass `-- VERSION` to override it. The export
+lands in `target/ota/<version>.bin`. Select a board and press **U** to browse compatible application binaries in `target/ota`. Use **↑/↓** to choose
 an image and **Enter** to write and verify the inactive slot. The picker reads
 the version from the image. For an image elsewhere, launch with
 `tui --image /path/to/app.bin` and press **U**.

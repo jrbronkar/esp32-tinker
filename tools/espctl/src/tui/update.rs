@@ -149,11 +149,10 @@ impl Workflow {
         match local_images(Path::new("target/ota")) {
             Ok(picker) if !picker.images.is_empty() => self.picker = Some(picker),
             Ok(_) => {
-                self.notice =
-                    "No compatible images in target/ota. Run nix run .#ota-image -- VERSION.".into()
+                self.notice = "No compatible images in target/ota. Run nix run .#ota-image.".into()
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.notice = "No target/ota directory. Run nix run .#ota-image -- VERSION.".into();
+                self.notice = "No target/ota directory. Run nix run .#ota-image.".into();
             }
             Err(error) => self.notice = format!("Could not scan target/ota: {error}"),
         }

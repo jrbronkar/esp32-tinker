@@ -87,10 +87,10 @@
 
       otaImage = pkgs.writeShellApplication {
         name = "ota-image";
-        runtimeInputs = firmwareTools ++ [pkgs.coreutils];
+        runtimeInputs = firmwareTools ++ [pkgs.coreutils pkgs.gitMinimal];
         text = ''
-          if [[ $# -ne 1 || ! $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,30}$ ]]; then
-            echo "Usage: nix run .#ota-image -- VERSION (1–31 letters, digits, dots, underscores or hyphens)" >&2
+          if [[ $# -gt 1 || ($# -eq 1 && ! $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,30}$) ]]; then
+            echo "Usage: nix run .#ota-image [-- VERSION] (1–31 letters, digits, dots, underscores or hyphens)" >&2
             exit 2
           fi
           if [[ ! -f flake.nix || ! -d crates/device-demo ]]; then
@@ -99,7 +99,15 @@
           fi
           : "''${WIFI_SSID:?Export WIFI_SSID before building}"
           : "''${WIFI_PASSWORD?Export WIFI_PASSWORD before building}"
-          version=$1
+          if [[ $# -eq 1 ]]; then
+            version=$1
+          else
+            version=$(git rev-parse --short=12 HEAD)
+            if ! git diff --quiet HEAD --; then
+              changes=$(git diff --no-ext-diff --no-textconv --binary HEAD -- | git hash-object --stdin)
+              version="$version-''${changes:0:12}"
+            fi
+          fi
           export FIRMWARE_VERSION="$version"
           cargo build --locked --target-dir target --target xtensa-esp32s3-none-elf \
             -Zbuild-std=core,alloc --release -p device-demo
