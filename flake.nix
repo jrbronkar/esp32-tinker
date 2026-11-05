@@ -40,6 +40,8 @@
             rust-nightly-aarch64-apple-darwin/components \
             rust-nightly-aarch64-apple-darwin/rust-installer-version \
             rust-nightly-aarch64-apple-darwin/cargo \
+            rust-nightly-aarch64-apple-darwin/clippy-preview \
+            rust-nightly-aarch64-apple-darwin/rustfmt-preview \
             rust-nightly-aarch64-apple-darwin/rustc \
             rust-nightly-aarch64-apple-darwin/rust-std-aarch64-apple-darwin
 
@@ -47,7 +49,7 @@
           ./install.sh \
             --prefix="$out" \
             --disable-ldconfig \
-            --components=cargo,rustc,rust-std-aarch64-apple-darwin
+            --components=cargo,clippy-preview,rustfmt-preview,rustc,rust-std-aarch64-apple-darwin
 
           mkdir -p "$out/lib/rustlib/src"
           tar -xJf "$rustSrc" --strip-components=5 \

@@ -125,7 +125,7 @@ impl Target for FlashTarget {
     }
     fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
         if !self.available
-            || offset % 4096 != 0
+            || !offset.is_multiple_of(4096)
             || bytes.len() > 4096
             || offset
                 .checked_add(bytes.len() as u32)

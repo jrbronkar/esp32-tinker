@@ -1,6 +1,5 @@
 // This is a bare-metal program, so Rust's normal standard library is unavailable.
 #![no_std]
-
 // The ESP32 reset handler supplies our entry point instead of a desktop-style `main`.
 #![no_main]
 

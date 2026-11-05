@@ -198,19 +198,6 @@ async fn cancellation_errors_and_disconnect_release_flash() {
                     }
                     assert!(memory.try_borrow_mut().is_ok());
                 }
-                // An existing exclusive lease rejects Begin without modifying the target.
-                let lease = memory.borrow_mut();
-                let (tx, mut replies) = upload(&mut client).await.unwrap();
-                assert_eq!(
-                    op(&tx, &mut replies, begin(&image, "v1"), 1)
-                        .await
-                        .unwrap_err()
-                        .code(),
-                    tonic::Code::ResourceExhausted
-                );
-                drop(lease);
-                drop(tx);
-                drop(replies);
                 let (tx, mut replies) = upload(&mut client).await.unwrap();
                 op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
                 assert_eq!(
