@@ -110,6 +110,10 @@ Earlier allocator estimates peaked at 71872 bytes of the configured 102400-byte
 heap. Those are boot-wide estimates from the previous build, not a current
 worst-case memory guarantee. Synchronous flash work can delay the executor.
 
+Hardware probes and Tonic integration tests live under `tools/espctl` with
+shared host-only support in `tests/support/grpc.rs`. The portable `device-grpc`
+library keeps its watchdog tests and has no hardware examples or Tonic dependency.
+
 ## Reproduce
 
 Inside `nix develop`, with Wi-Fi build settings exported privately:
@@ -119,13 +123,13 @@ cargo test
 cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
 # Export an application-only image using the provisioning guide; keep it private.
 cargo run -p espctl -- upload --host BOARD_IP --image IMAGE.bin --firmware-version VERSION --logs --commit
-cargo run -p device-grpc --example concurrent -- BOARD_IP IMAGE.bin VERSION
-GRPC_STALL_LOGS=1 cargo run -p device-grpc --example concurrent -- BOARD_IP IMAGE.bin VERSION
-cargo run -p device-grpc --example cleanup -- BOARD_IP IMAGE.bin VERSION
-cargo run -p device-grpc --example parity -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
+GRPC_STALL_LOGS=1 cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-cleanup -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
 ```
 
-`concurrent`, `cleanup` and `parity` are non-activating probes. The live concurrent
+`grpc-concurrent`, `grpc-cleanup` and `grpc-parity` are non-activating probes. The live concurrent
 probe requires uniquely identified chunk logs before sending the next chunk;
 stale retained records cannot count as current progress. The stalled variant
 requires a dropped-history indication on resumption. See [provisioning and

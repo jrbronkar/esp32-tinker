@@ -1,4 +1,5 @@
 //! Hardware regression probe for upload inactivity and removal of legacy writes.
+#[path = "../tests/support/grpc.rs"]
 mod common;
 use common::*;
 use ota_protocol::{RequestPayload as Op, ResponsePayload};
@@ -39,7 +40,7 @@ async fn identity(client: &mut Client) -> Result<(), Box<dyn std::error::Error>>
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 4 {
-        return Err("usage: parity BOARD_IP IMAGE.bin VERSION".into());
+        return Err("usage: grpc-parity BOARD_IP IMAGE.bin VERSION".into());
     }
     let image = std::fs::read(&args[2])?;
     ota_core::validate_image(

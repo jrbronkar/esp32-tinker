@@ -69,6 +69,23 @@ application binaries built from `device-demo`; sensor images, ELF files,
 and merged images are rejected. After commit, reconnect and
 check version and running slot. Commit-response loss is an uncertain outcome.
 
+## Hardware regression probes
+
+Optional host-side probes exercise the known development board. They check its
+identity before upload admission and do not activate an image:
+
+```sh
+cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
+GRPC_STALL_LOGS=1 cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-cleanup -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
+```
+
+These check per-chunk live logs, flow-control isolation, cancellation, idle
+expiry and read-only rejection of removed legacy writes. Tonic integration tests
+and shared host helpers also live in this package. See [test details and
+limits](../../docs/ota/testing.md).
+
 ## Inspect flash/boot layout
 
 ```sh

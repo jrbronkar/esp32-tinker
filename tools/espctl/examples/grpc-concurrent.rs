@@ -1,3 +1,4 @@
+#[path = "../tests/support/grpc.rs"]
 mod common;
 use common::*;
 use ota_protocol::{RequestPayload as Op, ResponsePayload};
@@ -7,7 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 4 {
-        return Err("usage: concurrent BOARD_IP IMAGE.bin FIRMWARE_VERSION (verify only)".into());
+        return Err(
+            "usage: grpc-concurrent BOARD_IP IMAGE.bin FIRMWARE_VERSION (verify only)".into(),
+        );
     }
     let image = std::fs::read(&args[2])?;
     ota_core::validate_image(

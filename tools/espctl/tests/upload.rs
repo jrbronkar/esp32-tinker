@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-#[path = "../../../crates/device-grpc/examples/common/mod.rs"]
+#[path = "support/grpc.rs"]
 mod common;
 use common::*;
 fn image() -> Vec<u8> {

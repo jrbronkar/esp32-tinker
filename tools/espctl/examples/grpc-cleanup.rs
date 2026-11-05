@@ -1,3 +1,4 @@
+#[path = "../tests/support/grpc.rs"]
 mod common;
 use common::*;
 use ota_protocol::{RequestPayload as Op, ResponsePayload};
@@ -6,7 +7,7 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 4 {
-        return Err("usage: cleanup BOARD_IP IMAGE.bin VERSION".into());
+        return Err("usage: grpc-cleanup BOARD_IP IMAGE.bin VERSION".into());
     }
     let image = std::fs::read(&args[2])?;
     tokio::time::timeout(Duration::from_secs(15),async {

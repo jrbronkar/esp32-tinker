@@ -25,17 +25,17 @@ record identity/version/running slot before writes. See [provisioning](provision
 cargo run -p espctl -- status --host BOARD_IP --boot
 cargo run -p espctl -- upload --host BOARD_IP --image IMAGE.bin --firmware-version VERSION --logs
 cargo run -p espctl -- upload --host BOARD_IP --image IMAGE.bin --firmware-version VERSION --logs --commit
-cargo run -p device-grpc --example concurrent -- BOARD_IP IMAGE.bin VERSION
-GRPC_STALL_LOGS=1 cargo run -p device-grpc --example concurrent -- BOARD_IP IMAGE.bin VERSION
-cargo run -p device-grpc --example cleanup -- BOARD_IP IMAGE.bin VERSION
-cargo run -p device-grpc --example parity -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
+GRPC_STALL_LOGS=1 cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-cleanup -- BOARD_IP IMAGE.bin VERSION
+cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
 ```
 
-`concurrent` requires every uniquely identified chunk log before sending the
+`grpc-concurrent` requires every uniquely identified chunk log before sending the
 next chunk, then verifies flash without activation. Its stalled mode stops log
 consumption behind a 1024-byte stream window; upload must still finish and log
-resumption must report overwritten history. `cleanup` tests cancellation and
-resubscription. `parity` abandons an upload with HTTP/2 keepalives and an open
+resumption must report overwritten history. `grpc-cleanup` tests cancellation and
+resubscription. `grpc-parity` abandons an upload with HTTP/2 keepalives and an open
 log stream, requires expiry around five seconds, checks a new Begin/Abort, and
 requires port 7779 to reject Begin/Chunk/Finish/Commit/Abort.
 The examples check the known development board identity before upload admission.

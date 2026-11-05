@@ -13,7 +13,4 @@ protolink = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c8
 
 [dev-dependencies]
 protolink = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["macros", "rt", "net", "time", "sync", "test-util"] }
-tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"] }
-bytes = "1"
-tokio-stream = "0.1"
+tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }

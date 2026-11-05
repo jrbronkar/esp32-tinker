@@ -1,4 +1,4 @@
-#[path = "../examples/common/mod.rs"]
+#[path = "support/grpc.rs"]
 mod common;
 use common::*;
 use std::time::Duration;
