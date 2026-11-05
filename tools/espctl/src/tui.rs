@@ -356,7 +356,9 @@ impl Dashboard {
             KeyCode::Char('f'),
             format!("Log filter · {}", self.filter.label()),
         ));
-        actions.push((KeyCode::End, "Follow live logs".into()));
+        if self.scroll > 0 {
+            actions.push((KeyCode::End, "Follow live logs".into()));
+        }
         if !direct {
             actions.push((KeyCode::Char('r'), "Scan for boards".into()));
         }
@@ -517,6 +519,14 @@ impl Dashboard {
             devices,
             &mut selected,
         );
+        self.page = usize::from(logs.height.saturating_sub(2));
+        let visible: Vec<_> = self
+            .logs
+            .iter()
+            .filter(|row| self.filter.includes(row.severity))
+            .collect();
+        self.scroll = self.scroll.min(visible.len().saturating_sub(self.page));
+
         let options = self.actions(direct);
         self.action = self.action.min(options.len() - 1);
         let mut selected_action = ListState::default().with_selected(
@@ -568,13 +578,6 @@ impl Dashboard {
             status,
         );
 
-        self.page = usize::from(logs.height.saturating_sub(2));
-        let visible: Vec<_> = self
-            .logs
-            .iter()
-            .filter(|row| self.filter.includes(row.severity))
-            .collect();
-        self.scroll = self.scroll.min(visible.len().saturating_sub(self.page));
         let end = visible.len() - self.scroll;
         let start = end.saturating_sub(self.page);
         let lines = visible[start..end]
@@ -879,7 +882,14 @@ async fn dashboard(
                         }
                         KeyCode::PageUp => app.scroll += app.page,
                         KeyCode::PageDown => app.scroll = app.scroll.saturating_sub(app.page),
-                        KeyCode::End => app.scroll = 0,
+                        KeyCode::End => {
+                            app.scroll = 0;
+                            if app.focus == Focus::Actions && key.code == KeyCode::Enter {
+                                app.action = app.action.saturating_sub(1);
+                                app.sidebar_focus = Focus::Actions;
+                                app.focus = Focus::Logs;
+                            }
+                        }
                         _ => {}
                     }
                 }
