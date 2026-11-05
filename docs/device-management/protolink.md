@@ -29,7 +29,10 @@ decoded headers are capped at 1024, serialized output at 8192 and messages at
 
 The Embassy driver splits the TCP socket into independently polled halves.
 Typed lifecycle events drive watchdog, state and reboot behavior; log wording
-is presentation only. External log producers register/wake the connection task. Logs use a 32-record
+is presentation only. A reusable `device-grpc::logs::LogStore` owns retained
+storage and uses Embassy `MultiWakerRegistration` for bounded notifications.
+Firmware appends/reads logs without managing task wakers or connection slots.
+Snapshot polling preserves streaming registrations. Logs use a 32-record
 RAM ring, four-entry batches, boot-scoped cursors and overwritten-history flags.
 Slow log readers cannot consume the upload stream's receive window.
 
@@ -67,7 +70,7 @@ not implemented by legacy OTA and are not claimed as parity guarantees.
 
 ## Automated validation
 
-`cargo test` includes **66 tests**. All pass. Transport tests use independent
+`cargo test` includes **68 tests**. All pass. Transport tests use independent
 Tonic/h2 clients against the actual Handler, including one-connection streaming
 and two-client admission/timeout cases.
 Coverage includes malformed protobuf/ACKs, all metadata/digest/order categories,
@@ -106,6 +109,14 @@ and committed a 626144-byte image; the new client confirmed ota_0 on port 7779.
 Status/boot/timings, log snapshots, profiling, concurrent status/flash exclusion,
 five-second idle cleanup and retired-port closure passed. The versionless client
 then verified the full image with all 153 chunk logs received during upload.
+
+Log-store library refactor (`grpc-logstore-1`): uploaded/committed 626080 bytes
+and confirmed ota_1 after reboot. The first status query during Wi-Fi startup
+timed out; a later query succeeded. Four cancellation/resubscription cycles,
+snapshot polling and a second status client during streaming passed. Both full
+verify-only transfers passed: all 153 live chunk logs arrived during upload,
+and stalled log consumption at a 1024-byte window did not block verification;
+resuming logs reported overwritten history.
 
 Earlier migration evidence (before endpoint consolidation):
 

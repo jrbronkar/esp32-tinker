@@ -8,7 +8,7 @@ cargo test
 cargo check -p espctl --all-targets
 ```
 
-The suite contains 66 tests. The gRPC migration reuses ota-core validation;
+The suite contains 68 tests. The gRPC migration reuses ota-core validation;
 transport tests exercise the actual Handler against independent Tonic/h2 peers.
 Tests cover metadata/image/digest/order rejection, verify-only, explicit commit,
 lost ACKs and actual TCP loss before/after Commit, no replay, activation write

@@ -14,8 +14,7 @@ pub struct Runtime {
     // Both consumers are joined futures within the same executor task.
     state: Cell<State>,
     pub activation_pending: Cell<bool>,
-    pub log_waker: core::cell::RefCell<[Option<core::task::Waker>; 2]>,
-    pub logs: core::cell::RefCell<ota_protocol::logs::LogBuffer>,
+    pub logs: device_grpc::logs::LogStore<2>,
     pub announce: Signal<CriticalSectionRawMutex, ()>,
 }
 impl Runtime {
@@ -25,20 +24,13 @@ impl Runtime {
         Self {
             state: Cell::new(State::Idle),
             activation_pending: Cell::new(false),
-            log_waker: core::cell::RefCell::new([None, None]),
-            logs: core::cell::RefCell::new(ota_protocol::logs::LogBuffer::new(boot_id)),
+            logs: device_grpc::logs::LogStore::new(boot_id),
             announce: Signal::new(),
         }
     }
     pub fn log(&self, severity: ota_protocol::LogSeverity, message: &str) {
         self.logs
-            .borrow_mut()
             .push(embassy_time::Instant::now().as_millis(), severity, message);
-        for slot in self.log_waker.borrow_mut().iter_mut() {
-            if let Some(waker) = slot.take() {
-                waker.wake();
-            }
-        }
     }
     pub fn state(&self) -> &'static str {
         match self.state.get() {

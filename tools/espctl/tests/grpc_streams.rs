@@ -2,12 +2,7 @@
 mod common;
 use common::*;
 use ota_protocol::{ReadLogsRequest, RequestPayload as Op, ResponsePayload};
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    task::{Context, Waker},
-    time::Duration,
-};
+use std::{cell::RefCell, rc::Rc, task::Context, time::Duration};
 
 struct Memory(Vec<u8>);
 impl ota_core::Reader for Memory {
@@ -28,8 +23,7 @@ impl ota_core::Target for Memory {
     }
 }
 struct Events {
-    logs: ota_protocol::logs::LogBuffer,
-    wake: Option<Waker>,
+    logs: device_grpc::logs::LogStore<2>,
     watchdog: Rc<device_grpc::watchdog::UploadWatchdog>,
     timer: protolink::tokio::TokioTimer,
 }
@@ -47,9 +41,7 @@ impl device_grpc::Environment for Env {
         cursor: &ReadLogsRequest,
         cx: &mut Context<'_>,
     ) -> ota_protocol::ReadLogsResponse {
-        let mut env = self.0.borrow_mut();
-        env.wake = Some(cx.waker().clone());
-        env.logs.read(cursor)
+        self.0.borrow().logs.read_and_subscribe(cursor, cx)
     }
     fn event(&self, event: device_grpc::UploadEvent) {
         {
@@ -70,11 +62,10 @@ impl device_grpc::Environment for Env {
 }
 impl Env {
     fn log(&self, message: &str) {
-        let mut env = self.0.borrow_mut();
-        env.logs.push(0, ota_protocol::LogSeverity::Info, message);
-        if let Some(w) = env.wake.take() {
-            w.wake();
-        }
+        self.0
+            .borrow()
+            .logs
+            .push(0, ota_protocol::LogSeverity::Info, message);
     }
 }
 
@@ -107,8 +98,7 @@ async fn fixture() -> (
     let addr = listener.local_addr().unwrap();
     let memory = Rc::new(RefCell::new(Memory(vec![0xff; 256 * 1024])));
     let env = Env(Rc::new(RefCell::new(Events {
-        logs: ota_protocol::logs::LogBuffer::new(1),
-        wake: None,
+        logs: device_grpc::logs::LogStore::new(1),
         watchdog: Rc::new(device_grpc::watchdog::UploadWatchdog::new()),
         timer: protolink::tokio::TokioTimer::new(),
     })));
@@ -464,8 +454,7 @@ async fn two_connections_share_exclusive_flash_without_sharing_idle_timeouts() {
                         let watchdog = Rc::new(device_grpc::watchdog::UploadWatchdog::new());
                         let timer = protolink::tokio::TokioTimer::new();
                         let env = Env(Rc::new(RefCell::new(Events {
-                            logs: ota_protocol::logs::LogBuffer::new(1),
-                            wake: None,
+                            logs: device_grpc::logs::LogStore::new(1),
                             watchdog: watchdog.clone(),
                             timer,
                         })));

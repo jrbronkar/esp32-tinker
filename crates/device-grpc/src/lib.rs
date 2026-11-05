@@ -1,5 +1,6 @@
 #![no_std]
 extern crate alloc;
+pub mod logs;
 pub mod watchdog;
 pub use protolink;
 

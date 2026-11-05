@@ -28,8 +28,8 @@ pub async fn serve(
     target_offset: u32,
 ) {
     embassy_futures::join::join(
-        serve_connection(stack, identity, runtime, target, target_offset, 0),
-        serve_connection(stack, identity, runtime, target, target_offset, 1),
+        serve_connection(stack, identity, runtime, target, target_offset),
+        serve_connection(stack, identity, runtime, target, target_offset),
     )
     .await;
 }
@@ -44,7 +44,6 @@ async fn serve_connection(
     runtime: &crate::runtime::Runtime,
     target: &core::cell::RefCell<crate::flash_target::FlashTarget>,
     target_offset: u32,
-    slot: usize,
 ) {
     let mut rx = [0; 1024];
     let mut tx = [0; 1024];
@@ -65,7 +64,6 @@ async fn serve_connection(
                     identity,
                     runtime,
                     connection: &connection_state,
-                    slot,
                 },
             );
             {
@@ -99,7 +97,6 @@ async fn serve_connection(
                 }
             }
             drop(handler);
-            runtime.log_waker.borrow_mut()[slot] = None;
             if connection_state.activation_started.get() {
                 // Flush bytes already handed to TCP before reset. This is best
                 // effort: a lost ACK still leaves commit outcome uncertain.
@@ -128,7 +125,6 @@ struct DeviceEnvironment<'a> {
     identity: &'a ota_protocol::StatusResponse,
     runtime: &'a crate::runtime::Runtime,
     connection: &'a Connection,
-    slot: usize,
 }
 impl Environment for DeviceEnvironment<'_> {
     fn status(&self) -> ota_protocol::StatusResponse {
@@ -142,11 +138,10 @@ impl Environment for DeviceEnvironment<'_> {
         cursor: &ota_protocol::ReadLogsRequest,
         cx: &mut core::task::Context<'_>,
     ) -> ota_protocol::ReadLogsResponse {
-        self.runtime.log_waker.borrow_mut()[self.slot] = Some(cx.waker().clone());
-        self.runtime.logs.borrow().read(cursor)
+        self.runtime.logs.read_and_subscribe(cursor, cx)
     }
     fn read_logs(&self, cursor: &ota_protocol::ReadLogsRequest) -> ota_protocol::ReadLogsResponse {
-        self.runtime.logs.borrow().read(cursor)
+        self.runtime.logs.read(cursor)
     }
     fn now_us(&self) -> u64 {
         Instant::now().as_micros()
