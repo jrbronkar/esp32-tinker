@@ -1,74 +1,41 @@
-# OTA validation and feature parity
+# OTA validation
 
-Run from the repository root inside `nix develop`. Host tests need no board,
-Wi-Fi credentials or firmware image:
+Run inside `nix develop`; host tests require no board or credentials:
 
 ```sh
 cargo test
 cargo check -p espctl --all-targets
 ```
 
-The suite contains 68 tests. The gRPC migration reuses ota-core validation;
-transport tests exercise the actual Handler against independent Tonic/h2 peers.
-Tests cover metadata/image/digest/order rejection, verify-only, explicit commit,
-lost ACKs and actual TCP loss before/after Commit, no replay, activation write
-blocking, cancellation, deadlines, competing streams and overwritten logs.
-The portable watchdog has virtual-time tests, plus a TCP test that produces
-live logs while the upload is abandoned. Tests also cover status during an upload
-on a second connection, independent watchdogs, and log snapshot/stream wakeups.
+The 68 tests cover typed/empty Protobuf requests, bounded decoding, independent
+Tonic/h2 interoperability, image/metadata/digest/order validation, explicit
+Commit, uncertain outcomes and no replay, TCP loss, competing clients,
+cancellation, deadlines, independent watchdogs, log wakeups and flow control.
+The ESP32-S3 release build also passes.
 
 ## Hardware probes
 
-Use a provisioned board with a compatible private application-only image, and
-record identity/version/running slot before writes. See [provisioning](provisioning.md).
+Use a private application-only image built as described in [provisioning](provisioning.md).
+These probes check the known development board identity and do not activate images:
 
 ```sh
-cargo run -p espctl -- status --host BOARD_IP --boot
-cargo run -p espctl -- upload --host BOARD_IP --image IMAGE.bin --firmware-version VERSION --logs
-cargo run -p espctl -- upload --host BOARD_IP --image IMAGE.bin --firmware-version VERSION --logs --commit
 cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
 GRPC_STALL_LOGS=1 cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
 cargo run -p espctl --example grpc-cleanup -- BOARD_IP IMAGE.bin VERSION
 cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
 ```
 
-`grpc-concurrent` requires every uniquely identified chunk log before sending the
-next chunk, then verifies flash without activation. Its stalled mode stops log
-consumption behind a 1024-byte stream window; upload must still finish and log
-resumption must report overwritten history. `grpc-cleanup` tests cancellation and
-resubscription. `grpc-parity` abandons an upload with HTTP/2 keepalives and an open
-log stream, requires expiry around five seconds, checks a new Begin/Abort, and
-requires a second client to query status while flash is leased, rejects a
-competing upload, and requires retired port 7780 to be closed.
-The examples check the known development board identity before upload admission.
+The live probe requires each chunk log before the next chunk. Stalled mode holds
+a 1024-byte log window while upload completes, then requires overwrite reporting.
+Cleanup tests cancellation/resubscription. Parity tests concurrent status,
+exclusive flash ownership, idle expiry despite PINGs and closure of port 7780.
 
-Legacy OTA, its CLI flag and the old upload-fault-probe harness are removed.
-Current [parity and hardware results](../device-management/protolink.md) distinguish
-new gRPC evidence from earlier legacy results below.
+## Validation status
 
-## Still-unverified physical cases
-
-Power interruption during sector/metadata writes, AP outages, rollback-enabled
-bootloader behavior, bounded health confirmation, sensor latency, worst-case
-heap/stack and long-duration stress need separate instrumented runs. A paused
-software test or a host memory mock does not establish torn-write recovery.
-Keep private binaries/backups and exact board/bootloader configuration with run
-records. Do not treat a missing Commit ACK as proof that activation failed.
-TLS/authentication and signed releases remain unimplemented for both the old and
-new transport; feature parity is not a security assurance.
-
-## Historical legacy-transport results
-
-| Build / check | Evidence | Limits |
-| --- | --- | --- |
-| Prior legacy host suite | 40 tests pass: 10 discovery/client, 14 status/client, 3 upload/client, 5 core, 8 protocol | Mock I/O/storage cannot establish real flash or bootloader recovery |
-| Prior legacy firmware | Firmware check and release link pass | Startup error reset path has not been fault-injected |
-| `ota-merge-check-1` on board | Earlier no-feature release: 501,024 bytes uploaded, verified and committed over Wi-Fi from ota_0; post-reboot status confirms protocol 1, ota_1, OTA available | Earlier activation verified; rollback and confirmation-error injection remain untested |
-| `discovery-final-1` on board | Wi-Fi activation, discovery, status and boot inventory pass. Unrelated/type/class queries are ignored; receiving/verified DNS snapshots and disconnect cleanup to idle pass without reboot | One board; DHCP changes, hostname conflict handling and long-duration network behavior remain unverified |
-| Discovery network comparison | Alternate AP: 10/10 scans passed; status and boot inventory passed | Multicast remains intermittent on another WLAN; exact cause unresolved |
-| `unified-1` on board | Eleven non-activating probes and 500,560-byte verify-only upload pass | One socket timeout before a successful fresh transfer; activation/rollback not tested on this build |
-| Earlier A → B → C prototype | Wi-Fi activation alternated slots; earlier NVS comparison was identical | Predates unified protocol; not evidence for every later build |
-
-Keep detailed run logs, firmware images, and raw backups outside the repository.
-Use the template above for local records and update this summary when validation
-changes; distinguish new evidence from results on earlier builds.
+One 16 MiB ESP32-S3 with two 3 MiB slots has passed full-image verification,
+self-update with concurrent logs and explicit commit, post-reboot slot checks,
+stalled logs, concurrent polling/profiling, cancellation and idle cleanup.
+Host mocks and these runs do not establish production readiness: authentication,
+signed releases, rollback/health deadlines, power-cut recovery, worst-case
+memory/latency and long-duration reliability remain open. See [production gaps](design.md#production-gaps).
+Keep binaries, credentials and detailed run logs outside the repository.
