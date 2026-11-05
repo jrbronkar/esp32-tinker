@@ -1,165 +1,126 @@
 # Concurrent gRPC management and OTA
 
-Every `device-demo` build exposes one cleartext HTTP/2/gRPC Management service
-on TCP **7779**, serving Status, ReadLogs, Logs and Upload. The old raw TCP
-listener and separate TCP 7780 listener are removed. Two bounded connections
-share one flash lease; each has its own upload watchdog and reboot ownership.
-UDP 5353 remains for mDNS discovery.
+`device-demo` exposes one cleartext HTTP/2 service,
+`esp.experimental.Management`, on TCP **7779**. It serves status, log snapshots,
+log streams and firmware uploads. Two bounded client connections share one
+exclusive flash lease. DNS-SD advertises the management endpoint over UDP 5353;
+see [discovery](discovery.md).
 
-Protolink is pinned to `62cc2c87a687ba65fc6885e7c9691cefacf2d064`; Cargo.lock pins
-zerodds HTTP/2 and HPACK to 1.0.0-rc.7. The original `esp.experimental.Management`
-service name remains stable. Envelope version fields are reserved; compatibility
-uses additive Protobuf changes and a new service/package for breaking semantics.
-Raw Handler protobuf bodies use existing micropb
-0.7, independent of Protolink's optional micropb 0.6 codec.
+Protolink is pinned to `62cc2c87a687ba65fc6885e7c9691cefacf2d064`.
+`Cargo.lock` pins zerodds HTTP/2 and HPACK to 1.0.0-rc.7. The handler uses
+fixed-capacity micropb messages. Schema compatibility uses additive Protobuf
+changes with preserved field numbers and meanings; breaking API or behavior
+changes require a new service/package. Request and response field 1 is reserved.
 
 ## API and resource limits
 
-See [protocol](../ota/protocol.md) and `protocol/management.proto`. Status is
-and ReadLogs are unary, Logs is server streaming, and Upload is bidirectional streaming. Upload
-operations are Begin, ordered sector-sized Chunk, Finish, then explicit Commit
-or Abort. Clients await each correlated ACK. Finish validates the actual stored
-image; the complete firmware is never buffered in device RAM.
+The [service schema](../../protocol/management.proto) defines four RPCs:
 
-Two active streams and two fixed subscription slots are allowed per connection.
-One flash lease is shared across both connections. Each upload has one pending ACK. Receive windows are
-8192 bytes per stream, the connection window is 65535 (the HTTP/2 minimum),
-decoded headers are capped at 1024, serialized output at 8192 and messages at
-4608. Responses are bounded to 512 bytes. Compression is disabled.
+| RPC | Shape | Purpose |
+| --- | --- | --- |
+| Status | Unary | Identity, uptime, state, optional boot inventory and timings |
+| ReadLogs | Unary | One cursor-based retained-log snapshot |
+| Logs | Server streaming | Cursor-based log batches as records arrive |
+| Upload | Bidirectional streaming | Ordered update operations and correlated acknowledgments |
 
-The Embassy driver splits the TCP socket into independently polled halves.
-Typed lifecycle events drive watchdog, state and reboot behavior; log wording
-is presentation only. A reusable `device-grpc::logs::LogStore` owns retained
-storage and uses Embassy `MultiWakerRegistration` for bounded notifications.
-Firmware appends/reads logs without managing task wakers or connection slots.
-Snapshot polling preserves streaming registrations. Logs use a 32-record
-RAM ring, four-entry batches, boot-scoped cursors and overwritten-history flags.
-Slow log readers cannot consume the upload stream's receive window.
+See the [protocol contract](../ota/protocol.md) for message and lifecycle details.
+The configured bounds are:
 
-The portable five-second upload watchdog is refreshed only by accepted upload
-operations. Log traffic and HTTP/2 keepalives cannot keep an abandoned upload
-holding flash. Expiry closes the connection and the driver cancels calls,
-releasing the lease. Abort/cancellation/completion clears the deadline. Pending
-activation uses the separate reboot path. TCP inactivity is also bounded to ten
-seconds and a connection to 180 seconds; gRPC request deadlines can expire sooner.
-
-Once Commit is attempted after verification, activation is latched before boot
-metadata writes and further writes are blocked until reset. The driver gets up
-to two seconds to send the ACK/trailers, then attempts a bounded TCP flush and
-reboots; disconnect also triggers pending reboot. A valid Committed ACK is
-success even if trailers are truncated. Lost/invalid ACKs or metadata failures
-are uncertain outcomes, never automatic retries.
-
-## Legacy feature parity
-
-| Capability | gRPC evidence |
+| Resource | Limit |
 | --- | --- |
-| Metadata, size, descriptor and version checks | Same ota-core rules plus Tonic rejection tests |
-| Ordered chunks, IDs and inactive target | Handler/CLI tests check order, request correlation and boot inventory |
-| Flash readback, SHA-256 and ESP image validation | Real updater in tests and full images verified on hardware |
-| Verify-only and Abort preserve boot selection | CLI tests and board version/slot checks |
-| Explicit verified-session Commit and reboot | Tests and hardware activation in both slot directions |
-| No replay, lost commit ACK and metadata errors | Tests include actual TCP cuts before/after Commit and storage failure |
-| Cancellation, disconnect and exclusive ownership | Tonic tests and repeated board Begin/Abort/resubscription probes |
-| Five-second upload inactivity | Virtual-clock tests, live-log TCP test and hardware PING/idle probe |
-| Retained status, boot inventory and logs | Single gRPC service: status/boot inventory, snapshot and streaming logs |
-| Concurrent transfer/log progress | One-connection Tonic and hardware probes, including a stalled log window |
+| Client connections | 2 |
+| Active RPC streams per connection | 2 |
+| Log subscription slots per connection | 2 |
+| Flash leases across all connections | 1 |
+| Pending acknowledgments per upload | 1 |
+| Receive window per stream | 8192 bytes |
+| Connection receive window | 65535 bytes, the HTTP/2 minimum |
+| Decoded header list | 1024 bytes |
+| Pending serialized output per connection | 8192 bytes |
+| Request message | 4608 bytes |
+| Response message | 512 bytes |
 
-TLS/authentication, automatic rollback and dependable power-loss recovery were
-not implemented by legacy OTA and are not claimed as parity guarantees.
+Compression is disabled. The Embassy driver polls TCP read and write halves
+independently. Upload and Logs can progress on one connection, while another
+client queries the same endpoint. A competing upload fails admission before
+writing flash.
 
-## Automated validation
+## Upload lifecycle and deadlines
 
-`cargo test` includes **68 tests**. All pass. Transport tests use independent
-Tonic/h2 clients against the actual Handler, including one-connection streaming
-and two-client admission/timeout cases.
-Coverage includes malformed protobuf/ACKs, all metadata/digest/order categories,
-pre-verification commit rejection, activation write blocking, before/after-commit
-TCP loss, log errors without loss of commit context, cancellation, deadlines,
-flow-control isolation, overwritten history, status flags and gRPC polling. The watchdog's reset/clear/expiry behavior is tested with
-virtual time; another TCP test generates live logs during an abandoned upload.
+Begin validates application, chip, firmware version, image size and SHA-256,
+then acquires the flash lease. Ordered sector-sized chunks write directly to the
+inactive slot; the device never buffers a complete image. Clients await each
+acknowledgment and validate request ID, phase, next offset and target slot.
+Finish reads flash back and validates its digest and ESP image structure.
 
-The ESP32-S3 default release build passes without extra features. Formatting and
-patch whitespace checks pass. Clippy is unavailable on the installed newer
-nightly; the default Clippy selects Rust 1.79. Host mocks do not establish flash
-power-loss behavior or worst-case scheduling/heap/stack bounds.
+Verification alone preserves boot selection. Commit explicitly activates the
+verified image and reboots. Activation is latched before boot metadata writes,
+and further writes remain blocked until reset, including after a metadata error.
+The driver allows two seconds for the acknowledgment/trailers, attempts a bounded
+TCP flush and resets. Disconnect during pending activation also triggers reset.
+A valid Committed acknowledgment establishes success even if trailers are
+truncated. A lost or invalid acknowledgment leaves activation uncertain; inspect
+the running firmware and slot before retrying. Operations are never replayed
+automatically.
 
-## Hardware evidence, 2026-11-04
+Each connection has its own five-second upload inactivity watchdog. Only accepted
+upload operations refresh it; log traffic and HTTP/2 keepalives do not. Expiry
+closes that connection, cancels its RPCs and releases flash. Abort, cancellation
+and completion clear the upload deadline. TCP inactivity is bounded to ten
+seconds and connection lifetime to 180 seconds. RPC deadlines can expire sooner.
 
-Single-service validation (`grpc-single-1`): migrated by gRPC with concurrent
-logs and committed a 626128-byte image to ota_0. Status/boot inventory, profiling
-(including CSV), snapshot polling and discovery all used TCP 7779. Discovery
-reported one endpoint while state was receiving. A second client queried status
-during an upload; competing Begin was rejected. The abandoned upload expired
-about five seconds after its last operation despite PINGs; Begin/Abort then
-succeeded, and TCP 7780 refused connections. Cancellation/resubscription probes
-passed. All 153 chunk logs arrived before their next chunks during a full
-verify-only transfer; a second full transfer verified with log consumption
-stalled at a 1024-byte window and reported overwrite on resumption. Concurrent
-polling/profiling passed; observed heap peak was 74828/102400 bytes. These runs
-are samples, not worst-case memory guarantees.
+## Retained logs
 
-A second 626128-byte image (`grpc-single-2`) uploaded with live logs and an
-acknowledged Commit through default port 7779. Post-reboot status confirmed
-ota_1 at 0x310000, idle and OTA available. The single-service firmware therefore
-updated itself without the retired endpoint.
+`device-grpc::logs::LogStore` owns retained storage and uses Embassy
+`MultiWakerRegistration` for bounded reader notifications. Firmware appends and
+reads logs through this abstraction. Snapshot polling preserves streaming
+registrations. Typed lifecycle events drive state, watchdog and reboot behavior;
+log text is presentation.
 
-Envelope-version removal (`grpc-schema-1`): the saved pre-change client migrated
-and committed a 626144-byte image; the new client confirmed ota_0 on port 7779.
-Status/boot/timings, log snapshots, profiling, concurrent status/flash exclusion,
-five-second idle cleanup and retired-port closure passed. The versionless client
-then verified the full image with all 153 chunk logs received during upload.
+Logs use a 32-record RAM ring, four-entry batches, boot-scoped cursors and
+an overwritten-history indication. A stalled log reader cannot consume the
+upload stream's receive window. When reading resumes, the cursor reports any
+history overwritten in the bounded ring.
 
-Log-store library refactor (`grpc-logstore-1`): uploaded/committed 626080 bytes
-and confirmed ota_1 after reboot. The first status query during Wi-Fi startup
-timed out; a later query succeeded. Four cancellation/resubscription cycles,
-snapshot polling and a second status client during streaming passed. Both full
-verify-only transfers passed: all 153 live chunk logs arrived during upload,
-and stalled log consumption at a 1024-byte window did not block verification;
-resuming logs reported overwritten history.
+## Validation and limits
 
-Earlier migration evidence (before endpoint consolidation):
+The host suite has **68 passing tests**, including independent Tonic/h2 peers
+against the actual handler. Coverage includes metadata, firmware/image/digest
+and ordering checks; malformed messages and acknowledgments; unknown Protobuf
+fields; status options; log polling and notification; competing clients;
+cancellation and deadlines; live and stalled log streams; and actual TCP loss
+before and after Commit. Tests also cover activation write blocking, uncertain
+commit outcomes and no replay. Upload watchdog tests use virtual time and a
+TCP peer producing logs during an abandoned upload.
 
-Identity checked before writes: `esp32s3-a4:cb:8f:d8:13:c8` at `10.128.248.68`.
-Expected layout: 16 MiB flash with two 3 MiB application slots.
+The ESP32-S3 release build and all `espctl` targets pass. Current hardware
+validation on one 16 MiB ESP32-S3 with two 3 MiB application slots confirms:
 
-- Initial grpc-streams-2: 636592 bytes verified, 156 uniquely identified live
-  chunk logs before the next chunk, one connection, 29.5871 seconds.
-- Stalled logs on that build: the same image verified with consumption paused
-  behind a 1024-byte stream window; overwritten history reported on resumption.
-- gRPC activation with live logs: grpc-commit-3 into ota_0, grpc-ota-1 into ota_1,
-  then grpc-ota-2 into ota_0. Verify-only preserved the old version/slot.
-- Post-removal grpc-only-1: 634000 bytes uploaded/committed over gRPC, then
-  confirmed running in ota_1. The hardware parity probe observed idle expiry in
-  4.9815 seconds despite PINGs and an open Logs stream, proved lease release with
-  a fresh Begin/Abort, and rejected all five old OTA operations on port 7779.
-- That gRPC-only firmware then verified a 634000-byte image with log consumption
-  stalled (29.5609 seconds, 155 chunks), preserving its running version/slot.
-  A subsequent upload with concurrent live logs committed grpc-only-2 into ota_0.
-  This update was performed by firmware with no legacy OTA writer present.
-  Post-reboot grpc-only-2 passed the parity probe again (4.9982-second expiry),
-  rejected all legacy write operations, and advertised the expected endpoints.
+- A 626080-byte image uploaded with concurrent logs, committed and booted in
+  ota_1; status reports idle and OTA available.
+- A full verify-only upload received all 153 matching chunk logs before sending
+  their next chunks.
+- A full upload verified with log consumption stalled behind a 1024-byte window;
+  resuming consumption reported overwritten history.
+- Four cancellation/resubscription cycles released upload ownership, and a fresh
+  Begin/Abort succeeded. Empty uploads were rejected.
+- Snapshot polling and a second status client worked during streaming.
 
-The final review replaced string-matched lifecycle control with typed events.
-That source built and passed all 64 tests, uploaded/committed a 634064-byte image
-with live logs, and booted `grpc-review-1` in ota_1. The hardware idle probe
-expired in 4.9998 seconds despite PINGs; legacy-write rejection, lease release,
-four cancellation/resubscription cycles and empty-upload rejection passed.
-
-Earlier allocator estimates peaked at 71872 bytes of the configured 102400-byte
-heap. Those are boot-wide estimates from the previous build, not a current
-worst-case memory guarantee. Synchronous flash work can delay the executor.
-
-Hardware probes and Tonic integration tests live under `tools/espctl` with
-shared host-only support in `tests/support/grpc.rs`. The portable `device-grpc`
-library keeps its watchdog tests and has no hardware examples or Tonic dependency.
+These runs do not establish worst-case heap/stack usage, scheduling latency,
+long-duration reliability or power-loss recovery. Synchronous flash work can
+pause the executor. TLS/authentication, signatures and automatic rollback remain
+unimplemented or unverified; this is unsigned development OTA. USB/BOOT/RESET
+is the recovery path.
 
 ## Reproduce
 
-Inside `nix develop`, with Wi-Fi build settings exported privately:
+Host integration tests and hardware probes live in `tools/espctl`; the portable
+`device-grpc` library contains log-store and watchdog tests. Inside `nix develop`,
+with Wi-Fi build settings exported privately:
 
 ```sh
 cargo test
+cargo check -p espctl --all-targets
 cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
 # Export an application-only image using the provisioning guide; keep it private.
 cargo run -p espctl -- upload --host BOARD_IP --image IMAGE.bin --firmware-version VERSION --logs --commit
@@ -169,10 +130,9 @@ cargo run -p espctl --example grpc-cleanup -- BOARD_IP IMAGE.bin VERSION
 cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
 ```
 
-`grpc-concurrent`, `grpc-cleanup` and `grpc-parity` are non-activating probes. The live concurrent
-probe requires uniquely identified chunk logs before sending the next chunk;
-stale retained records cannot count as current progress. The stalled variant
-requires a dropped-history indication on resumption. See [provisioning and
-recovery](../ota/provisioning.md) and [test limits](../ota/testing.md).
-
-Earlier results above mentioning separate endpoints or legacy-write rejection describe firmware before the single-service consolidation.
+The three probes do not activate images. The live concurrent probe requires
+uniquely identified chunk logs before sending the next chunk; retained records
+cannot count as current progress. The stalled variant requires an
+overwritten-history indication on resumption. See [provisioning and
+recovery](../ota/provisioning.md), [schema compatibility](../ota/protocol.md#schema-compatibility)
+and [test limits](../ota/testing.md).
