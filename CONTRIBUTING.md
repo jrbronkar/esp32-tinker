@@ -1,0 +1,47 @@
+# Contributing
+
+Run commands from the repository root. The Nix flake supports Apple Silicon
+macOS and provides the pinned ESP Rust compiler, Xtensa linker, rustfmt, Clippy,
+and espflash.
+
+```sh
+nix develop
+cargo clippy --version
+cargo fmt --version
+```
+
+## Host checks
+
+Plain Cargo commands select `espctl` and the portable crates in the root
+workspace. Run these before submitting a PR:
+
+```sh
+cargo build --locked
+cargo test --locked
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+Use `cargo fmt --all` to apply formatting. Host tests need neither a board nor
+Wi-Fi credentials. The standalone visualizers have their own Cargo workspaces
+and can be built with `nix build .#imu-visualizer .#soil-visualizer`.
+
+## ESP32-S3 checks
+
+Select the firmware package and target explicitly. For a build and lint check
+of `device-demo`, use placeholders for its required Wi-Fi settings:
+
+```sh
+WIFI_SSID=build-check WIFI_PASSWORD=build-check cargo build --locked \
+  --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
+
+WIFI_SSID=build-check WIFI_PASSWORD=build-check cargo clippy --locked \
+  --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc -p device-demo -- -D warnings
+```
+
+For hardware tests, rebuild with your local Wi-Fi settings. Firmware embeds
+those settings, so keep credentials and built images out of Git. See the
+[provisioning guide](docs/ota/provisioning.md) and [OTA probes](docs/ota/testing.md).
+
+In the PR, describe the behavior change and list the checks you ran. Include
+board results when the change affects hardware behavior.

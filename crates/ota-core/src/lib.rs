@@ -50,7 +50,7 @@ fn cstr(bytes: &[u8]) -> &[u8] {
 /// segment checksum, and mandatory ESP image SHA-256 footer. Never accepts ELF
 /// or merged bootloader images. Does not replace bootloader load-address checks.
 pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> Result<(), Error> {
-    if length < 288 || length > SLOT_SIZE {
+    if !(288..=SLOT_SIZE).contains(&length) {
         return Err(Error::Bounds);
     }
     let mut head = [0u8; 176];
@@ -175,17 +175,16 @@ impl Update {
             return Err(Error::Bounds);
         }
         // The complete first header/descriptor arrives before the first flash write.
-        if offset == 0 {
-            if bytes.len() < 176
+        if offset == 0
+            && (bytes.len() < 176
                 || bytes[0] != 0xe9
                 || bytes[12..14] != [9, 0]
                 || bytes[32..36] != 0xabcd5432u32.to_le_bytes()
                 || cstr(&bytes[80..112]) != APP.as_bytes()
                 || cstr(&bytes[144..176]) != MARKER.as_bytes()
-                || cstr(&bytes[48..80]) != &self.version[..self.version_len]
-            {
-                return Err(Error::Image);
-            }
+                || cstr(&bytes[48..80]) != &self.version[..self.version_len])
+        {
+            return Err(Error::Image);
         }
         target.write(offset, bytes)?;
         self.received += bytes.len() as u32;

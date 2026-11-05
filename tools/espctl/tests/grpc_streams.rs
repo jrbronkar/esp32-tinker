@@ -177,6 +177,10 @@ async fn same_connection_upload_and_live_logs_verify_image() {
         .await;
 }
 #[tokio::test]
+#[allow(
+    clippy::await_holding_refcell_ref,
+    reason = "the test holds the flash lease while the server handles a competing Begin"
+)]
 async fn cancellation_errors_and_disconnect_release_flash() {
     tokio::task::LocalSet::new()
         .run_until(async {

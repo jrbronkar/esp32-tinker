@@ -72,6 +72,8 @@ terminal displays serial data <------  println! writes through UART
 
 ## Enter the development shell
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build, formatting, Clippy, and test commands.
+
 ```sh
 nix develop
 ```

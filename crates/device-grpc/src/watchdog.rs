@@ -39,10 +39,10 @@ impl UploadWatchdog {
                 Some(deadline) => {
                     if let Either::First(()) =
                         select(timer.sleep_until(deadline), self.changed.wait()).await
+                        && self.deadline.get() == Some(deadline)
+                        && timer.now() >= deadline
                     {
-                        if self.deadline.get() == Some(deadline) && timer.now() >= deadline {
-                            return;
-                        }
+                        return;
                     }
                 }
             }
