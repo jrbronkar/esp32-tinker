@@ -98,6 +98,15 @@ cargo run -p espctl --example mock-device -- 127.0.0.1:7779
 cargo run -p espctl -- status --host 127.0.0.1
 ```
 
-The mock implements status, not radio or flash. See [hardware probes and limits](../../docs/ota/testing.md),
+The `mock-device` example serves status. The host tests also run a loopback
+gRPC board with the firmware management handler and RAM-backed flash. To run
+the dashboard update boundary test on its own:
+
+```sh
+cargo test -p espctl --lib update_requires_confirmation_and_checks_boot_over_grpc
+```
+
+The test covers verification, confirmation and cancellation, and boot status
+after a successful or lost activation reply. See [hardware probes and limits](../../docs/ota/testing.md),
 [protocol](../../docs/ota/protocol.md) and [implementation](../../docs/device-management/protolink.md).
 Updates are unsigned and unauthenticated; [production gaps](../../docs/ota/design.md#production-gaps) remain.

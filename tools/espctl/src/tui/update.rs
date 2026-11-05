@@ -110,7 +110,9 @@ impl Workflow {
     }
 
     pub(super) fn activate(&mut self, timeout: Duration) {
-        self.confirming = false;
+        if !std::mem::take(&mut self.confirming) {
+            return;
+        }
         let Some(verified) = self.verified.take() else {
             return;
         };
@@ -260,5 +262,86 @@ fn running_expected_image(board: &Board, slot: u32, timeout: Duration) -> bool {
             }
         }
         std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/support/ota.rs"]
+mod mock_board;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn finish(workflow: &mut Workflow) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while workflow.busy() {
+                workflow.poll().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dashboard update timed out");
+    }
+
+    #[tokio::test]
+    async fn update_requires_confirmation_and_checks_boot_over_grpc() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let timeout = Duration::from_secs(2);
+                for fault in ["", "lost-commit"] {
+                    let (address, server, board) = mock_board::start(fault, true).await;
+                    let path = std::env::temp_dir().join(format!(
+                        "espctl-dashboard-{}-{fault}.bin",
+                        std::process::id()
+                    ));
+                    std::fs::write(&path, mock_board::image()).unwrap();
+                    let mut workflow = Workflow::new(Some((path.clone(), "v1".into())));
+                    let status =
+                        tokio::task::spawn_blocking(move || crate::query_status(address, timeout))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    workflow.verify(Some(address), Some(&status), timeout);
+                    finish(&mut workflow).await;
+                    std::fs::remove_file(path).unwrap();
+                    assert!(
+                        workflow.text().contains("Verified v1"),
+                        "{}",
+                        workflow.text()
+                    );
+                    assert_eq!(board.writes.get(), 1);
+                    assert_eq!(board.commits.get(), 0);
+                    assert!(!board.pending.get());
+                    workflow.activate(timeout);
+                    assert!(!workflow.busy());
+                    workflow.ask_activation();
+                    assert!(workflow.confirming());
+                    workflow.cancel_confirmation();
+                    workflow.activate(timeout);
+                    assert!(!workflow.busy());
+
+                    workflow.ask_activation();
+                    workflow.activate(timeout);
+                    finish(&mut workflow).await;
+                    assert!(
+                        workflow.text().contains("running v1 from slot 0x310000"),
+                        "{}",
+                        workflow.text()
+                    );
+                    assert_eq!(board.commits.get(), 1);
+                    assert!(board.pending.get());
+                    assert_eq!(
+                        *board.requests.borrow(),
+                        [
+                            "begin", "chunk", "finish", "abort", "begin", "chunk", "finish",
+                            "commit"
+                        ]
+                    );
+                    server.abort();
+                    let _ = server.await;
+                }
+            })
+            .await;
     }
 }
