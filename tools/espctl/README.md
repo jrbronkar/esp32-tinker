@@ -117,7 +117,31 @@ the dashboard update boundary test on its own:
 cargo test -p espctl --lib update_requires_confirmation_and_checks_boot_over_grpc
 ```
 
-The test covers verification, confirmation and cancellation, and boot status
-after a successful or lost activation reply. See [hardware probes and limits](../../docs/ota/testing.md),
+The test verifies that canceling performs no writes and that confirming uses
+one upload and commit sequence. It checks the running version and slot after
+a successful or lost activation reply.
+
+### Exercising the terminal UI
+
+Build the executable with `cargo build --locked -p espctl`. On Unix, launch
+`target/debug/espctl tui --host 127.0.0.1` with Python's `pty.openpty()`. Attach
+stdin, stdout, and stderr to the slave and drive the master with `os.write`.
+Use a loopback address for navigation and layout checks. Test update behavior
+with the committed gRPC boundary test above, which uses RAM-backed flash.
+The `mock-device` example provides status for interactive checks.
+
+Set the terminal dimensions on the slave with `TIOCSWINSZ`. Check 80×24 for a
+compact terminal and 224×27 for a wide, short one. Send arrows as
+`ESC [ A/B/C/D` without spaces, Enter as CR, and Escape as `ESC`. Drain the
+master with `select` and a deadline while the process runs. Ratatui emits
+incremental ANSI updates, so reconstruct the screen before asserting visible
+text or pane positions. Check that the active pane and its footer agree,
+that Cancel is initially selected in the update prompt, and that quitting
+restores the terminal. For palette checks, use a 256-color terminal with
+`NO_COLOR` unset.
+
+The pseudo-terminal checks cover rendering and real keyboard input. Use
+the hardware probes for physical flash, reboot, and slot checks.
+See [hardware probes and limits](../../docs/ota/testing.md),
 [protocol](../../docs/ota/protocol.md) and [implementation](../../docs/device-management/protolink.md).
 Updates are unsigned and unauthenticated; [production gaps](../../docs/ota/design.md#production-gaps) remain.
