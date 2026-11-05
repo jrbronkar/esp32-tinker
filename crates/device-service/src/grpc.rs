@@ -104,17 +104,6 @@ async fn serve_connection(
                 esp_hal::system::software_reset();
             }
         }
-        let stats = esp_alloc::HEAP.stats();
-        use core::fmt::Write;
-        let mut heap = heapless::String::<64>::new();
-        let _ = write!(
-            heap,
-            "gRPC heap used={} peak={} free={}",
-            stats.current_usage,
-            stats.max_usage,
-            stats.size - stats.current_usage
-        );
-        runtime.log(ota_protocol::LogSeverity::Info, &heap);
         socket.abort();
         let _ = with_timeout(Duration::from_millis(250), socket.flush()).await;
         Timer::after_millis(10).await;

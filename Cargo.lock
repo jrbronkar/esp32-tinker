@@ -484,7 +484,6 @@ dependencies = [
  "embassy-time",
  "embedded-io-async 0.7.0",
  "embedded-storage",
- "esp-alloc",
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",

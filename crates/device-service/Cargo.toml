@@ -5,7 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-esp-alloc = { version = "0.10.0", features = ["esp32s3", "internal-heap-stats"] }
 device-grpc = { path = "../device-grpc" }
 ota-protocol = { path = "../ota-protocol" }
 embassy-executor = "0.10.0"
