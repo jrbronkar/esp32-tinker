@@ -1,7 +1,7 @@
 #[path = "support/grpc.rs"]
 mod common;
 use common::*;
-use ota_protocol::{ReadLogsRequest, RequestPayload as Op, ResponsePayload};
+use ota_protocol::{ReadLogsRequest, UploadOperation as Op};
 use std::{cell::RefCell, rc::Rc, task::Context, time::Duration};
 
 struct Memory(Vec<u8>);
@@ -146,10 +146,7 @@ async fn same_connection_upload_and_live_logs_verify_image() {
                     // Wait for real chunk events BEFORE the next chunk/Finish. A sequential
                     // upload-then-log server cannot pass, even if it eventually returns logs.
                     loop {
-                        let batch = response(&logs.message().await.unwrap().unwrap());
-                        let Some(ResponsePayload::Logs(batch)) = batch.payload else {
-                            panic!()
-                        };
+                        let batch = log_response(&logs.message().await.unwrap().unwrap());
                         if batch.entries.iter().any(|e| {
                             e.message.as_str()
                                 == format!("gRPC chunk id={} next={}", id - 1, ack.next_offset)
@@ -239,11 +236,7 @@ async fn cancellation_errors_and_disconnect_release_flash() {
                     let mut stream = logs(&mut client, cursor).await.unwrap();
                     stream.message().await.unwrap().unwrap();
                     env.log("external wake");
-                    let Some(ResponsePayload::Logs(batch)) =
-                        response(&stream.message().await.unwrap().unwrap()).payload
-                    else {
-                        panic!()
-                    };
+                    let batch = log_response(&stream.message().await.unwrap().unwrap());
                     assert!(batch.entries.iter().any(|e| e.message == "external wake"));
                     drop(stream);
                 }
@@ -294,11 +287,7 @@ async fn stalled_log_stream_does_not_stall_upload_and_reports_overwrite() {
                 }
                 assert_eq!(&memory.borrow().0[..image.len()], &image);
                 loop {
-                    let Some(ResponsePayload::Logs(batch)) =
-                        response(&logs.message().await.unwrap().unwrap()).payload
-                    else {
-                        panic!()
-                    };
+                    let batch = log_response(&logs.message().await.unwrap().unwrap());
                     if batch.dropped {
                         break;
                     }
@@ -341,7 +330,8 @@ async fn competing_stream_cannot_release_active_upload_and_deadline_cancels_logs
                 drop(other);
                 drop(tx);
                 client.ready().await.unwrap();
-                let mut request = tonic::Request::new(body(Op::ReadLogs(Default::default()), 88));
+                let mut request =
+                    tonic::Request::new(proto(&ota_protocol::ReadLogsRequest::default()));
                 request.set_timeout(Duration::from_millis(100));
                 let mut stream = client
                     .server_streaming(request, device_grpc::LOGS_PATH.parse().unwrap(), RawCodec)
@@ -412,25 +402,20 @@ async fn unary_log_snapshot_does_not_replace_stream_wakeup() {
             client.ready().await.unwrap();
             let snapshot = client
                 .unary(
-                    tonic::Request::new(body(Op::ReadLogs(Default::default()), 1)),
+                    tonic::Request::new(proto(&ota_protocol::ReadLogsRequest::default())),
                     device_grpc::READ_LOGS_PATH.parse().unwrap(),
                     RawCodec,
                 )
                 .await
                 .unwrap();
-            assert!(matches!(
-                response(&snapshot.into_inner()).payload,
-                Some(ResponsePayload::Logs(_))
-            ));
+            assert_ne!(log_response(&snapshot.into_inner()).boot_id, 0);
             env.log("after snapshot");
             let bytes = tokio::time::timeout(Duration::from_secs(1), stream.message())
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            let Some(ResponsePayload::Logs(batch)) = response(&bytes).payload else {
-                panic!()
-            };
+            let batch = log_response(&bytes);
             assert!(batch.entries.iter().any(|e| e.message == "after snapshot"));
             server.abort();
             let _ = server.await;
@@ -488,7 +473,7 @@ async fn two_connections_share_exclusive_flash_without_sharing_idle_timeouts() {
             second.ready().await.unwrap();
             second
                 .unary(
-                    tonic::Request::new(body(Op::Status(Default::default()), 1)),
+                    tonic::Request::new(proto(&ota_protocol::StatusRequest::default())),
                     device_grpc::STATUS_PATH.parse().unwrap(),
                     RawCodec,
                 )
@@ -516,7 +501,7 @@ async fn two_connections_share_exclusive_flash_without_sharing_idle_timeouts() {
             second.ready().await.unwrap();
             second
                 .unary(
-                    tonic::Request::new(body(Op::Status(Default::default()), 2)),
+                    tonic::Request::new(proto(&ota_protocol::StatusRequest::default())),
                     device_grpc::STATUS_PATH.parse().unwrap(),
                     RawCodec,
                 )

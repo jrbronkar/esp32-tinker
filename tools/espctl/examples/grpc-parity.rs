@@ -2,7 +2,7 @@
 #[path = "../tests/support/grpc.rs"]
 mod common;
 use common::*;
-use ota_protocol::{RequestPayload as Op, ResponsePayload};
+use ota_protocol::UploadOperation as Op;
 use std::time::{Duration, Instant};
 
 async fn connect(host: &str) -> Result<Client, Box<dyn std::error::Error>> {
@@ -18,14 +18,12 @@ async fn identity(client: &mut Client) -> Result<(), Box<dyn std::error::Error>>
     client.ready().await?;
     let reply = client
         .unary(
-            tonic::Request::new(body(Op::Status(Default::default()), 1)),
+            tonic::Request::new(proto(&ota_protocol::StatusRequest::default())),
             device_grpc::STATUS_PATH.parse()?,
             RawCodec,
         )
         .await?;
-    let Some(ResponsePayload::Status(status)) = response(&reply.into_inner()).payload else {
-        return Err("missing status".into());
-    };
+    let status = status_response(&reply.into_inner());
     if status.device_id != "esp32s3-a4:cb:8f:d8:13:c8" {
         return Err("unexpected board identity".into());
     }

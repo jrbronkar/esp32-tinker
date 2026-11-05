@@ -1,69 +1,42 @@
-use ota_protocol::{ReadLogsRequest, ReadLogsResponse, RequestPayload, Response, ResponsePayload};
+use ota_protocol::{ReadLogsRequest, ReadLogsResponse};
 use std::{process::Command, thread, time::Duration};
 #[path = "support/server.rs"]
 mod server;
 
 #[test]
-fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
-    for variant in [0, 2, 3, 4, 5, 6, 7, 8] {
-        let (address, handle) = server::spawn(1, 1, Duration::ZERO, move |request| {
+fn log_transport_preserves_cursor_and_rejects_invalid_batches() {
+    for variant in 0..6 {
+        let (address, handle) = server::spawn_logs(1, 1, Duration::ZERO, move |request| {
             assert_eq!(
-                request.payload,
-                Some(RequestPayload::ReadLogs(ReadLogsRequest {
+                request,
+                ReadLogsRequest {
                     boot_id: 7,
                     after_sequence: 8
-                }))
+                }
             );
-            let mut reply = Response {
-                request_id: request.request_id,
-                payload: Some(ResponsePayload::Logs(ReadLogsResponse {
-                    boot_id: 7,
-                    next_sequence: 8,
-                    ..Default::default()
-                })),
+            let mut logs = ReadLogsResponse {
+                boot_id: 7,
+                next_sequence: 8,
+                ..Default::default()
             };
             match variant {
-                2 => reply.request_id += 1,
-                3 => reply.payload = None,
-                4 => {
-                    if let Some(ResponsePayload::Logs(ref mut logs)) = reply.payload {
-                        logs.boot_id = 0;
+                1 => logs.boot_id = 0,
+                2 => logs.boot_id = 9,
+                3 => logs.next_sequence = 9,
+                4 | 5 => {
+                    for sequence in if variant == 4 { [8, 8] } else { [10, 9] } {
+                        logs.entries
+                            .push(ota_protocol::LogEntry {
+                                sequence,
+                                ..Default::default()
+                            })
+                            .unwrap();
                     }
-                }
-                5..=8 => {
-                    if let Some(ResponsePayload::Logs(ref mut logs)) = reply.payload {
-                        match variant {
-                            5 => logs.boot_id = 9,       // Must signal a reset on reboot.
-                            6 => logs.next_sequence = 9, // No entries to advance over.
-                            7 => {
-                                for _ in 0..4 {
-                                    logs.entries
-                                        .push(ota_protocol::LogEntry {
-                                            sequence: 8,
-                                            ..Default::default()
-                                        })
-                                        .unwrap();
-                                }
-                            }
-                            8 => {
-                                for sequence in [10, 9] {
-                                    logs.entries
-                                        .push(ota_protocol::LogEntry {
-                                            sequence,
-                                            ..Default::default()
-                                        })
-                                        .unwrap();
-                                }
-                                logs.next_sequence = 9;
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
+                    logs.next_sequence = 9;
                 }
                 _ => {}
             }
-            let bytes = ota_protocol::encode(&reply).unwrap();
-            Ok(bytes.to_vec())
+            Ok(ota_protocol::encode(&logs).unwrap().to_vec())
         });
         let result = espctl::read_logs(
             address,
@@ -98,7 +71,7 @@ fn adversarial_server(
     bytes: Vec<u8>,
     trickle: bool,
 ) -> (std::net::SocketAddr, thread::JoinHandle<()>) {
-    server::spawn(
+    server::spawn_logs(
         1,
         if trickle { 1 } else { usize::MAX },
         if trickle {
@@ -149,10 +122,7 @@ fn cli_escapes_remote_terminal_control_sequences() {
             ..Default::default()
         })
         .unwrap();
-    let response = Response {
-        request_id: 1,
-        payload: Some(ResponsePayload::Logs(logs)),
-    };
+    let response = logs;
     let body = ota_protocol::encode(&response).unwrap();
     let bytes = body.to_vec();
     let (address, handle) = adversarial_server(bytes, false);

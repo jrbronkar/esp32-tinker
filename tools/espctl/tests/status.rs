@@ -1,6 +1,5 @@
 #[path = "support/server.rs"]
 mod server;
-use ota_protocol::ResponsePayload;
 use server::*;
 use std::{
     net::TcpListener,
@@ -9,7 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 fn mock(
-    action: impl FnMut(ota_protocol::Request) -> Result<Vec<u8>, protolink::Status> + Send + 'static,
+    action: impl FnMut(ota_protocol::StatusRequest) -> Result<Vec<u8>, protolink::Status>
+        + Send
+        + 'static,
 ) -> (std::net::SocketAddr, thread::JoinHandle<()>) {
     spawn(1, usize::MAX, Duration::ZERO, action)
 }
@@ -30,24 +31,14 @@ fn rejects_oversized_empty_and_malformed_protobuf() {
     }
 }
 #[test]
-fn rejects_mismatched_id_and_missing_identity_or_payload() {
-    for variant in 1..4 {
-        let (address, handle) = mock(move |r| {
-            let mut response = reply(r);
-            match variant {
-                1 => response.request_id += 1,
-                2 => response.payload = None,
-                _ => {
-                    if let Some(ResponsePayload::Status(s)) = &mut response.payload {
-                        s.device_id.clear();
-                    }
-                }
-            }
-            Ok(bytes(&response))
-        });
-        assert!(espctl::query_status(address, Duration::from_secs(2)).is_err());
-        handle.join().unwrap();
-    }
+fn rejects_missing_identity() {
+    let (address, handle) = mock(|r| {
+        let mut response = reply(r);
+        response.device_id.clear();
+        Ok(bytes(&response))
+    });
+    assert!(espctl::query_status(address, Duration::from_secs(2)).is_err());
+    handle.join().unwrap();
 }
 #[test]
 fn surfaces_grpc_error() {
@@ -216,11 +207,10 @@ fn profile_produces_summary_and_csv_for_multiple_queries() {
 #[test]
 fn optional_device_timings_are_requested_and_preserved() {
     let (address, handle) = mock(|r| {
-        assert!(
-            matches!(&r.payload,Some(ota_protocol::RequestPayload::Status(s)) if s.include_timings)
-        );
+        assert!(r.include_timings);
         let mut response = reply(r);
-        if let Some(ResponsePayload::Status(s)) = &mut response.payload {
+        {
+            let s = &mut response;
             s.set_timings(ota_protocol::DeviceTimings {
                 request_read_us: 0,
                 decode_us: 12,
@@ -236,9 +226,7 @@ fn optional_device_timings_are_requested_and_preserved() {
 #[test]
 fn ordinary_queries_do_not_request_device_tracing() {
     let (address, handle) = mock(|r| {
-        assert!(
-            matches!(&r.payload,Some(ota_protocol::RequestPayload::Status(s)) if !s.include_timings)
-        );
+        assert!(!r.include_timings);
         Ok(bytes(&reply(r)))
     });
     assert!(espctl::query_status(address, Duration::from_secs(2))
@@ -250,11 +238,10 @@ fn ordinary_queries_do_not_request_device_tracing() {
 #[test]
 fn boot_inventory_is_requested_and_displayed_without_claiming_ota_support() {
     let (address, handle) = mock(|r| {
-        assert!(
-            matches!(&r.payload,Some(ota_protocol::RequestPayload::Status(s)) if s.include_boot)
-        );
+        assert!(r.include_boot);
         let mut response = reply(r);
-        if let Some(ResponsePayload::Status(s)) = &mut response.payload {
+        {
+            let s = &mut response;
             let mut boot = ota_protocol::BootInfo {
                 configured_flash_size_bytes: 16 * 1024 * 1024,
                 partition_count: 3,

@@ -1,7 +1,7 @@
 //! gRPC development uploads. No operation is replayed after transmission.
 use crate::grpc_codec::RawCodec;
 use ota_protocol::{
-    Request, RequestPayload as Op, Response, ResponsePayload, UploadAck, UploadPhase,
+    UploadAck, UploadOperation as Op, UploadPhase, UploadReply, UploadRequest, UploadResponse,
 };
 use std::{fs, io, net::SocketAddr, path::Path, time::Duration};
 use tokio::sync::mpsc;
@@ -111,13 +111,12 @@ async fn run(
         .max_decoding_message_size(ota_protocol::MAX_FRAME)
         .max_encoding_message_size(ota_protocol::UPLOAD_FRAME);
     client.ready().await.map_err(|e| invalid(e.to_string()))?;
-    let bytes = encode(
-        Op::Status(ota_protocol::StatusRequest {
-            include_boot: true,
-            ..Default::default()
-        }),
-        1,
-    )?;
+    let bytes = ota_protocol::encode(&ota_protocol::StatusRequest {
+        include_boot: true,
+        ..Default::default()
+    })
+    .map_err(|_| invalid("encode status request"))?
+    .to_vec();
     let reply = tokio::time::timeout(
         remaining(deadline, timeout)?,
         client.unary(
@@ -131,10 +130,8 @@ async fn run(
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC status timed out"))?
     .map_err(rpc)?;
-    let response = decode(&reply.into_inner(), 1)?;
-    let Some(ResponsePayload::Status(device)) = response.payload else {
-        return Err(invalid("missing status"));
-    };
+    let device: ota_protocol::StatusResponse = ota_protocol::decode(&reply.into_inner())
+        .map_err(|_| invalid("invalid status response"))?;
     if !device.ota_available || device.application.as_str() != ota_core::APP {
         return Err(invalid(
             "device is not a provisioned development OTA target",
@@ -155,7 +152,11 @@ async fn run(
     if let Some(callback) = on_log.as_mut() {
         let result = async {
             client.ready().await.map_err(|e| invalid(e.to_string()))?;
-            let request = tonic::Request::new(encode(Op::ReadLogs(cursor.clone()), 77)?);
+            let request = tonic::Request::new(
+                ota_protocol::encode(&cursor)
+                    .map_err(|_| invalid("encode log cursor"))?
+                    .to_vec(),
+            );
             let response = tokio::time::timeout(
                 remaining(deadline, timeout)?,
                 client.server_streaming(
@@ -295,10 +296,11 @@ async fn run(
                 result=&mut transfer=>return result,
                 message=stream.message()=> {
                     let result=match message {
-                        Ok(Some(bytes))=>decode(&bytes,77).and_then(|response| match response.payload {
-                            Some(ResponsePayload::Logs(batch))=>{super::validate_logs(&cursor,&batch)?;cursor.boot_id=batch.boot_id;cursor.after_sequence=batch.next_sequence;Ok(batch)},
-                            _=>Err(invalid("missing log batch")),
-                        }),
+                        Ok(Some(bytes))=>ota_protocol::decode::<ota_protocol::ReadLogsResponse>(&bytes)
+                            .map_err(|_| invalid("invalid log batch")).and_then(|batch| {
+                                super::validate_logs(&cursor,&batch)?;
+                                cursor.boot_id=batch.boot_id;cursor.after_sequence=batch.next_sequence;Ok(batch)
+                            }),
                         Ok(None)=>Err(invalid("log stream ended")),
                         Err(e)=>Err(rpc(e)),
                     };
@@ -313,15 +315,15 @@ async fn run(
     }
 }
 fn encode(payload: Op, id: u32) -> io::Result<Vec<u8>> {
-    ota_protocol::encode_upload(&Request {
+    ota_protocol::encode_upload(&UploadRequest {
         request_id: id,
         payload: Some(payload),
     })
     .map(|b| b.to_vec())
     .map_err(|e| invalid(format!("encode upload: {e:?}")))
 }
-fn decode(bytes: &[u8], id: u32) -> io::Result<Response> {
-    let response: Response =
+fn decode(bytes: &[u8], id: u32) -> io::Result<UploadResponse> {
+    let response: UploadResponse =
         ota_protocol::decode(bytes).map_err(|_| invalid("invalid upload response"))?;
     if response.request_id != id {
         return Err(invalid("upload request ID mismatch"));
@@ -355,7 +357,7 @@ async fn exchange(
             .ok_or_else(|| invalid("missing upload acknowledgement"))?;
         let response = decode(&bytes, id)?;
         match response.payload {
-            Some(ResponsePayload::Upload(ack)) => Ok(ack),
+            Some(UploadReply::Upload(ack)) => Ok(ack),
             _ => Err(invalid("missing upload acknowledgement")),
         }
     })

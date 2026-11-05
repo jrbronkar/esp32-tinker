@@ -106,13 +106,8 @@ mod tests {
         for _ in 0..4 {
             logs.push(u64::MAX, LogSeverity::Error, &"é".repeat(40));
         }
-        let response = crate::Response {
-            request_id: u32::MAX,
-            payload: Some(crate::ResponsePayload::Logs(
-                logs.read(&ReadLogsRequest::default()),
-            )),
-        };
+        let response = logs.read(&ReadLogsRequest::default());
         let bytes = crate::encode(&response).unwrap();
-        assert_eq!(crate::decode::<crate::Response>(&bytes).unwrap(), response);
+        assert_eq!(crate::decode::<ReadLogsResponse>(&bytes).unwrap(), response);
     }
 }

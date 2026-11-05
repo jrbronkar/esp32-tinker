@@ -37,15 +37,15 @@ impl Decoder for RawDecoder {
 }
 
 pub type Client = tonic::client::Grpc<tonic::transport::Channel>;
-pub fn body(payload: ota_protocol::RequestPayload, id: u32) -> Vec<u8> {
-    ota_protocol::encode_upload(&ota_protocol::Request {
+pub fn body(payload: ota_protocol::UploadOperation, id: u32) -> Vec<u8> {
+    ota_protocol::encode_upload(&ota_protocol::UploadRequest {
         request_id: id,
         payload: Some(payload),
     })
     .unwrap()
     .to_vec()
 }
-pub fn response(bytes: &[u8]) -> ota_protocol::Response {
+pub fn response(bytes: &[u8]) -> ota_protocol::UploadResponse {
     ota_protocol::decode(bytes).unwrap()
 }
 pub async fn logs(
@@ -58,7 +58,7 @@ pub async fn logs(
         .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
     Ok(client
         .server_streaming(
-            tonic::Request::new(body(ota_protocol::RequestPayload::ReadLogs(cursor), 77)),
+            tonic::Request::new(proto(&cursor)),
             device_grpc::LOGS_PATH.parse().unwrap(),
             RawCodec,
         )
@@ -91,7 +91,7 @@ pub async fn upload(
 pub async fn op(
     tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
     stream: &mut tonic::Streaming<Vec<u8>>,
-    payload: ota_protocol::RequestPayload,
+    payload: ota_protocol::UploadOperation,
     id: u32,
 ) -> Result<ota_protocol::UploadAck, tonic::Status> {
     tx.send(body(payload, id))
@@ -106,12 +106,12 @@ pub async fn op(
         return Err(tonic::Status::internal("wrong ack request id"));
     }
     match response.payload {
-        Some(ota_protocol::ResponsePayload::Upload(ack)) => Ok(ack),
+        Some(ota_protocol::UploadReply::Upload(ack)) => Ok(ack),
         _ => Err(tonic::Status::internal("expected upload ack")),
     }
 }
-pub fn begin(image: &[u8], version: &str) -> ota_protocol::RequestPayload {
-    ota_protocol::RequestPayload::Begin(ota_protocol::BeginUpdate {
+pub fn begin(image: &[u8], version: &str) -> ota_protocol::UploadOperation {
+    ota_protocol::UploadOperation::Begin(ota_protocol::BeginUpdate {
         application: "device-demo".try_into().unwrap(),
         chip: "esp32s3".try_into().unwrap(),
         version: version.try_into().unwrap(),
@@ -119,9 +119,19 @@ pub fn begin(image: &[u8], version: &str) -> ota_protocol::RequestPayload {
         sha256: ota_core::hash(image).as_slice().try_into().unwrap(),
     })
 }
-pub fn chunk(offset: usize, bytes: &[u8]) -> ota_protocol::RequestPayload {
-    ota_protocol::RequestPayload::Chunk(ota_protocol::FirmwareChunk {
+pub fn chunk(offset: usize, bytes: &[u8]) -> ota_protocol::UploadOperation {
+    ota_protocol::UploadOperation::Chunk(ota_protocol::FirmwareChunk {
         offset: offset as u32,
         data: bytes.try_into().unwrap(),
     })
+}
+
+pub fn proto(message: &impl ota_protocol::MessageEncode) -> Vec<u8> {
+    ota_protocol::encode(message).unwrap().to_vec()
+}
+pub fn log_response(bytes: &[u8]) -> ota_protocol::ReadLogsResponse {
+    ota_protocol::decode(bytes).unwrap()
+}
+pub fn status_response(bytes: &[u8]) -> ota_protocol::StatusResponse {
+    ota_protocol::decode(bytes).unwrap()
 }

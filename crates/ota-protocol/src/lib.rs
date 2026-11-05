@@ -5,13 +5,14 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/ota.rs"));
 }
 pub use generated::ota_::{
-    AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, ErrorResponse,
-    ErrorResponse_::Code as ErrorCode, FinishUpdate, FirmwareChunk, LogEntry,
-    LogEntry_::Severity as LogSeverity, PartitionInfo, ReadLogsRequest, ReadLogsResponse, Request,
-    Request_::Payload as RequestPayload, Response, Response_::Payload as ResponsePayload,
-    StatusRequest, StatusResponse, UploadAck, UploadAck_::Phase as UploadPhase,
+    AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, FinishUpdate, FirmwareChunk,
+    LogEntry, LogEntry_::Severity as LogSeverity, PartitionInfo, ReadLogsRequest, ReadLogsResponse,
+    StatusRequest, StatusResponse, UploadAck, UploadAck_::Phase as UploadPhase, UploadRequest,
+    UploadRequest_::Payload as UploadOperation, UploadResponse,
+    UploadResponse_::Payload as UploadReply,
 };
-use micropb::{MessageDecode, MessageEncode, PbEncoder};
+use micropb::PbEncoder;
+pub use micropb::{MessageDecode, MessageEncode};
 
 pub const PORT: u16 = 7779;
 pub const SERVICE_TYPE: &str = "_espctl._tcp.local.";
@@ -52,12 +53,14 @@ pub fn encode<M: MessageEncode>(message: &M) -> Result<Frame, Error> {
     let mut encoder = PbEncoder::new(Frame::new());
     message.encode(&mut encoder).map_err(|_| Error::Encode)?;
     let bytes = encoder.into_writer();
-    frame_length((bytes.len() as u32).to_be_bytes())?;
+    if bytes.len() > MAX_FRAME {
+        return Err(Error::InvalidLength);
+    }
     Ok(bytes)
 }
 
 pub fn decode<M: MessageDecode + Default>(bytes: &[u8]) -> Result<M, Error> {
-    if bytes.is_empty() || bytes.len() > MAX_FRAME {
+    if bytes.len() > MAX_FRAME {
         return Err(Error::InvalidLength);
     }
     let mut message = M::default();
@@ -65,13 +68,6 @@ pub fn decode<M: MessageDecode + Default>(bytes: &[u8]) -> Result<M, Error> {
         .decode_from_bytes(bytes)
         .map_err(|_| Error::Decode)?;
     Ok(message)
-}
-
-pub fn status_request(request_id: u32) -> Request {
-    Request {
-        request_id,
-        payload: Some(RequestPayload::Status(StatusRequest::default())),
-    }
 }
 
 /// Fixed-capacity status data shared by firmware and host mocks.
@@ -95,57 +91,30 @@ pub fn status(
     })
 }
 
-pub fn respond(request: Request, status: StatusResponse) -> Response {
-    let payload = if !matches!(request.payload, Some(RequestPayload::Status(_))) {
-        error_payload(
-            ErrorCode::InvalidRequest,
-            "missing or unsupported operation",
-        )
-    } else {
-        ResponsePayload::Status(status)
-    };
-    Response {
-        request_id: request.request_id,
-        payload: Some(payload),
-    }
-}
-
-fn error_payload(code: ErrorCode, message: &str) -> ResponsePayload {
-    ResponsePayload::Error(ErrorResponse {
-        code,
-        message: message.try_into().expect("static error fits 64 bytes"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn request_matches_protobuf_wire_format() {
-        let bytes = encode(&status_request(1)).unwrap();
-        assert_eq!(bytes.as_slice(), &[0x10, 1, 0x52, 0]);
-        assert_eq!(decode::<Request>(&bytes).unwrap(), status_request(1));
-        // Older senders' reserved field and future unknown fields are ignored.
+    fn status_request_uses_its_own_wire_format() {
+        let request = StatusRequest {
+            include_boot: true,
+            include_timings: true,
+        };
+        assert_eq!(encode(&request).unwrap().as_slice(), &[8, 1, 16, 1]);
         assert_eq!(
-            decode::<Request>(&[0x08, 1, 0x10, 1, 0x52, 0, 0xf8, 0x01, 7]).unwrap(),
-            status_request(1)
+            decode::<StatusRequest>(&[8, 1, 16, 1, 0xf8, 1, 7]).unwrap(),
+            request
         );
     }
-
     #[test]
     fn response_roundtrip_and_u64_uptime() {
-        let reply = respond(status_request(1), status("board", "soil", "1", 0).unwrap());
-        let mut bytes = encode(&reply).unwrap();
-        bytes.extend_from_slice(&[0x08, 1, 0xf8, 0x01, 7]).unwrap();
-        assert_eq!(decode::<Response>(&bytes).unwrap(), reply);
-        let reply = respond(
-            status_request(42),
-            status("board", "soil-demo", "v1", u64::MAX).unwrap(),
+        let reply = status("board", "soil", "1", u64::MAX).unwrap();
+        assert_eq!(
+            decode::<StatusResponse>(&encode(&reply).unwrap()).unwrap(),
+            reply
         );
-        assert_eq!(decode::<Response>(&encode(&reply).unwrap()).unwrap(), reply);
     }
-
     #[test]
     fn bounded_boot_inventory_and_timings_fit_a_control_frame() {
         let text = core::str::from_utf8(&[b'x'; 64]).unwrap();
@@ -174,10 +143,10 @@ mod tests {
         boot.set_ota_0(part.clone());
         boot.set_ota_1(part);
         current.set_boot(boot);
-        let response = respond(status_request(u32::MAX), current);
+        let response = current;
         let bytes = encode(&response).unwrap();
         assert!(bytes.len() <= MAX_FRAME);
-        assert_eq!(decode::<Response>(&bytes).unwrap(), response);
+        assert_eq!(decode::<StatusResponse>(&bytes).unwrap(), response);
     }
 
     #[test]
@@ -192,8 +161,8 @@ mod tests {
             Err(Error::InvalidLength)
         );
         assert_eq!(frame_length(512u32.to_be_bytes()), Ok(512));
-        assert!(decode::<Request>(&[0x08, 0x80]).is_err());
-        assert!(decode::<Response>(&[0xff]).is_err());
+        assert!(decode::<UploadRequest>(&[0x08, 0x80]).is_err());
+        assert!(decode::<UploadResponse>(&[0xff]).is_err());
     }
 
     #[test]
@@ -210,15 +179,15 @@ mod tests {
     }
 
     #[test]
-    fn semantic_errors_echo_request_id() {
-        let request = Request {
-            payload: None,
-            ..status_request(7)
-        };
-        let reply = respond(request, status("board", "soil", "1", 0).unwrap());
-        assert_eq!(reply.request_id, 7);
-        assert!(
-            matches!(reply.payload, Some(ResponsePayload::Error(e)) if e.code == ErrorCode::InvalidRequest)
+    fn default_rpc_requests_are_valid_empty_protobuf_messages() {
+        assert!(encode(&StatusRequest::default()).unwrap().is_empty());
+        assert_eq!(
+            decode::<StatusRequest>(&[]).unwrap(),
+            StatusRequest::default()
+        );
+        assert_eq!(
+            decode::<ReadLogsRequest>(&[]).unwrap(),
+            ReadLogsRequest::default()
         );
     }
 }
@@ -243,9 +212,9 @@ pub fn encode_upload<M: MessageEncode>(
     upload_frame_length((bytes.len() as u32).to_be_bytes())?;
     Ok(bytes)
 }
-pub fn decode_upload(bytes: &[u8]) -> Result<Request, Error> {
+pub fn decode_upload(bytes: &[u8]) -> Result<UploadRequest, Error> {
     upload_frame_length((bytes.len() as u32).to_be_bytes())?;
-    let mut request = Request::default();
+    let mut request = UploadRequest::default();
     request
         .decode_from_bytes(bytes)
         .map_err(|_| Error::Decode)?;
@@ -256,10 +225,10 @@ pub fn decode_upload(bytes: &[u8]) -> Result<Request, Error> {
 mod upload_tests {
     use super::*;
     #[test]
-    fn upload_and_status_share_envelope_without_enabling_upload_in_status_handler() {
-        let request = Request {
+    fn upload_operations_roundtrip() {
+        let request = UploadRequest {
             request_id: 7,
-            payload: Some(RequestPayload::Begin(BeginUpdate {
+            payload: Some(UploadOperation::Begin(BeginUpdate {
                 application: "device-demo".try_into().unwrap(),
                 chip: "esp32s3".try_into().unwrap(),
                 version: "release".try_into().unwrap(),
@@ -268,14 +237,7 @@ mod upload_tests {
             })),
         };
         let bytes = encode(&request).unwrap();
-        assert_eq!(decode::<Request>(&bytes).unwrap(), request);
-        let response = respond(
-            request,
-            status("board", "device-demo", "release", 0).unwrap(),
-        );
-        assert!(
-            matches!(response.payload, Some(ResponsePayload::Error(e)) if e.code == ErrorCode::InvalidRequest)
-        );
+        assert_eq!(decode::<UploadRequest>(&bytes).unwrap(), request);
     }
 
     #[test]
@@ -284,9 +246,9 @@ mod upload_tests {
             offset: 4096,
             data: (&[7u8; 4096][..]).try_into().unwrap(),
         };
-        let request = Request {
+        let request = UploadRequest {
             request_id: 2,
-            payload: Some(RequestPayload::Chunk(chunk)),
+            payload: Some(UploadOperation::Chunk(chunk)),
         };
         let bytes = encode_upload(&request).unwrap();
         assert!(bytes.len() <= UPLOAD_FRAME);

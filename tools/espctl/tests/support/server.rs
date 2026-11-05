@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use ota_protocol::{Request, Response};
+use ota_protocol::{StatusRequest, StatusResponse};
 use std::{
     io,
     net::{SocketAddr, TcpListener},
@@ -9,32 +9,42 @@ use std::{
     time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-pub fn bytes(response: &Response) -> Vec<u8> {
+pub fn bytes(response: &impl ota_protocol::MessageEncode) -> Vec<u8> {
     ota_protocol::encode(response).unwrap().to_vec()
 }
-pub fn reply(request: Request) -> Response {
-    ota_protocol::respond(
-        request,
-        ota_protocol::status("mock-board", "device-demo", "test-v1", 1234).unwrap(),
-    )
+pub fn reply(_: StatusRequest) -> StatusResponse {
+    ota_protocol::status("mock-board", "device-demo", "test-v1", 1234).unwrap()
 }
 pub fn spawn(
     connections: usize,
     fragment: usize,
     delay: Duration,
-    action: impl FnMut(Request) -> Result<Vec<u8>, protolink::Status> + Send + 'static,
+    action: impl FnMut(StatusRequest) -> Result<Vec<u8>, protolink::Status> + Send + 'static,
 ) -> (SocketAddr, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let handle = thread::spawn(move || run(listener, connections, fragment, delay, action));
     (address, handle)
 }
-pub fn run(
+pub fn spawn_logs(
+    connections: usize,
+    fragment: usize,
+    delay: Duration,
+    action: impl FnMut(ota_protocol::ReadLogsRequest) -> Result<Vec<u8>, protolink::Status>
+        + Send
+        + 'static,
+) -> (SocketAddr, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || run(listener, connections, fragment, delay, action));
+    (address, handle)
+}
+pub fn run<M: ota_protocol::MessageDecode + Default>(
     listener: TcpListener,
     connections: usize,
     fragment: usize,
     delay: Duration,
-    mut action: impl FnMut(Request) -> Result<Vec<u8>, protolink::Status>,
+    mut action: impl FnMut(M) -> Result<Vec<u8>, protolink::Status>,
 ) {
     listener.set_nonblocking(true).unwrap();
     tokio::runtime::Builder::new_current_thread()

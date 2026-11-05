@@ -3,7 +3,7 @@ pub mod discovery;
 mod grpc_codec;
 pub mod upload;
 use grpc_codec::RawCodec;
-use ota_protocol::{Request, RequestPayload, Response, ResponsePayload, StatusResponse};
+use ota_protocol::StatusResponse;
 use std::{
     io,
     net::SocketAddr,
@@ -125,14 +125,14 @@ async fn connect(
 async fn query(
     address: SocketAddr,
     end: tokio::time::Instant,
-    request: Request,
+    request: &impl ota_protocol::MessageEncode,
     path: &'static str,
     timings: &mut QueryTimings,
-) -> io::Result<Response> {
+) -> io::Result<Vec<u8>> {
     let mut client = connect(address, end, timings).await?;
     client.ready().await.map_err(|e| invalid(e.to_string()))?;
     let started = Instant::now();
-    let bytes = ota_protocol::encode(&request)
+    let bytes = ota_protocol::encode(request)
         .map_err(|e| invalid(format!("encode query: {e:?}")))?
         .to_vec();
     timings.encode = started.elapsed();
@@ -151,21 +151,9 @@ async fn query(
     .map_err(|_| timed_out())?
     .map_err(rpc)?;
     timings.rpc = started.elapsed();
-    let started = Instant::now();
-    let response: Response = ota_protocol::decode(&reply.into_inner())
-        .map_err(|e| invalid(format!("decode response: {e:?}")))?;
-    if response.request_id != request.request_id {
-        return Err(invalid("response request ID mismatch"));
-    }
-    if let Some(ResponsePayload::Error(error)) = &response.payload {
-        return Err(invalid(format!(
-            "device error: {}",
-            error.message.escape_debug()
-        )));
-    }
-    timings.decode_validate = started.elapsed();
-    Ok(response)
+    Ok(reply.into_inner())
 }
+
 pub fn query_status(address: SocketAddr, timeout: Duration) -> io::Result<StatusResponse> {
     query_status_with_options(address, timeout, false, false).map(|q| q.status)
 }
@@ -189,25 +177,21 @@ pub fn query_status_with_options(
     let end = deadline(started, timeout)?;
     runtime()?.block_on(async {
         let mut timings = QueryTimings::default();
-        let request = Request {
-            request_id: 1,
-            payload: Some(RequestPayload::Status(ota_protocol::StatusRequest {
-                include_timings: device_timings,
-                include_boot,
-            })),
+        let request = ota_protocol::StatusRequest {
+            include_timings: device_timings,
+            include_boot,
         };
         let response = query(
             address,
             end,
-            request,
+            &request,
             device_grpc::STATUS_PATH,
             &mut timings,
         )
         .await?;
         let validated = Instant::now();
-        let Some(ResponsePayload::Status(status)) = response.payload else {
-            return Err(invalid("response has no status payload"));
-        };
+        let status: StatusResponse =
+            ota_protocol::decode(&response).map_err(|_| invalid("invalid status response"))?;
         if status.device_id.is_empty()
             || status.application.is_empty()
             || status.firmware_version.is_empty()
@@ -228,21 +212,15 @@ pub fn read_logs(
 ) -> io::Result<ota_protocol::ReadLogsResponse> {
     let end = deadline(Instant::now(), timeout)?;
     runtime()?.block_on(async {
-        let request = Request {
-            request_id: 1,
-            payload: Some(RequestPayload::ReadLogs(cursor.clone())),
-        };
         let response = query(
             address,
             end,
-            request,
+            &cursor,
             device_grpc::READ_LOGS_PATH,
             &mut QueryTimings::default(),
         )
         .await?;
-        let Some(ResponsePayload::Logs(logs)) = response.payload else {
-            return Err(invalid("missing log payload"));
-        };
+        let logs = ota_protocol::decode(&response).map_err(|_| invalid("invalid log response"))?;
         validate_logs(&cursor, &logs)?;
         Ok(logs)
     })

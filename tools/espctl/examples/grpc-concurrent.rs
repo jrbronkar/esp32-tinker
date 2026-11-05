@@ -1,7 +1,7 @@
 #[path = "../tests/support/grpc.rs"]
 mod common;
 use common::*;
-use ota_protocol::{RequestPayload as Op, ResponsePayload};
+use ota_protocol::UploadOperation as Op;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[tokio::main(flavor = "current_thread")]
@@ -24,9 +24,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut client=Client::new(channel);
         let stalled = std::env::var_os("GRPC_STALL_LOGS").is_some();
         client.ready().await?;
-        let reply=client.unary(tonic::Request::new(body(Op::Status(ota_protocol::StatusRequest{include_boot:true,..Default::default()}),1)),device_grpc::STATUS_PATH.parse()?,RawCodec).await?;
-        let status=response(&reply.into_inner());
-        let Some(ResponsePayload::Status(status))=status.payload else {return Err("missing status".into())};
+        let reply=client.unary(tonic::Request::new(proto(&ota_protocol::StatusRequest{include_boot:true,..Default::default()})),device_grpc::STATUS_PATH.parse()?,RawCodec).await?;
+        let status=status_response(&reply.into_inner());
         if status.device_id!="esp32s3-a4:cb:8f:d8:13:c8" {return Err(format!("unexpected board: {}",status.device_id).into())}
         println!("Verified identity {} running {}; ONE Tonic channel / HTTP2 connection",status.device_id,status.firmware_version);
         let mut logs=logs(&mut client,Default::default()).await?;
@@ -46,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let expected=format!("gRPC chunk id={} next={}",id,ack.next_offset); id+=1;
             if !stalled { loop {
                 let bytes=logs.message().await?.ok_or("logs ended during upload")?;
-                let Some(ResponsePayload::Logs(batch))=response(&bytes).payload else {return Err("wrong log response".into())};
+                let batch = log_response(&bytes);
                 if batch.entries.iter().any(|e|e.message.as_str()==expected) { break; }
             }
             }
@@ -63,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if stalled {
             loop {
                 let bytes=logs.message().await?.ok_or("log stream ended")?;
-                let Some(ResponsePayload::Logs(batch))=response(&bytes).payload else {return Err("wrong log response".into())};
+                let batch = log_response(&bytes);
                 if batch.dropped {break;}
             }
             println!("PASS: log receive window stalled at 1024 bytes; upload still verified; overwritten history reported on resumption");

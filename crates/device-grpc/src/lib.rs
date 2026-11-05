@@ -5,7 +5,7 @@ pub mod watchdog;
 pub use protolink;
 
 use alloc::vec::Vec;
-use ota_protocol::{Request, RequestPayload, Response, ResponsePayload, StatusResponse};
+use ota_protocol::{StatusResponse, UploadOperation, UploadReply, UploadResponse};
 use protolink::{CallContext, Handler, MethodKind, Route, ServerConfig, Status};
 
 pub const PORT: u16 = ota_protocol::PORT;
@@ -48,11 +48,8 @@ fn status_response(
     now: impl Fn() -> u64,
 ) -> Result<Vec<u8>, Status> {
     let started = now();
-    let request: Request = ota_protocol::decode(request)
-        .map_err(|_| Status::invalid_argument("invalid management request"))?;
-    let Some(RequestPayload::Status(options)) = request.payload else {
-        return Err(Status::invalid_argument("expected status request"));
-    };
+    let options: ota_protocol::StatusRequest = ota_protocol::decode(request)
+        .map_err(|_| Status::invalid_argument("invalid status request"))?;
     let decoded = now();
     let mut current = status();
     if !options.include_boot {
@@ -67,10 +64,7 @@ fn status_response(
     } else {
         current.clear_timings();
     }
-    encode(&Response {
-        request_id: request.request_id,
-        payload: Some(ResponsePayload::Status(current)),
-    })
+    encode(&current)
 }
 
 use core::{
@@ -124,7 +118,6 @@ pub trait Environment {
 }
 struct Subscription {
     id: CallId,
-    request_id: u32,
     cursor: ReadLogsRequest,
     first: bool,
 }
@@ -165,12 +158,9 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
         }
     }
     fn message(&mut self, ctx: &CallContext<'_>, bytes: &[u8]) -> Result<(), Status> {
-        let request = ota_protocol::decode_upload(bytes)
-            .map_err(|_| Status::invalid_argument("invalid protobuf"))?;
         if ctx.route.method == 1 {
-            let Some(RequestPayload::ReadLogs(cursor)) = request.payload else {
-                return Err(Status::invalid_argument("expected log cursor"));
-            };
+            let cursor = ota_protocol::decode(bytes)
+                .map_err(|_| Status::invalid_argument("invalid log cursor"))?;
             let slot = self
                 .subscriptions
                 .iter_mut()
@@ -178,12 +168,13 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                 .ok_or_else(|| Status::resource_exhausted("too many subscriptions"))?;
             *slot = Some(Subscription {
                 id: ctx.id,
-                request_id: request.request_id,
                 cursor,
                 first: true,
             });
             return Ok(());
         }
+        let request = ota_protocol::decode_upload(bytes)
+            .map_err(|_| Status::invalid_argument("invalid upload request"))?;
         if self.activation_pending || self.env.activation_pending() {
             return Err(Status::failed_precondition(
                 "activation pending; reconnect after reboot",
@@ -206,7 +197,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             }
             upload.last_id = request.request_id;
             let phase = match op {
-                RequestPayload::Chunk(chunk) => {
+                UploadOperation::Chunk(chunk) => {
                     upload
                         .update
                         .chunk(&mut *upload.target, chunk.offset, &chunk.data)
@@ -217,7 +208,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                     });
                     UploadPhase::Receiving
                 }
-                RequestPayload::Finish(_) => {
+                UploadOperation::Finish(_) => {
                     upload
                         .update
                         .finish(&mut *upload.target)
@@ -226,11 +217,11 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                     self.env.event(UploadEvent::Verified);
                     UploadPhase::Verified
                 }
-                RequestPayload::Abort(_) => {
+                UploadOperation::Abort(_) => {
                     upload.ended = true;
                     UploadPhase::Aborted
                 }
-                RequestPayload::Commit(_) => {
+                UploadOperation::Commit(_) => {
                     if !upload.verified {
                         return Err(Status::failed_precondition(
                             "image must be verified before commit",
@@ -252,7 +243,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             };
             (phase, upload.update.received())
         } else {
-            let RequestPayload::Begin(begin) = op else {
+            let UploadOperation::Begin(begin) = op else {
                 return Err(Status::failed_precondition("upload requires Begin"));
             };
             let target = self
@@ -280,9 +271,9 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             self.env.event(UploadEvent::Receiving);
             (UploadPhase::Receiving, 0)
         };
-        let response = Response {
+        let response = UploadResponse {
             request_id: request.request_id,
-            payload: Some(ResponsePayload::Upload(UploadAck {
+            payload: Some(UploadReply::Upload(UploadAck {
                 phase,
                 next_offset: offset,
                 target_offset: self.target_offset,
@@ -306,7 +297,7 @@ fn upload_error(error: ota_core::Error) -> Status {
         _ => Status::failed_precondition("invalid upload metadata, state, bounds or order"),
     }
 }
-fn encode(response: &Response) -> Result<Vec<u8>, Status> {
+fn encode(response: &impl ota_protocol::MessageEncode) -> Result<Vec<u8>, Status> {
     ota_protocol::encode(response)
         .map(|b| b.to_vec())
         .map_err(|_| Status::internal("response encoding failed"))
@@ -323,15 +314,9 @@ impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T,
     }
     fn call(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
         if ctx.route.method == 3 {
-            let request: Request = ota_protocol::decode(request)
-                .map_err(|_| Status::invalid_argument("invalid log request"))?;
-            let Some(RequestPayload::ReadLogs(cursor)) = request.payload else {
-                return Err(Status::invalid_argument("expected log cursor"));
-            };
-            return encode(&Response {
-                request_id: request.request_id,
-                payload: Some(ResponsePayload::Logs(self.env.read_logs(&cursor))),
-            });
+            let cursor = ota_protocol::decode(request)
+                .map_err(|_| Status::invalid_argument("invalid log cursor"))?;
+            return encode(&self.env.read_logs(&cursor));
         }
         status_response(request, || self.env.status(), || self.env.now_us())
     }
@@ -372,15 +357,10 @@ impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T,
                 sub.first = false;
                 sub.cursor.boot_id = batch.boot_id;
                 sub.cursor.after_sequence = batch.next_sequence;
-                return Poll::Ready(
-                    match encode(&Response {
-                        request_id: sub.request_id,
-                        payload: Some(ResponsePayload::Logs(batch)),
-                    }) {
-                        Ok(bytes) => Next::Message(bytes),
-                        Err(e) => Next::Done(Err(e)),
-                    },
-                );
+                return Poll::Ready(match encode(&batch) {
+                    Ok(bytes) => Next::Message(bytes),
+                    Err(e) => Next::Done(Err(e)),
+                });
             }
             return Poll::Pending;
         }
@@ -425,12 +405,9 @@ mod status_tests {
     #[test]
     fn status_honors_boot_and_timing_flags() {
         for include in [false, true] {
-            let request = Request {
-                request_id: 1,
-                payload: Some(RequestPayload::Status(ota_protocol::StatusRequest {
-                    include_boot: include,
-                    include_timings: include,
-                })),
+            let request = ota_protocol::StatusRequest {
+                include_boot: include,
+                include_timings: include,
             };
             let clock = Cell::new(0u64);
             let response =
@@ -440,10 +417,7 @@ mod status_tests {
                     n
                 })
                 .unwrap();
-            let response: Response = ota_protocol::decode(&response).unwrap();
-            let Some(ResponsePayload::Status(status)) = response.payload else {
-                panic!()
-            };
+            let status: StatusResponse = ota_protocol::decode(&response).unwrap();
             assert_eq!(status.boot().is_some(), include);
             assert_eq!(status.timings().is_some(), include);
             if let Some(t) = status.timings() {

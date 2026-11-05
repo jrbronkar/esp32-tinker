@@ -24,9 +24,9 @@ async fn tonic_status_repeated_calls_and_error_trailers() {
             .await
             .unwrap();
         let mut client = tonic::client::Grpc::new(channel);
-        for id in 1..=8 {
+        for _ in 1..=8 {
             client.ready().await.unwrap();
-            let request = ota_protocol::encode(&ota_protocol::status_request(id)).unwrap();
+            let request = ota_protocol::encode(&ota_protocol::StatusRequest::default()).unwrap();
             let reply = client
                 .unary(
                     tonic::Request::new(request.to_vec()),
@@ -35,11 +35,7 @@ async fn tonic_status_repeated_calls_and_error_trailers() {
                 )
                 .await
                 .unwrap();
-            let reply: ota_protocol::Response = ota_protocol::decode(&reply.into_inner()).unwrap();
-            assert_eq!(reply.request_id, id);
-            let Some(ota_protocol::ResponsePayload::Status(status)) = reply.payload else {
-                panic!("missing status")
-            };
+            let status = status_response(&reply.into_inner());
             assert_eq!(status.device_id, "test-board");
             assert_eq!(status.uptime_ms, 42);
         }

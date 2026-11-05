@@ -10,18 +10,22 @@ Protolink is pinned to `62cc2c87a687ba65fc6885e7c9691cefacf2d064`.
 `Cargo.lock` pins zerodds HTTP/2 and HPACK to 1.0.0-rc.7. The handler uses
 fixed-capacity micropb messages. Schema compatibility uses additive Protobuf
 changes with preserved field numbers and meanings; breaking API or behavior
-changes require a new service/package. Request and response field 1 is reserved.
+changes require a new service/package. Upload envelope field 1 is reserved.
 
 ## API and resource limits
 
 The [service schema](../../protocol/management.proto) defines four RPCs:
 
-| RPC | Shape | Purpose |
+| RPC | Shape | Request → response |
 | --- | --- | --- |
-| Status | Unary | Identity, uptime, state, optional boot inventory and timings |
-| ReadLogs | Unary | One cursor-based retained-log snapshot |
-| Logs | Server streaming | Cursor-based log batches as records arrive |
-| Upload | Bidirectional streaming | Ordered update operations and correlated acknowledgments |
+| Status | Unary | `StatusRequest` → `StatusResponse` |
+| ReadLogs | Unary | `ReadLogsRequest` → `ReadLogsResponse` |
+| Logs | Server streaming | `ReadLogsRequest` → stream of `ReadLogsResponse` |
+| Upload | Bidirectional streaming | stream of `UploadRequest` → stream of `UploadResponse` |
+
+Status and log messages are direct RPC payloads. Only Upload carries an operation
+oneof and request IDs, to correlate ordered operations with acknowledgments on
+its persistent bidirectional stream. RPC failures use gRPC status trailers.
 
 See the [protocol contract](../ota/protocol.md) for message and lifecycle details.
 The configured bounds are:
@@ -37,7 +41,8 @@ The configured bounds are:
 | Connection receive window | 65535 bytes, the HTTP/2 minimum |
 | Decoded header list | 1024 bytes |
 | Pending serialized output per connection | 8192 bytes |
-| Request message | 4608 bytes |
+| Upload request message | 4608 bytes |
+| Status/log request message | 512 bytes |
 | Response message | 512 bytes |
 
 Compression is disabled. The Embassy driver polls TCP read and write halves
@@ -96,8 +101,8 @@ TCP peer producing logs during an abandoned upload.
 The ESP32-S3 release build and all `espctl` targets pass. Current hardware
 validation on one 16 MiB ESP32-S3 with two 3 MiB application slots confirms:
 
-- A 626080-byte image uploaded with concurrent logs, committed and booted in
-  ota_1; status reports idle and OTA available.
+- A 625088-byte image uploaded with concurrent logs, committed and booted in
+  ota_0; status reports idle and OTA available.
 - A full verify-only upload received all 153 matching chunk logs before sending
   their next chunks.
 - A full upload verified with log consumption stalled behind a 1024-byte window;

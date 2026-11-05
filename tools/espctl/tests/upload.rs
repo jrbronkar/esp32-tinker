@@ -1,4 +1,4 @@
-use ota_protocol::{RequestPayload as Op, ResponsePayload, UploadPhase};
+use ota_protocol::{UploadOperation as Op, UploadPhase, UploadReply};
 use protolink::{CallContext, Handler, Next, Route, Status};
 use std::{
     cell::{Cell, RefCell},
@@ -168,6 +168,9 @@ impl Handler for Faulty<'_> {
         self.inner.call(ctx, request)
     }
     fn on_message(&mut self, ctx: &mut CallContext<'_>, bytes: &[u8]) -> Result<(), Status> {
+        if ctx.route.method == 1 {
+            return self.inner.on_message(ctx, bytes);
+        }
         let request = ota_protocol::decode_upload(bytes).unwrap();
         let name = match request.payload {
             Some(Op::Begin(_)) => "begin",
@@ -192,8 +195,11 @@ impl Handler for Faulty<'_> {
         cx: &mut Context<'_>,
     ) -> Poll<Next<Vec<u8>>> {
         let result = self.inner.poll_response(ctx, cx);
+        if ctx.route.method == 1 {
+            return result;
+        }
         if let Poll::Ready(Next::Message(ref bytes)) = result {
-            let mut response: ota_protocol::Response = ota_protocol::decode(bytes).unwrap();
+            let mut response: ota_protocol::UploadResponse = ota_protocol::decode(bytes).unwrap();
             if self.commit_id == Some(ctx.id) && self.state.fault == "lost-commit" {
                 return Poll::Ready(Next::Done(Err(Status::unavailable("commit ACK lost"))));
             }
@@ -210,7 +216,7 @@ impl Handler for Faulty<'_> {
                         return Poll::Ready(Next::Done(Err(Status::unavailable("connection lost"))))
                     }
                     fault => {
-                        if let Some(ResponsePayload::Upload(ref mut ack)) = response.payload {
+                        if let Some(UploadReply::Upload(ref mut ack)) = response.payload {
                             match fault {
                                 "phase" => ack.phase = UploadPhase::Verified,
                                 "offset" => ack.next_offset += 1,
