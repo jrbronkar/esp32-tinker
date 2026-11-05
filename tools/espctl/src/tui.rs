@@ -222,6 +222,8 @@ struct Dashboard {
     scroll: usize,
     page: usize,
     workflow: update::Workflow,
+    log_boot: u64,
+    log_sequence: u64,
 }
 
 impl Dashboard {
@@ -235,6 +237,8 @@ impl Dashboard {
         self.status = None;
         self.connection = "Connecting…".into();
         self.logs.clear();
+        self.log_boot = 0;
+        self.log_sequence = 0;
         self.scroll = 0;
     }
 
@@ -259,13 +263,22 @@ impl Dashboard {
                 self.connection = format!("Reconnecting · {}", error.escape_debug());
             }
             Update::Logs(batch) => {
-                if batch.reset {
+                let same_boot = self.log_boot == batch.boot_id && !batch.reset;
+                if batch.reset || (self.log_boot != 0 && !same_boot) {
                     self.push_log(None, "── Device restarted or log cursor reset ──".into());
                 }
-                if batch.dropped {
+                if !same_boot {
+                    self.log_boot = batch.boot_id;
+                    self.log_sequence = 0;
+                }
+                if batch.dropped && (!same_boot || batch.next_sequence > self.log_sequence) {
                     self.push_log(None, "── Device overwrote older log entries ──".into());
                 }
                 for entry in &batch.entries {
+                    if entry.sequence <= self.log_sequence {
+                        continue;
+                    }
+                    self.log_sequence = entry.sequence;
                     let severity = match entry.severity {
                         LogSeverity::Info => "INFO",
                         LogSeverity::Warn => "WARN",
@@ -456,7 +469,25 @@ async fn dashboard(
     };
     let mut redraw = true;
     loop {
+        for _ in 0..32 {
+            match app.workflow.next_log() {
+                Some(Ok(batch)) => app.update(Update::Logs(Box::new(batch))),
+                Some(Err(error)) => app.push_log(
+                    None,
+                    format!("Upload logs unavailable · {}", error.escape_debug()),
+                ),
+                None => break,
+            }
+            redraw = true;
+        }
+        let updating = app.workflow.busy();
         redraw |= app.workflow.poll().await;
+        if updating && !app.workflow.busy() {
+            if let Some(target) = app.targets.get(app.selected) {
+                app.session = Some(Session::start(target.address, timeout));
+                app.connection = "Reconnecting after update…".into();
+            }
+        }
         if scanning.as_ref().is_some_and(JoinHandle::is_finished) {
             if let Some(task) = scanning.take() {
                 redraw = true;
@@ -525,6 +556,10 @@ async fn dashboard(
                             KeyCode::Esc | KeyCode::Char('n') => app.workflow.cancel_confirmation(),
                             _ => {}
                         }
+                        if app.workflow.busy() {
+                            app.session = None;
+                            app.connection = "Update in progress".into();
+                        }
                         continue;
                     }
                     let busy = app.workflow.busy();
@@ -546,6 +581,10 @@ async fn dashboard(
                                 app.status.as_ref(),
                                 timeout,
                             );
+                            if app.workflow.busy() {
+                                app.session = None;
+                                app.connection = "Update in progress".into();
+                            }
                         }
                         KeyCode::Char('a')
                             if !busy

@@ -50,8 +50,8 @@ cargo run -p espctl -- tui --host BOARD_IP \
 ```
 
 Select the board and press **U** to write and verify the inactive slot. The
-running firmware continues serving status and logs. After verification, press
-**A** to review the board, version, and reboot prompt, then **Y** to activate or
+dashboard streams logs on the upload connection and resumes status polling
+when the transfer ends. After verification, press **A** to review the board, version, and reboot prompt, then **Y** to activate or
 **Esc** to dismiss the prompt. The dashboard releases the first upload session
 after verification. Activation resends and verifies the same in-memory image
 before committing it. The dashboard checks the running version and slot after

@@ -5,8 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ota_protocol::StatusResponse;
-use tokio::{sync::watch, task::JoinHandle};
+use ota_protocol::{ReadLogsResponse, StatusResponse};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 
 use crate::upload::{self, PreparedImage, Progress};
 
@@ -27,10 +30,13 @@ enum Outcome {
     Activated(String),
 }
 
+type LogUpdate = Result<ReadLogsResponse, String>;
+
 struct Job {
     task: JoinHandle<io::Result<Outcome>>,
     progress: watch::Receiver<Option<Progress>>,
     initial: &'static str,
+    logs: mpsc::Receiver<LogUpdate>,
 }
 
 #[derive(Default)]
@@ -87,16 +93,26 @@ impl Workflow {
             version: version.clone(),
         };
         self.clear();
-        self.job = Some(spawn("Validating application image", move |progress| {
-            let image = PreparedImage::read(&path, &version)?;
-            let result =
-                upload::update_board(board.address, timeout, &image, &board.id, None, progress)?;
-            Ok(Outcome::Verified(Verified {
-                board,
-                image,
-                slot: result.target_offset,
-            }))
-        }));
+        self.job = Some(spawn(
+            "Validating application image",
+            move |progress, on_log| {
+                let image = PreparedImage::read(&path, &version)?;
+                let result = upload::update_board(
+                    board.address,
+                    timeout,
+                    &image,
+                    &board.id,
+                    None,
+                    progress,
+                    on_log,
+                )?;
+                Ok(Outcome::Verified(Verified {
+                    board,
+                    image,
+                    slot: result.target_offset,
+                }))
+            },
+        ));
     }
 
     pub(super) fn ask_activation(&mut self) {
@@ -118,7 +134,7 @@ impl Workflow {
         };
         self.job = Some(spawn(
             "Preparing verified image for activation",
-            move |progress| {
+            move |progress, on_log| {
                 let Verified { board, image, slot } = verified;
                 let mut commit_started = false;
                 let result = upload::update_board(
@@ -133,6 +149,7 @@ impl Workflow {
                         }
                         progress(event);
                     },
+                    on_log,
                 );
                 if !commit_started {
                     return result
@@ -155,8 +172,16 @@ impl Workflow {
         ));
     }
 
+    pub(super) fn next_log(&mut self) -> Option<LogUpdate> {
+        self.job.as_mut()?.logs.try_recv().ok()
+    }
+
     pub(super) async fn poll(&mut self) -> bool {
-        if self.job.as_ref().is_some_and(|job| job.task.is_finished()) {
+        if self
+            .job
+            .as_ref()
+            .is_some_and(|job| job.task.is_finished() && job.logs.is_empty())
+        {
             if let Some(job) = self.job.take() {
                 match job.task.await {
                     Ok(Ok(Outcome::Verified(verified))) => self.verified = Some(verified),
@@ -220,18 +245,27 @@ impl Workflow {
 
 fn spawn(
     initial: &'static str,
-    work: impl FnOnce(&mut dyn FnMut(Progress)) -> io::Result<Outcome> + Send + 'static,
+    work: impl FnOnce(&mut dyn FnMut(Progress), &mut dyn FnMut(LogUpdate)) -> io::Result<Outcome>
+        + Send
+        + 'static,
 ) -> Job {
     let (sender, progress) = watch::channel(None);
+    let (log_sender, logs) = mpsc::channel(32);
     let task = tokio::task::spawn_blocking(move || {
-        work(&mut |event| {
-            sender.send_replace(Some(event));
-        })
+        work(
+            &mut |event| {
+                sender.send_replace(Some(event));
+            },
+            &mut |batch| {
+                let _ = log_sender.try_send(batch);
+            },
+        )
     });
     Job {
         task,
         progress,
         initial,
+        logs,
     }
 }
 
@@ -276,6 +310,7 @@ mod tests {
     async fn finish(workflow: &mut Workflow) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while workflow.busy() {
+                while workflow.next_log().is_some() {}
                 workflow.poll().await;
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

@@ -9,7 +9,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
-use tonic::{client::Grpc, transport::Endpoint};
 
 #[derive(Debug)]
 pub struct UploadResult {
@@ -136,6 +135,7 @@ pub(crate) fn update_board(
     device_id: &str,
     activate: Option<u32>,
     progress: &mut dyn FnMut(Progress),
+    on_log: &mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>),
 ) -> io::Result<UploadResult> {
     transfer(
         address,
@@ -147,7 +147,7 @@ pub(crate) fn update_board(
             target_offset: activate,
             progress: Some(progress),
         },
-        None,
+        Some(on_log),
     )
 }
 
@@ -185,16 +185,15 @@ async fn run(
         }
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
-    let endpoint = Endpoint::from_shared(format!("http://{address}"))
-        .map_err(|e| invalid(e.to_string()))?
-        .connect_timeout(timeout);
-    let channel = tokio::time::timeout(remaining(deadline, timeout)?, endpoint.connect())
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC connect timed out"))?
-        .map_err(|e| invalid(format!("gRPC connect: {e}")))?;
-    let mut client = Grpc::new(channel)
-        .max_decoding_message_size(ota_protocol::MAX_FRAME)
-        .max_encoding_message_size(ota_protocol::UPLOAD_FRAME);
+    let end = crate::deadline(std::time::Instant::now(), remaining(deadline, timeout)?)?;
+    let mut client = crate::connect(
+        address,
+        end,
+        &mut crate::QueryTimings::default(),
+        on_log.is_some(),
+    )
+    .await?
+    .max_encoding_message_size(ota_protocol::UPLOAD_FRAME);
     client.ready().await.map_err(|e| invalid(e.to_string()))?;
     let bytes = ota_protocol::encode(&ota_protocol::StatusRequest {
         include_boot: true,
