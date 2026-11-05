@@ -524,6 +524,7 @@ dependencies = [
  "esp-rtos",
  "heapless 0.8.0",
  "imu-demo",
+ "onboard-rgb",
  "static_cell",
  "wifi-network",
  "wifi-telemetry",

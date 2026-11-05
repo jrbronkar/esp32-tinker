@@ -12,6 +12,8 @@ use static_cell::StaticCell;
 static LOGS: StaticCell<DeviceLogs> = StaticCell::new();
 
 #[cfg(feature = "imu")]
+mod heartbeat;
+#[cfg(feature = "imu")]
 mod imu;
 
 const APPLICATION: &str = if cfg!(all(feature = "imu", not(feature = "imu-migration"))) {
@@ -76,14 +78,20 @@ async fn main(spawner: Spawner) -> ! {
     logs.log(LogSeverity::Info, "Application ready");
     println!("device-demo ready: UNSIGNED DEVELOPMENT OTA; requires provisioned layout");
     #[cfg(feature = "imu")]
-    imu::run(
-        stack,
-        peripherals.I2C0,
-        peripherals.GPIO8,
-        peripherals.GPIO9,
-        logs,
-    )
-    .await;
+    {
+        match heartbeat::pulse(peripherals.RMT, peripherals.GPIO48, logs) {
+            Ok(task) => spawner.spawn(task),
+            Err(_) => logs.log(LogSeverity::Warn, "RGB LED task unavailable"),
+        };
+        imu::run(
+            stack,
+            peripherals.I2C0,
+            peripherals.GPIO8,
+            peripherals.GPIO9,
+            logs,
+        )
+        .await;
+    }
     #[cfg(not(feature = "imu"))]
     loop {
         Timer::after(Duration::from_secs(10)).await;
