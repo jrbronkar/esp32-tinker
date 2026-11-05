@@ -1,4 +1,4 @@
-//! Device status service with unsigned development OTA uploads.
+//! Read-only TCP status/log listener alongside gRPC management and OTA.
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use esp_println::println;
@@ -33,20 +33,12 @@ pub async fn server(
     runtime.log(ota_protocol::LogSeverity::Info, "Management service ready");
     // Both futures borrow task-owned state. Joining keeps them concurrent without
     // requiring a global runtime or a separate spawned task with a static borrow.
-    #[cfg(feature = "experimental-grpc")]
     let target_offset = target.offset;
     let target = core::cell::RefCell::new(target);
-    #[cfg(feature = "experimental-grpc")]
     embassy_futures::join::join3(
         crate::grpc::serve(stack, &identity, &runtime, &target, target_offset),
         crate::discovery::serve(stack, &identity, &runtime),
-        serve(stack, &identity, &target, &runtime),
-    )
-    .await;
-    #[cfg(not(feature = "experimental-grpc"))]
-    embassy_futures::join::join(
-        crate::discovery::serve(stack, &identity, &runtime),
-        serve(stack, &identity, &target, &runtime),
+        serve(stack, &identity, &runtime),
     )
     .await;
 }
@@ -54,7 +46,6 @@ pub async fn server(
 async fn serve(
     stack: Stack<'static>,
     identity: &StatusResponse,
-    target: &core::cell::RefCell<crate::flash_target::FlashTarget>,
     runtime: &crate::runtime::Runtime,
 ) {
     let mut rx = [0u8; TCP_BUFFER_BYTES];
@@ -73,7 +64,7 @@ async fn serve(
             // trickle of bytes must not monopolize the sole listener forever.
             match with_timeout(
                 MAX_SESSION_DURATION,
-                session(&mut socket, identity, &mut trace, target, runtime),
+                session(&mut socket, identity, &mut trace, runtime),
             )
             .await
             {
@@ -125,7 +116,6 @@ async fn session(
     socket: &mut TcpSocket<'_>,
     identity: &StatusResponse,
     trace: &mut Trace,
-    target: &core::cell::RefCell<crate::flash_target::FlashTarget>,
     runtime: &crate::runtime::Runtime,
 ) -> Result<(), ()> {
     trace.phase = "read";
@@ -151,24 +141,6 @@ async fn session(
     let decoded = Instant::now();
     let request: Request = ota_protocol::decode(&body[..length]).map_err(|_| ())?;
     trace.decode_us = decoded.elapsed().as_micros();
-    if request.protocol_version == ota_protocol::VERSION
-        && matches!(
-            &request.payload,
-            Some(
-                RequestPayload::Begin(_)
-                    | RequestPayload::Chunk(_)
-                    | RequestPayload::Finish(_)
-                    | RequestPayload::Commit(_)
-                    | RequestPayload::Abort(_)
-            )
-        )
-    {
-        if runtime.activation_pending.get() {
-            return Err(());
-        }
-        let mut target = target.try_borrow_mut().map_err(|_| ())?;
-        return crate::upload::session(socket, request, &mut target, runtime).await;
-    }
     trace.request_id = request.request_id;
     trace.enabled =
         matches!(&request.payload, Some(RequestPayload::Status(status)) if status.include_timings);

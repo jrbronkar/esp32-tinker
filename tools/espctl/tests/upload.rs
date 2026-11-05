@@ -482,16 +482,17 @@ async fn cli_upload_logs_share_connection_and_log_errors_preserve_commit_outcome
         .await;
 }
 #[test]
-fn cli_exposes_grpc_logs_and_explicit_legacy_fallback() {
+fn cli_exposes_grpc_upload_logs_and_rejects_removed_legacy_option() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_espctl"))
         .args(["upload", "--help"])
         .output()
         .unwrap();
     assert!(output.status.success());
     let text = String::from_utf8_lossy(&output.stdout);
-    for expected in ["--logs", "--legacy", "7780", "7779"] {
+    for expected in ["--logs", "7780"] {
         assert!(text.contains(expected), "{text}");
     }
+    assert!(!text.contains("--legacy"));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_espctl"))
         .args([
             "upload",
@@ -507,7 +508,7 @@ fn cli_exposes_grpc_logs_and_explicit_legacy_fallback() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
 }
 #[tokio::test]
 async fn disconnect_after_verification_before_commit_never_selects_image() {
@@ -523,6 +524,79 @@ async fn disconnect_after_verification_before_commit_never_selects_image() {
             assert!(!state.pending.get());
             server.abort();
             let _ = server.await;
+        })
+        .await;
+}
+#[tokio::test]
+async fn grpc_preserves_metadata_image_digest_and_order_validation() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for fault in [
+                "application",
+                "chip",
+                "version",
+                "size",
+                "digest-length",
+                "descriptor",
+                "digest",
+                "request-order",
+                "early-finish",
+            ] {
+                let (address, server, state) = fixture("").await;
+                let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+                    .unwrap()
+                    .connect()
+                    .await
+                    .unwrap();
+                let mut client = Client::new(channel);
+                let (tx, mut replies) = upload(&mut client).await.unwrap();
+                let bytes = image();
+                let Op::Begin(mut metadata) = begin(&bytes, "v1") else {
+                    panic!()
+                };
+                match fault {
+                    "application" => metadata.application = "wrong-app".try_into().unwrap(),
+                    "chip" => metadata.chip = "esp32".try_into().unwrap(),
+                    "version" => metadata.version.clear(),
+                    "size" => metadata.image_size = ota_core::SLOT_SIZE + 1,
+                    "digest-length" => metadata.sha256.clear(),
+                    "digest" => metadata.sha256[0] ^= 1,
+                    _ => {}
+                }
+                let result = op(&tx, &mut replies, Op::Begin(metadata), 1).await;
+                if ["application", "chip", "version", "size", "digest-length"].contains(&fault) {
+                    assert_eq!(
+                        result.unwrap_err().code(),
+                        tonic::Code::FailedPrecondition,
+                        "{fault}"
+                    );
+                    assert_eq!(state.writes.get(), 0);
+                } else {
+                    result.unwrap();
+                    let result = match fault {
+                        "descriptor" => {
+                            let mut bad = bytes.clone();
+                            bad[144] ^= 1;
+                            op(&tx, &mut replies, chunk(0, &bad), 2).await
+                        }
+                        "request-order" => op(&tx, &mut replies, chunk(0, &bytes), 3).await,
+                        "early-finish" => {
+                            op(&tx, &mut replies, Op::Finish(Default::default()), 2).await
+                        }
+                        "digest" => {
+                            op(&tx, &mut replies, chunk(0, &bytes), 2).await.unwrap();
+                            op(&tx, &mut replies, Op::Finish(Default::default()), 3).await
+                        }
+                        _ => unreachable!(),
+                    };
+                    assert!(result.is_err(), "{fault}");
+                    assert_eq!(state.writes.get(), usize::from(fault == "digest"));
+                }
+                assert_eq!(state.commits.get(), 0);
+                assert!(!state.pending.get());
+                server.abort();
+                let _ = server.await;
+            }
         })
         .await;
 }

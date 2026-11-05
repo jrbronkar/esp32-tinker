@@ -14,6 +14,7 @@ pub struct Runtime {
     // Both consumers are joined futures within the same executor task.
     state: Cell<State>,
     pub activation_pending: Cell<bool>,
+    pub upload_watchdog: device_grpc::watchdog::UploadWatchdog,
     pub reboot: Signal<CriticalSectionRawMutex, ()>,
     pub log_waker: core::cell::RefCell<Option<core::task::Waker>>,
     pub logs: core::cell::RefCell<ota_protocol::logs::LogBuffer>,
@@ -26,6 +27,7 @@ impl Runtime {
         Self {
             state: Cell::new(State::Idle),
             activation_pending: Cell::new(false),
+            upload_watchdog: device_grpc::watchdog::UploadWatchdog::new(),
             reboot: Signal::new(),
             log_waker: core::cell::RefCell::new(None),
             logs: core::cell::RefCell::new(ota_protocol::logs::LogBuffer::new(boot_id)),
@@ -52,16 +54,5 @@ impl Runtime {
         self.state.set(state);
         self.log(ota_protocol::LogSeverity::Info, self.state());
         self.announce.signal(());
-    }
-}
-pub struct UploadGuard<'a>(&'a Runtime);
-impl<'a> UploadGuard<'a> {
-    pub fn new(runtime: &'a Runtime) -> Self {
-        Self(runtime)
-    }
-}
-impl Drop for UploadGuard<'_> {
-    fn drop(&mut self) {
-        self.0.transition(State::Idle);
     }
 }

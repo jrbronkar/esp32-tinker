@@ -1,8 +1,10 @@
 # espctl: device status, profiling, and development OTA
 
 A Mac CLI for querying and updating one board by IP using
-bounded Protobuf messages over TCP. The optional unsigned development uploader
-shares protocol version 1 with status and requires provisioned `device-demo` firmware.
+bounded Protobuf messages. Uploads use gRPC/HTTP2 on 7780, with optional live logs
+on the same connection; TCP 7779 remains read-only for status and log polling.
+Updates require provisioned `device-demo` firmware. Legacy OTA and `--legacy`
+have been removed; recovery uses USB/BOOT/RESET.
 
 ## Discover boards
 
@@ -55,8 +57,12 @@ An upload verifies but does not activate unless `--commit` is supplied:
 
 ```sh
 cargo run -p espctl -- upload --host 10.128.248.68 \
-  --image target/ota/ota-next.bin --firmware-version ota-next --commit
+  --image target/ota/ota-next.bin --firmware-version ota-next --logs --commit
 ```
+
+Upload defaults: `--port 7780`, `--timeout-ms 5000`, 180-second total deadline.
+The firmware also releases an upload after five seconds without an accepted
+upload operation, even when HTTP/2/log traffic continues.
 
 The release string must match the embedded version. Images must be exported
 application binaries built from `device-demo`; sensor images, ELF files,
@@ -70,7 +76,7 @@ cargo run -p espctl -- status --host 10.128.248.68 --boot
 ```
 
 Requires `device-demo` firmware with boot inventory support. The query is
-read-only; OTA availability depends on the build feature and partition layout. The reported configured flash capacity comes from the image
+read-only; OTA availability depends on the supported partition layout. The reported configured flash capacity comes from the image
 header,
 not a physical chip probe. See [partition foundations](../../docs/ota/provisioning.md)
 for the build/flash command, candidate layout, and offline image export.
@@ -213,7 +219,7 @@ a warning. Output escapes terminal control characters.
 This first version records management startup, image-confirmation failure, upload
 state transitions, and failed/timed-out sessions. It does not capture all serial
 output or pre-service Wi-Fi startup. Reading logs does not itself add an entry.
-Logs share the single management listener: polling pauses during an OTA upload
-and may miss overwritten entries. Follow retries during that pause. Old firmware
-returns an unsupported-operation error. The TUI can reuse `espctl::read_logs` and
+Read-only polling on 7779 remains available during gRPC uploads on 7780.
+For server-push logs on the upload connection, use `upload --logs`. Slow readers
+may miss overwritten entries. Old firmware may return an unsupported-operation error. The TUI can reuse `espctl::read_logs` and
 its cursor without a separate backend.

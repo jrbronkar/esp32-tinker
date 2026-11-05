@@ -84,11 +84,8 @@ struct ProfileArgs {
 
 #[derive(Args)]
 struct UploadArgs {
-    /// Use the legacy OTA recovery/migration transport instead of gRPC
-    #[arg(long)]
-    legacy: bool,
     /// Stream management logs over the same HTTP/2 connection during upload
-    #[arg(long, conflicts_with = "legacy")]
+    #[arg(long)]
     logs: bool,
     #[command(flatten)]
     target: UploadTargetArgs,
@@ -107,9 +104,9 @@ struct UploadArgs {
 struct UploadTargetArgs {
     #[arg(long, value_name = "IP")]
     host: IpAddr,
-    /// Upload port (default: gRPC 7780; --legacy uses 7779)
-    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
-    port: Option<u16>,
+    /// gRPC upload port
+    #[arg(long, default_value_t = device_grpc::PORT, value_parser = clap::value_parser!(u16).range(1..))]
+    port: u16,
     /// Per-operation timeout in milliseconds (180-second total upload deadline)
     #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..=60000))]
     timeout_ms: u64,
@@ -137,24 +134,9 @@ fn run(command: Commands) -> Result<(), String> {
         Commands::Discover(args) => run_discover(args),
         Commands::Profile(args) => run_profile(args),
         Commands::Upload(args) => {
-            let address = SocketAddr::new(
-                args.target.host,
-                args.target.port.unwrap_or(if args.legacy {
-                    ota_protocol::PORT
-                } else {
-                    device_grpc::PORT
-                }),
-            );
+            let address = SocketAddr::new(args.target.host, args.target.port);
             let timeout = Duration::from_millis(args.target.timeout_ms);
-            let result = if args.legacy {
-                espctl::legacy_upload::upload(
-                    address,
-                    timeout,
-                    &args.image,
-                    &args.firmware_version,
-                    args.commit,
-                )
-            } else if args.logs {
+            let result = if args.logs {
                 espctl::upload::upload_with_logs(
                     address,
                     timeout,

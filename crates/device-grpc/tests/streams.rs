@@ -30,6 +30,8 @@ impl ota_core::Target for Memory {
 struct Events {
     logs: ota_protocol::logs::LogBuffer,
     wake: Option<Waker>,
+    watchdog: Rc<device_grpc::watchdog::UploadWatchdog>,
+    timer: protolink::tokio::TokioTimer,
 }
 #[derive(Clone)]
 struct Env(Rc<RefCell<Events>>);
@@ -48,6 +50,15 @@ impl device_grpc::Environment for Env {
     }
     fn event(&self, message: &str) {
         let mut env = self.0.borrow_mut();
+        if message == "gRPC upload receiving"
+            || message.starts_with("gRPC chunk id=")
+            || message == "gRPC image verified"
+        {
+            env.watchdog.activity(protolink::Clock::now(&env.timer));
+        }
+        if message == "gRPC upload released" || message == "gRPC activation pending" {
+            env.watchdog.clear();
+        }
         env.logs.push(0, ota_protocol::LogSeverity::Info, message);
         if let Some(w) = env.wake.take() {
             w.wake();
@@ -85,18 +96,22 @@ async fn fixture() -> (
     let env = Env(Rc::new(RefCell::new(Events {
         logs: ota_protocol::logs::LogBuffer::new(1),
         wake: None,
+        watchdog: Rc::new(device_grpc::watchdog::UploadWatchdog::new()),
+        timer: protolink::tokio::TokioTimer::new(),
     })));
     let target = memory.clone();
     let events = env.clone();
     let server = tokio::task::spawn_local(async move {
         // Exactly one accept: every RPC in the test must share this TCP connection.
         let (stream, _) = listener.accept().await.unwrap();
+        let watchdog = events.0.borrow().watchdog.clone();
+        let timer = events.0.borrow().timer;
         let mut handler = device_grpc::StreamingManagement::new(&target, 0x10000, events);
-        let _ = protolink::tokio::server(stream)
+        let connection = protolink::tokio::server(stream)
             .with_config(device_grpc::config())
             .build()
-            .serve(&mut handler)
-            .await;
+            .serve(&mut handler);
+        embassy_futures::select::select(connection, watchdog.expired(&timer)).await;
     });
     let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
         .unwrap()
@@ -184,7 +199,7 @@ async fn cancellation_errors_and_disconnect_release_flash() {
                     }
                     assert!(memory.try_borrow_mut().is_ok());
                 }
-                // Legacy ownership rejects Begin without modifying the target.
+                // An existing exclusive lease rejects Begin without modifying the target.
                 let lease = memory.borrow_mut();
                 let (tx, mut replies) = upload(&mut client).await.unwrap();
                 assert_eq!(
@@ -346,6 +361,41 @@ async fn competing_stream_cannot_release_active_upload_and_deadline_cancels_logs
             })
             .await
             .unwrap();
+        })
+        .await;
+}
+#[tokio::test]
+async fn live_log_traffic_cannot_keep_an_abandoned_upload_holding_flash() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut client, server, memory, env) = fixture().await;
+            let mut logs = logs(&mut client, Default::default()).await.unwrap();
+            logs.message().await.unwrap().unwrap();
+            let (tx, mut replies) = upload(&mut client).await.unwrap();
+            op(&tx, &mut replies, begin(&image(), "v1"), 1)
+                .await
+                .unwrap();
+            assert!(memory.try_borrow_mut().is_err());
+            let started = std::time::Instant::now();
+            let mut count = 0;
+            tokio::time::timeout(Duration::from_secs(7), async {
+                loop {
+                    device_grpc::Environment::event(&env, "external live log");
+                    match logs.message().await {
+                        Ok(Some(_)) => count += 1,
+                        _ => break,
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(count > 10);
+            assert!(started.elapsed() >= Duration::from_secs(4));
+            server.await.unwrap();
+            assert!(memory.try_borrow_mut().is_ok());
+            drop(tx);
+            drop(replies);
         })
         .await;
 }

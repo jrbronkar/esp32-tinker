@@ -315,3 +315,32 @@ mod upload_tests {
 }
 
 pub mod logs;
+
+#[cfg(test)]
+mod read_only_management_tests {
+    use super::*;
+    #[test]
+    fn read_only_endpoint_rejects_every_upload_operation() {
+        let operations = [
+            RequestPayload::Begin(Default::default()),
+            RequestPayload::Chunk(Default::default()),
+            RequestPayload::Finish(Default::default()),
+            RequestPayload::Commit(Default::default()),
+            RequestPayload::Abort(Default::default()),
+        ];
+        for payload in operations {
+            let response = respond(
+                Request {
+                    protocol_version: VERSION,
+                    request_id: 42,
+                    payload: Some(payload),
+                },
+                status("mock", "device-demo", "v1", 0).unwrap(),
+            );
+            assert_eq!(response.request_id, 42);
+            assert!(
+                matches!(response.payload,Some(ResponsePayload::Error(error)) if error.code==ErrorCode::InvalidRequest)
+            );
+        }
+    }
+}

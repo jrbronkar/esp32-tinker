@@ -1,90 +1,57 @@
 # OTA design
 
-Current transport update: normal uploads now use gRPC/HTTP2 on TCP 7780,
-including optional concurrent logs and explicit Commit/reboot. See the
-[current Protolink implementation and validation](../device-management/protolink.md)
-and [upload commands](provisioning.md). The legacy wire/harness descriptions below
-remain applicable only to the explicit `--legacy` recovery/migration path.
-
-The development OTA path is implemented for ESP32-S3 in bare-metal Rust. Every
-`device-demo` build includes status and unsigned updates over Protobuf/TCP.
-Authentication, reliable rollback, and power-loss recovery remain unfinished.
-
-## Scope and decisions
-
-- A Mac initiates requests to an explicit board IP; no central server is needed.
-- One protocol version (1) covers status and upload operations. Dispatch is by
-  payload; additive schema changes use Protobuf compatibility rules.
-- One shared Embassy network stack supports the management service and can also
-  support telemetry. Sensor demos do not yet start the management service.
-- Upload only an application image into the inactive slot. Network requests never
-  rewrite the bootloader, partition table, NVS, or PHY regions.
-- Validate the stored image before selecting it. Activation requires explicit
-  Commit in the same verified session; verify-only is the CLI default.
-- USB provisioning and physical BOOT/RESET remain the recovery path.
-- gRPC clients/servers, HTTP/2 integration, and gateways are explicitly out of
-  scope. Fleet rollout, a dashboard, resume and remote release fetching
-  are deferred. Native gRPC would add HTTP/2/runtime integration and memory
-  costs without a validated benefit for this milestone. No gRPC dependency is included.
+Every `device-demo` build includes gRPC/HTTP2 management and unsigned development
+updates on TCP 7780. TCP 7779 is read-only for status, profiling and log polling.
+Legacy OTA is removed after feature-parity checks; USB/BOOT/RESET is recovery.
 
 ## Architecture and ownership
 
-```text
-Mac: espctl                      ESP32-S3: device-demo
-status / upload  -- Wi-Fi TCP --> device-service
-                                 decode bounded Protobuf messages
-                                 validate / write inactive slot
-                                 read back / verify image
-                                 commit boot metadata / reset
-version / status <-------------  new application starts
-```
+The Mac connects directly to the board without a central server. Protolink
+owns HTTP/2/gRPC. Upload and server-streamed log RPCs share one connection.
 
 | Component | Responsibility |
 | --- | --- |
-| `wifi-network` | Radio, connection retry, DHCP, Embassy network runner |
-| `device-service` | Listener, status/upload dispatch, flash bounds, boot selection |
-| `ota-protocol` and `protocol/ota.proto` | Fixed-capacity micropb messages and framing |
-| `ota-core` | Portable metadata, chunk, integrity and image validation rules |
-| `device-demo` | Sensor-free management firmware and application descriptor |
-| `espctl` | Host validation, status, profiling and explicit upload/commit |
+| wifi-network | Radio, reconnection, DHCP and Embassy network runner |
+| device-grpc | Bounded RPC handlers, exclusive upload state, log cursors and portable inactivity watchdog |
+| device-service | Embassy/TCP drivers, runtime log wakeups, inactive flash target, boot metadata and reboot |
+| ota-core | Shared metadata, ordered sector writes, stored-image validation and explicit commit rules |
+| ota-protocol | Fixed-capacity micropb request/response bodies |
+| espctl | Host validation, gRPC uploads with optional same-connection logs, status and discovery |
 
-The runtime accepts only the supported layout and an identifiable inactive slot;
-otherwise status reports OTA unavailable. The image capability marker is
-`rust-dev-ota-v1`. It prevents installing incompatible firmware that removes the
-update path; it is not authentication. Firmware embeds Wi-Fi credentials at
-compile time, so exported images and raw flash backups are private local files.
+Only one upload owns flash at a time. Other streams continue during network
+waits; a synchronous flash write or verification can briefly delay the executor.
+An abandoned upload expires after five seconds regardless of log or HTTP/2
+keepalive activity. Cancellation/expiry discards volatile state and releases
+flash without changing boot selection. The complete image is not held in RAM.
 
 ## Update and boot lifecycle
 
-Begin declares application/chip/version/size/digest. Sequential chunks write the
-inactive slot; Finish reads flash back and checks the digest, ESP header,
-descriptor, segments, checksum and image footer. Commit changes persistent
-`otadata`, marks the candidate New, then software-resets.
+Begin validates application/chip/version/size/digest. Ordered 4096-byte sectors
+write only the inactive slot. Finish reads flash back and verifies the digest,
+ESP descriptor/version, segment checksum and image footer. Commit is explicit
+and requires that verified session; it changes otadata and resets the board.
+After activation begins no more writes are accepted until reset, including if
+metadata update returns an error. Missing commit ACKs are uncertain outcomes;
+clients never automatically replay them.
 
-On reset, ROM starts the flash bootloader. The bootloader reads the partition
-table and boot selection, loads/maps the chosen image and jumps to its entry
-point. The running application and selected next-boot application can differ.
-The updater identifies the running slot independently before choosing its target.
+The bootloader reads the table and boot selection, maps the chosen image and
+jumps to its entry point. Running and next-boot selection can differ, so the
+running slot is identified independently before choosing the inactive target.
+The confirmation hook attempts to mark a matching PendingVerify image Valid
+after networking starts. Two slots and this hook do not prove automatic rollback.
 
-Disconnect/Abort before commit discards volatile session state and preserves
-selection; bytes already written remain in the inactive slot. Once commit starts,
-a lost reply or metadata-write interruption has an uncertain outcome. Check the
-running version before retrying; no transmitted operation is automatically replayed.
+The supported 16 MiB layout and `rust-dev-ota-v1` compatibility marker remain.
+Neither authenticates firmware. Credential-bearing images stay private. Network
+requests never update the bootloader, partition table, NVS or PHY regions.
+See [protocol details](protocol.md), [build/upload](provisioning.md) and
+[parity/validation](../device-management/protolink.md).
 
-The confirmation hook attempts to mark a selected, actually running PendingVerify
-image Valid after networking starts. It logs confirmation errors and continues; it has no
-bounded health policy. Two slots and checksums do not establish automatic rollback.
-See [API contracts and lifecycle diagrams](protocol.md) for exact wire behavior.
+## Startup failures
 
-## Startup and connection failures
-
-Wi-Fi connection attempts retry every five seconds; ordinary disconnects return
-to that loop. Reported startup initialization failures are logged, followed by a
-five-second delay and reset. Startup consumes peripheral handles and initializes
-static resources once, so retrying it in place would need different ownership.
-Permanent configuration errors require a corrected build. Other panics print a
-backtrace and loop; they do not intentionally reboot. The startup-error path has
-not yet been deliberately fault-injected on hardware.
+Wi-Fi connection attempts retry after five seconds. Reported initialization
+errors log, delay and reset; peripheral/static initialization is not retried in
+place. Permanent configuration errors require a corrected image. Other panics
+print a backtrace and loop. These startup fault paths remain unverified on hardware.
 
 ## Security plan
 
@@ -141,4 +108,4 @@ assumptions. Treat it as a separate design and provisioning decision.
 - [Testing](testing.md): procedures, current evidence and gaps.
 
 Same-LAN [device discovery](../device-management/discovery.md) is implemented as
-a library-backed mDNS/DNS-SD responder sharing the network stack. Remote logs are deferred.
+a library-backed mDNS/DNS-SD responder sharing the network stack. Concurrent streaming management logs are implemented over gRPC.

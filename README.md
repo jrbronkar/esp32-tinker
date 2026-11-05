@@ -198,8 +198,8 @@ directly to the board without a cloud service or separate backend.
 `espctl upload` uses gRPC by default. Add `--logs` to stream management logs over
 the same HTTP/2 connection during transfer, and `--commit` to activate the
 verified image and reboot. Without `--commit`, the current application remains
-selected. `--legacy` explicitly selects the retained OTA recovery/migration
-transport on 7779; it is never an automatic fallback or retry.
+selected. Legacy OTA and `--legacy` have been removed; port 7779 accepts only
+read-only status/log requests. USB/BOOT/RESET remains the recovery path.
 
 The firmware exposes device identity, version, uptime, OTA availability and boot
 inventory. Uploads require the supported partition layout. USB/BOOT/RESET remains
@@ -264,7 +264,7 @@ See [docs/ota/design.md](docs/ota/design.md) for evidence and next steps, and
 [docs/ota/protocol.md](docs/ota/protocol.md) for operation contracts, sequence diagrams,
 upload states, and the boot lifecycle.
 
-See [OTA automated tests and manual fault harness](docs/ota/testing.md) for the validation
+See [OTA automated tests and hardware probes](docs/ota/testing.md) for the validation
 matrix, board probe modes, physical fault procedures, and result template.
 
 ## References

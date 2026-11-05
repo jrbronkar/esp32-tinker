@@ -1,5 +1,6 @@
 #![no_std]
 extern crate alloc;
+pub mod watchdog;
 pub use protolink;
 
 use alloc::vec::Vec;
@@ -84,8 +85,8 @@ struct Upload<'a, T> {
     verified: bool,
 }
 /// One connection, bounded subscription state and a single exclusive flash lease.
-/// The same RefCell is used by the legacy OTA listener, so competing transports
-/// fail admission before touching flash. Dropping the driver releases the lease.
+/// Competing streams fail admission before touching flash. Dropping the driver
+/// releases the lease; activation remains latched until reboot.
 pub struct StreamingManagement<'a, T: ota_core::Target, E: Environment> {
     target: &'a RefCell<T>,
     target_offset: u32,

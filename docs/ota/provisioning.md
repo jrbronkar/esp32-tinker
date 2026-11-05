@@ -64,11 +64,11 @@ The image is built with your Wi-Fi credentials: keep it private. Nothing loads
 Uploads use gRPC/HTTP2 on port **7780** by default, including the status preflight
 on that same connection. Add `--logs` for concurrent server-push logs. `--port`
 overrides the gRPC endpoint. The separate status/profiling commands still use
-7779. `--legacy` explicitly selects the retained legacy OTA transport on 7779;
-there is no automatic protocol fallback and no replay after an operation fails.
-
-Boards running pre-commit Protolink firmware need one `upload --legacy --commit`
-migration (or a normal USB update) before gRPC activation can be used.
+7779, which is read-only. The legacy OTA writer and CLI fallback are removed;
+there is no automatic protocol fallback or replay after an operation fails.
+Boards without working gRPC Commit require a normal USB update (or an older
+release's migration client) before the current CLI can update them. Preserve
+OTA metadata for ordinary USB recovery; do not repeat initial provisioning.
 
 ```sh
 cargo run -p espctl -- upload --host <board-ip> \

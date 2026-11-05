@@ -1,4 +1,4 @@
-//! Default HTTP/2/gRPC management and OTA; explicit legacy recovery remains available.
+//! HTTP/2/gRPC management and OTA; the TCP status/log endpoint is read-only.
 use core::time::Duration as CoreDuration;
 use device_grpc::protolink;
 use device_grpc::{Environment, StreamingManagement};
@@ -55,7 +55,19 @@ pub async fn serve(
                     // trailers even when another RPC (such as Logs) remains open.
                     Timer::after_secs(2).await;
                 };
-                embassy_futures::select::select(connection, reboot).await;
+                let stop = embassy_futures::select::select(
+                    reboot,
+                    runtime.upload_watchdog.expired(&EmbassyClock),
+                );
+                if let embassy_futures::select::Either::Second(
+                    embassy_futures::select::Either::Second(()),
+                ) = embassy_futures::select::select(connection, stop).await
+                {
+                    runtime.log(
+                        ota_protocol::LogSeverity::Warn,
+                        "gRPC upload inactivity timeout",
+                    );
+                }
             }
             drop(handler);
             if runtime.activation_pending.get() {
@@ -105,6 +117,17 @@ impl Environment for DeviceEnvironment<'_> {
         self.runtime.activation_pending.get()
     }
     fn event(&self, message: &str) {
+        if message == "gRPC upload receiving"
+            || message.starts_with("gRPC chunk id=")
+            || message == "gRPC image verified"
+        {
+            self.runtime
+                .upload_watchdog
+                .activity(CoreDuration::from_micros(Instant::now().as_micros()));
+        }
+        if message == "gRPC upload released" || message == "gRPC activation pending" {
+            self.runtime.upload_watchdog.clear();
+        }
         if message == "gRPC activation pending" {
             self.runtime.activation_pending.set(true);
             self.runtime.transition(crate::runtime::State::Committing);
