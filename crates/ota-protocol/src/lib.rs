@@ -43,24 +43,11 @@ pub enum Error {
     FieldTooLong,
 }
 
-pub fn frame_length(prefix: [u8; 4]) -> Result<usize, Error> {
-    let len = u32::from_be_bytes(prefix) as usize;
-    if len == 0 || len > MAX_FRAME {
-        Err(Error::InvalidLength)
-    } else {
-        Ok(len)
-    }
-}
-
 /// Encode a bounded protobuf body; gRPC supplies transport framing.
 pub fn encode<M: MessageEncode>(message: &M) -> Result<Frame, Error> {
     let mut encoder = PbEncoder::new(Frame::new());
     message.encode(&mut encoder).map_err(|_| Error::Encode)?;
-    let bytes = encoder.into_writer();
-    if bytes.len() > MAX_FRAME {
-        return Err(Error::InvalidLength);
-    }
-    Ok(bytes)
+    Ok(encoder.into_writer())
 }
 
 pub fn decode<M: MessageDecode + Default>(bytes: &[u8]) -> Result<M, Error> {
@@ -153,17 +140,11 @@ mod tests {
     }
 
     #[test]
-    fn invalid_frames_and_malformed_protobuf() {
-        assert_eq!(frame_length(0u32.to_be_bytes()), Err(Error::InvalidLength));
+    fn oversized_and_malformed_protobuf_are_rejected() {
         assert_eq!(
-            frame_length(513u32.to_be_bytes()),
+            decode::<StatusRequest>(&[0; MAX_FRAME + 1]),
             Err(Error::InvalidLength)
         );
-        assert_eq!(
-            frame_length(u32::MAX.to_be_bytes()),
-            Err(Error::InvalidLength)
-        );
-        assert_eq!(frame_length(512u32.to_be_bytes()), Ok(512));
         assert!(decode::<UploadRequest>(&[0x08, 0x80]).is_err());
         assert!(decode::<UploadAck>(&[0xff]).is_err());
     }
@@ -195,33 +176,15 @@ mod tests {
     }
 }
 
-/// Upload sessions have separate bounded frames; initial/control frames stay at 512 bytes.
+/// Upload requests can contain a full flash sector.
 pub const UPLOAD_FRAME: usize = 4608;
 pub const CHUNK_SIZE: usize = 4096;
-pub fn upload_frame_length(prefix: [u8; 4]) -> Result<usize, Error> {
-    let n = u32::from_be_bytes(prefix) as usize;
-    if n == 0 || n > UPLOAD_FRAME {
-        Err(Error::InvalidLength)
-    } else {
-        Ok(n)
-    }
-}
 pub fn encode_upload<M: MessageEncode>(
     message: &M,
 ) -> Result<heapless::Vec<u8, UPLOAD_FRAME>, Error> {
     let mut encoder = PbEncoder::new(heapless::Vec::<u8, UPLOAD_FRAME>::new());
     message.encode(&mut encoder).map_err(|_| Error::Encode)?;
-    let bytes = encoder.into_writer();
-    upload_frame_length((bytes.len() as u32).to_be_bytes())?;
-    Ok(bytes)
-}
-pub fn decode_upload(bytes: &[u8]) -> Result<UploadRequest, Error> {
-    upload_frame_length((bytes.len() as u32).to_be_bytes())?;
-    let mut request = UploadRequest::default();
-    request
-        .decode_from_bytes(bytes)
-        .map_err(|_| Error::Decode)?;
-    Ok(request)
+    Ok(encoder.into_writer())
 }
 
 #[cfg(test)]
@@ -264,9 +227,10 @@ mod upload_tests {
         };
         let bytes = encode_upload(&request).unwrap();
         assert!(bytes.len() <= UPLOAD_FRAME);
-        assert!(frame_length((bytes.len() as u32).to_be_bytes()).is_err());
-        assert_eq!(decode_upload(&bytes).unwrap(), request);
-        assert!(upload_frame_length(4609u32.to_be_bytes()).is_err());
+        assert_eq!(decode::<UploadRequest>(&bytes), Err(Error::InvalidLength));
+        let mut decoded = UploadRequest::default();
+        decoded.decode_from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, request);
     }
 }
 

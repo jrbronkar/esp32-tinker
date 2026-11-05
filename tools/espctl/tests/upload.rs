@@ -1,4 +1,4 @@
-use ota_protocol::{UploadOperation as Op, UploadPhase};
+use ota_protocol::{MessageDecode, UploadOperation as Op, UploadPhase, UploadRequest};
 use protolink::{CallContext, Handler, Next, Route, Status};
 use std::{
     cell::{Cell, RefCell},
@@ -168,7 +168,8 @@ impl Handler for Faulty<'_> {
         if ctx.path == device_grpc::LOGS_PATH {
             return self.inner.on_message(ctx, bytes);
         }
-        let request = ota_protocol::decode_upload(bytes).unwrap();
+        let mut request = UploadRequest::default();
+        request.decode_from_bytes(bytes).unwrap();
         let name = match request.payload {
             Some(Op::Begin(_)) => "begin",
             Some(Op::Chunk(_)) => "chunk",

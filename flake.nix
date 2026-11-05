@@ -80,7 +80,6 @@
         espRust
         xtensaGcc
         pkgs.espflash
-        pkgs.protobuf
         pkgs.pkg-config
       ];
 
