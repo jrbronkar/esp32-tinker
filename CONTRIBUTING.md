@@ -12,6 +12,9 @@ cargo fmt --version
 
 ## Host checks
 
+The [CI workflow](.github/workflows/ci.yml) runs the host and firmware checks
+on pull requests and pushes to `master`.
+
 Plain Cargo commands select `espctl` and the portable crates in the root
 workspace. Run these before submitting a PR:
 
