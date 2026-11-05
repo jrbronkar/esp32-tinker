@@ -11,6 +11,7 @@ Mac visualization tools, and a development OTA update system over Wi-Fi.
 | Stream and visualize IMU measurements | [IMU guide](crates/imu-demo/README.md) and [visualizer](tools/imu-visualizer/README.md) |
 | Monitor soil moisture | [Sensor guide](crates/soil-sensor/README.md) and [dashboard](tools/soil-visualizer/README.md) |
 | Find boards on the same LAN | [Device discovery](docs/device-management/discovery.md) |
+| Watch board status and live logs | [Terminal dashboard](tools/espctl/README.md#terminal-dashboard) |
 | Query a device or profile latency | [espctl CLI](tools/espctl/README.md) |
 | Provision a board and update it over Wi-Fi | [OTA provisioning and upload guide](docs/ota/provisioning.md) |
 | Understand the update design and lifecycle | [OTA documentation](docs/ota/README.md) |
@@ -198,6 +199,7 @@ resolves boards through mDNS on UDP 5353.
 
 ```sh
 nix develop
+cargo run -p espctl -- tui
 cargo run -p espctl -- status --host BOARD_IP --boot
 cargo run -p espctl -- upload --host BOARD_IP \
   --image IMAGE.bin --firmware-version VERSION --logs --commit
