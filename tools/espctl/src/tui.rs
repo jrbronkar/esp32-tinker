@@ -482,12 +482,13 @@ impl Dashboard {
         ])
         .areas(frame.area());
         let [sidebar, board] = Layout::horizontal([
-            Constraint::Length((frame.area().width / 3).min(36)),
+            Constraint::Length(body.width.min(130) * 2 / 5),
             Constraint::Min(0),
         ])
         .areas(body);
         let [devices, actions] =
-            Layout::vertical([Constraint::Min(3), Constraint::Length(8)]).areas(sidebar);
+            Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .areas(sidebar);
         let [status, logs] =
             Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).areas(board);
 
