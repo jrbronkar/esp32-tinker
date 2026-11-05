@@ -349,9 +349,6 @@ impl Dashboard {
 
     fn actions(&self, direct: bool) -> Vec<(KeyCode, String)> {
         let mut actions = vec![(KeyCode::Char('u'), "Firmware images".into())];
-        if self.workflow.can_activate() {
-            actions.insert(0, (KeyCode::Char('a'), "Review activation".into()));
-        }
         actions.push((
             KeyCode::Char('f'),
             format!("Log filter · {}", self.filter.label()),
@@ -406,7 +403,7 @@ impl Dashboard {
             );
             frame.render_widget(
                 Line::styled(
-                    "↑↓ Choose   Enter Upload and verify   ← / Esc Back",
+                    "↑↓ Choose   Enter Review update   ← / Esc Back",
                     Style::new().fg(MUTED),
                 ),
                 hint,
@@ -416,7 +413,7 @@ impl Dashboard {
         let confirming = self.workflow.confirming();
         let shell = panel(
             if confirming {
-                " Confirm activation "
+                " Confirm firmware update "
             } else {
                 " Firmware update "
             },
@@ -442,7 +439,7 @@ impl Dashboard {
                 Line::from(vec![
                     Span::styled(" Cancel ", choice(!self.activation_selected)),
                     Span::raw("  "),
-                    Span::styled(" Activate & reboot ", choice(self.activation_selected)),
+                    Span::styled(" Update & reboot ", choice(self.activation_selected)),
                     Span::styled("   ←→ Choose   Enter Confirm", Style::new().fg(MUTED)),
                 ]),
                 buttons,
@@ -622,7 +619,7 @@ impl Dashboard {
         let shortcuts = if self.workflow.busy() {
             "F Filter   Board selection and quit resume after update"
         } else {
-            "U Firmware   A Review activation   F Filter   R Scan   Q Quit"
+            "U Firmware   F Filter   R Scan   Q Quit"
         };
         frame.render_widget(
             Paragraph::new(vec![
@@ -679,10 +676,6 @@ async fn dashboard(
         let updating = app.workflow.busy();
         redraw |= app.workflow.poll().await;
         if updating && !app.workflow.busy() {
-            if app.workflow.can_activate() {
-                app.focus = Focus::Actions;
-                app.action = 0;
-            }
             if let Some(target) = app.targets.get(app.selected) {
                 app.session = Some(Session::start(target.address, timeout));
                 app.connection = "Reconnecting after update…".into();
@@ -752,12 +745,11 @@ async fn dashboard(
                             KeyCode::Down => app.workflow.next_image(),
                             KeyCode::Left | KeyCode::Esc => app.workflow.cancel_picker(),
                             KeyCode::Enter if key.kind == KeyEventKind::Press => {
-                                app.workflow.verify_selected(
+                                app.workflow.choose_selected(
                                     app.targets.get(app.selected).map(|target| target.address),
                                     app.status.as_ref(),
-                                    timeout,
                                 );
-                                app.pause_monitor();
+                                app.activation_selected = false;
                             }
                             _ => {}
                         }
@@ -815,21 +807,11 @@ async fn dashboard(
                                 && key.kind == KeyEventKind::Press
                                 && key.modifiers.is_empty() =>
                         {
-                            app.workflow.verify(
+                            app.workflow.choose_image(
                                 app.targets.get(app.selected).map(|target| target.address),
                                 app.status.as_ref(),
-                                timeout,
                             );
-                            app.pause_monitor();
-                        }
-                        KeyCode::Char('a')
-                            if !busy
-                                && scanning.is_none()
-                                && key.kind == KeyEventKind::Press
-                                && key.modifiers.is_empty() =>
-                        {
                             app.activation_selected = false;
-                            app.workflow.ask_activation();
                         }
                         KeyCode::Right if !busy && app.focus != Focus::Logs => {
                             app.sidebar_focus = app.focus;

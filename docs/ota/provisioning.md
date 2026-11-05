@@ -36,8 +36,9 @@ nix run .#espctl -- tui
 ```
 
 Press **U** to select an exported image. The TUI reads its embedded version
-and prompts before activation. The image version defaults to a Git hash. For a
-scripted update with a fixed version, pass an override when exporting:
+and asks for confirmation before uploading and applying the update. The image
+version defaults to a Git hash. For a scripted update with a fixed version,
+pass an override when exporting:
 
 ```sh
 nix run .#ota-image -- ota-next

@@ -58,17 +58,14 @@ The version defaults to the short Git commit hash, with a second hash when
 tracked files have local changes. Pass `-- VERSION` to override it. The export
 lands in `target/ota/<version>.bin`. Select a board, then choose **Firmware
 images** under Actions or press **U** to browse compatible binaries in
-`target/ota`. Use **↑/↓** to choose an image and **Enter** to write and verify
-the inactive slot. Press Left or Esc to leave the picker. The picker reads
-the version from the image. For an image elsewhere, launch with
-`tui --image /path/to/app.bin` and press **U**.
+`target/ota`. Use **↑/↓** to choose an image and **Enter** to review the
+update. Press Left or Esc to leave the picker. For an image elsewhere, launch
+with `tui --image /path/to/app.bin` and press **U**.
 
-The dashboard streams logs on the upload connection and resumes status polling
-when the transfer ends. After verification, choose **Review activation** under
-Actions or press **A**. The prompt starts on **Cancel**. Use **→** to select
-**Activate & reboot**, then press **Enter**. **Y** confirms and **Esc** cancels. The dashboard releases the first upload session
-after verification. Activation resends and verifies the same in-memory image
-before committing it. The dashboard checks the running version and slot after
+The confirmation starts on **Cancel**. Choose **Update & reboot** with **→**
+and press **Enter**, or press **Y**. The dashboard uploads to the inactive
+slot, verifies the image, then activates it automatically in the same session.
+It streams logs on the upload connection and resumes status polling afterward. The dashboard checks the running version and slot after
 reboot and reports an unknown outcome if it loses the activation response and
 cannot confirm the new image. Check the board's status before retrying an
 unconfirmed activation.

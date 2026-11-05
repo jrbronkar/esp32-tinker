@@ -20,21 +20,15 @@ struct Board {
     version: String,
 }
 
-struct Verified {
+struct PendingUpdate {
     board: Board,
     image: PreparedImage,
-    slot: u32,
-}
-
-enum Outcome {
-    Verified(Verified),
-    Activated(String),
 }
 
 type LogUpdate = Result<ReadLogsResponse, String>;
 
 struct Job {
-    task: JoinHandle<io::Result<Outcome>>,
+    task: JoinHandle<io::Result<String>>,
     progress: watch::Receiver<Option<Progress>>,
     initial: &'static str,
     logs: mpsc::Receiver<LogUpdate>,
@@ -78,8 +72,7 @@ fn local_images(directory: &Path) -> io::Result<Picker> {
 pub(super) struct Workflow {
     config: Option<ImageSource>,
     picker: Option<Picker>,
-    verified: Option<Verified>,
-    confirming: bool,
+    pending: Option<PendingUpdate>,
     job: Option<Job>,
     notice: String,
 }
@@ -96,7 +89,7 @@ impl Workflow {
         self.config.is_some()
             || self.picking()
             || self.busy()
-            || self.verified.is_some()
+            || self.pending.is_some()
             || !self.notice.is_empty()
     }
 
@@ -108,10 +101,6 @@ impl Workflow {
         self.picker
             .as_ref()
             .map(|picker| (picker.images.as_slice(), picker.selected))
-    }
-
-    pub(super) fn can_activate(&self) -> bool {
-        self.verified.is_some()
     }
 
     pub(super) fn write_progress(&self) -> Option<(u32, u32)> {
@@ -142,24 +131,22 @@ impl Workflow {
     }
 
     pub(super) fn confirming(&self) -> bool {
-        self.confirming
+        self.pending.is_some()
     }
 
     pub(super) fn clear(&mut self) {
         self.picker = None;
-        self.verified = None;
-        self.confirming = false;
+        self.pending = None;
         self.notice.clear();
     }
 
-    pub(super) fn verify(
+    pub(super) fn choose_image(
         &mut self,
         address: Option<SocketAddr>,
         status: Option<&StatusResponse>,
-        timeout: Duration,
     ) {
         if let Some(source) = self.config.clone() {
-            self.start_verify(source, address, status, timeout);
+            self.prepare(source, address, status);
             return;
         }
         self.notice.clear();
@@ -175,25 +162,23 @@ impl Workflow {
         }
     }
 
-    pub(super) fn verify_selected(
+    pub(super) fn choose_selected(
         &mut self,
         address: Option<SocketAddr>,
         status: Option<&StatusResponse>,
-        timeout: Duration,
     ) {
         if let Some(picker) = self.picker.take() {
             if let Some((path, version)) = picker.images.into_iter().nth(picker.selected) {
-                self.start_verify((path, Some(version)), address, status, timeout);
+                self.prepare((path, Some(version)), address, status);
             }
         }
     }
 
-    fn start_verify(
+    fn prepare(
         &mut self,
         (path, version): ImageSource,
         address: Option<SocketAddr>,
         status: Option<&StatusResponse>,
-        timeout: Duration,
     ) {
         let Some((address, status)) = address.zip(status).filter(|(_, s)| s.ota_available) else {
             self.notice = "Select a connected board with OTA available.".into();
@@ -201,80 +186,55 @@ impl Workflow {
         };
         let id = status.device_id.to_string();
         self.clear();
-        self.job = Some(spawn(
-            "Validating application image",
-            move |progress, on_log| {
-                let image = PreparedImage::read(&path, version.as_deref())?;
+        match PreparedImage::read(&path, version.as_deref()) {
+            Ok(image) => {
                 let board = Board {
                     address,
                     id,
                     version: image.version().to_owned(),
                 };
-                let result = upload::update_board(
-                    board.address,
-                    timeout,
-                    &image,
-                    &board.id,
-                    None,
-                    progress,
-                    on_log,
-                )?;
-                Ok(Outcome::Verified(Verified {
-                    board,
-                    image,
-                    slot: result.target_offset,
-                }))
-            },
-        ));
-    }
-
-    pub(super) fn ask_activation(&mut self) {
-        if self.verified.is_some() {
-            self.confirming = true;
+                self.pending = Some(PendingUpdate { board, image });
+            }
+            Err(error) => self.notice = error.to_string(),
         }
     }
 
     pub(super) fn cancel_confirmation(&mut self) {
-        self.confirming = false;
+        self.pending = None;
     }
 
     pub(super) fn activate(&mut self, timeout: Duration) {
-        if !std::mem::take(&mut self.confirming) {
-            return;
-        }
-        let Some(verified) = self.verified.take() else {
+        let Some(PendingUpdate { board, image }) = self.pending.take() else {
             return;
         };
         self.job = Some(spawn(
-            "Preparing verified image for activation",
+            "Connecting to upload image",
             move |progress, on_log| {
-                let Verified { board, image, slot } = verified;
-                let mut commit_started = false;
+                let mut commit_slot = None;
                 let result = upload::update_board(
                     board.address,
                     timeout,
                     &image,
                     &board.id,
-                    Some(slot),
                     &mut |event| {
-                        if matches!(event, Progress::Committing) {
-                            commit_started = true;
+                        if let Progress::Committing { target_offset } = event {
+                            commit_slot = Some(target_offset);
                         }
                         progress(event);
                     },
                     on_log,
                 );
-                if !commit_started {
+                let Some(slot) = commit_slot else {
                     return result
                         .and_then(|_| Err(io::Error::other("activation was not attempted")));
-                }
+                };
                 // A missing ACK can still mean the board rebooted. Only read status here.
                 progress(Progress::CheckingBoot);
                 if running_expected_image(&board, slot, timeout) {
-                    return Ok(Outcome::Activated(format!(
+                    return Ok(format!(
                         "{} is running {} from slot 0x{slot:x}.",
                         board.id, board.version
-                    )));
+                    ));
                 }
                 let message = match result {
                 Ok(_) => "Activation acknowledged. The new firmware and slot could not be confirmed.",
@@ -297,8 +257,7 @@ impl Workflow {
         {
             if let Some(job) = self.job.take() {
                 match job.task.await {
-                    Ok(Ok(Outcome::Verified(verified))) => self.verified = Some(verified),
-                    Ok(Ok(Outcome::Activated(message))) => self.notice = message,
+                    Ok(Ok(message)) => self.notice = message,
                     Ok(Err(error)) => self.notice = error.to_string(),
                     Err(error) => self.notice = format!("Update task ended: {error}"),
                 }
@@ -322,32 +281,23 @@ impl Workflow {
                     format!("Writing image · {written}/{total} bytes")
                 }
                 Some(Progress::Verifying) => "Verifying image on board".into(),
-                Some(Progress::Committing) => "Activating image".into(),
+                Some(Progress::Committing { .. }) => "Activating image".into(),
                 Some(Progress::CheckingBoot) => "Checking running firmware and slot".into(),
             };
         }
-        if let Some(verified) = &self.verified {
-            let board = &verified.board;
-            let id = board.id.escape_debug();
-            let version = board.version.escape_debug();
-            return if self.confirming {
-                format!(
-                    "Activate {} on {} ({}) and reboot?\nResend and verify the image before rebooting.",
-                    version, id, board.address
-                )
-            } else {
-                format!(
-                    "Verified {} on {} · slot 0x{:x}\nReview activation from Actions.",
-                    version, id, verified.slot
-                )
-            };
+        if let Some(pending) = &self.pending {
+            let board = &pending.board;
+            return format!(
+                "Update {} ({}) to {}?\nThe board will reboot after the image is uploaded and verified.",
+                board.id.escape_debug(), board.address, board.version.escape_debug(),
+            );
         }
         if !self.notice.is_empty() {
             return self.notice.escape_debug().to_string();
         }
         if let Some((path, _)) = &self.config {
             return format!(
-                "U Upload and verify {}",
+                "U Review update for {}",
                 path.display().to_string().escape_debug()
             );
         }
@@ -357,7 +307,7 @@ impl Workflow {
 
 fn spawn(
     initial: &'static str,
-    work: impl FnOnce(&mut dyn FnMut(Progress), &mut dyn FnMut(LogUpdate)) -> io::Result<Outcome>
+    work: impl FnOnce(&mut dyn FnMut(Progress), &mut dyn FnMut(LogUpdate)) -> io::Result<String>
         + Send
         + 'static,
 ) -> Job {
@@ -462,26 +412,17 @@ mod tests {
                             .await
                             .unwrap()
                             .unwrap();
-                    workflow.verify(Some(address), Some(&status), timeout);
-                    finish(&mut workflow).await;
-                    std::fs::remove_file(path).unwrap();
-                    assert!(
-                        workflow.text().contains("Verified v1"),
-                        "{}",
-                        workflow.text()
-                    );
-                    assert_eq!(board.writes.get(), 1);
-                    assert_eq!(board.commits.get(), 0);
-                    assert!(!board.pending.get());
-                    workflow.activate(timeout);
-                    assert!(!workflow.busy());
-                    workflow.ask_activation();
+                    workflow.choose_image(Some(address), Some(&status));
                     assert!(workflow.confirming());
+                    assert!(!workflow.busy());
+                    assert_eq!(board.writes.get(), 0);
+                    assert_eq!(board.commits.get(), 0);
                     workflow.cancel_confirmation();
                     workflow.activate(timeout);
                     assert!(!workflow.busy());
 
-                    workflow.ask_activation();
+                    workflow.choose_image(Some(address), Some(&status));
+                    std::fs::remove_file(path).unwrap();
                     workflow.activate(timeout);
                     finish(&mut workflow).await;
                     assert!(
@@ -489,14 +430,12 @@ mod tests {
                         "{}",
                         workflow.text()
                     );
+                    assert_eq!(board.writes.get(), 1);
                     assert_eq!(board.commits.get(), 1);
                     assert!(board.pending.get());
                     assert_eq!(
                         *board.requests.borrow(),
-                        [
-                            "begin", "chunk", "finish", "abort", "begin", "chunk", "finish",
-                            "commit"
-                        ]
+                        ["begin", "chunk", "finish", "commit"]
                     );
                     server.abort();
                     let _ = server.await;

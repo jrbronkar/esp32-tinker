@@ -123,7 +123,7 @@ impl PreparedImage {
 pub(crate) enum Progress {
     Writing { written: u32, total: u32 },
     Verifying,
-    Committing,
+    Committing { target_offset: u32 },
     CheckingBoot,
 }
 
@@ -131,7 +131,6 @@ pub(crate) enum Progress {
 struct TransferPolicy<'a> {
     commit: bool,
     device_id: Option<&'a str>,
-    target_offset: Option<u32>,
     progress: Option<&'a mut dyn FnMut(Progress)>,
 }
 
@@ -140,7 +139,6 @@ pub(crate) fn update_board(
     timeout: Duration,
     image: &PreparedImage,
     device_id: &str,
-    activate: Option<u32>,
     progress: &mut dyn FnMut(Progress),
     on_log: &mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>),
 ) -> io::Result<UploadResult> {
@@ -149,9 +147,8 @@ pub(crate) fn update_board(
         timeout,
         image,
         TransferPolicy {
-            commit: activate.is_some(),
+            commit: true,
             device_id: Some(device_id),
-            target_offset: activate,
             progress: Some(progress),
         },
         Some(on_log),
@@ -246,12 +243,6 @@ async fn run(
         0x310000 => 0x10000,
         _ => return Err(invalid("unexpected running slot")),
     };
-    if policy
-        .target_offset
-        .is_some_and(|offset| expected_target != offset)
-    {
-        return Err(invalid("the board changed boot slots since verification"));
-    }
     let mut log_stream = None;
     let mut cursor = ota_protocol::ReadLogsRequest::default();
     if let Some(callback) = on_log.as_mut() {
@@ -370,7 +361,9 @@ async fn run(
         )?;
         id += 1;
         let final_op = if commit {
-            progress(Progress::Committing);
+            progress(Progress::Committing {
+                target_offset: expected_target,
+            });
             Op::Commit(Default::default())
         } else {
             Op::Abort(Default::default())
