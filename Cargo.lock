@@ -521,6 +521,7 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-rtos",
+ "static_cell",
  "wifi-network",
 ]
 

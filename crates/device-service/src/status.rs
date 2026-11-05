@@ -7,12 +7,13 @@ pub async fn server(
     stack: Stack<'static>,
     identity: StatusResponse,
     flash: esp_storage::FlashStorage<'static>,
+    logs: &'static crate::DeviceLogs,
 ) {
     let mut identity = identity;
     let mut target = crate::flash_target::FlashTarget::new(flash);
     identity.ota_available = target.available;
 
-    let runtime = crate::runtime::Runtime::new();
+    let runtime = crate::runtime::Runtime::new(logs);
     if let Err(error) = target.confirm_running() {
         runtime.log(
             ota_protocol::LogSeverity::Error,

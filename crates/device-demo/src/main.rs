@@ -1,11 +1,15 @@
 #![no_std]
 #![no_main]
 
+use device_service::{DeviceLogs, LogSeverity};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{clock::CpuClock, ram};
 use esp_println::println;
+use static_cell::StaticCell;
+
+static LOGS: StaticCell<DeviceLogs> = StaticCell::new();
 
 esp_bootloader_esp_idf::esp_app_desc!(
     match option_env!("FIRMWARE_VERSION") {
@@ -47,6 +51,7 @@ async fn main(spawner: Spawner) -> ! {
             restart_initialization().await
         }
     };
+    let logs = LOGS.init(DeviceLogs::new());
     if let Err(error) = device_service::start_status(
         spawner,
         stack,
@@ -54,10 +59,12 @@ async fn main(spawner: Spawner) -> ! {
         option_env!("FIRMWARE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
         boot,
         flash,
+        logs,
     ) {
         println!("Device service initialization failed: {error}");
         restart_initialization().await;
     }
+    logs.log(LogSeverity::Info, "device-demo application ready");
     println!("device-demo ready: UNSIGNED DEVELOPMENT OTA; requires provisioned layout");
     loop {
         Timer::after(Duration::from_secs(10)).await;

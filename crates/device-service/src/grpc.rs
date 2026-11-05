@@ -127,7 +127,7 @@ impl Environment for DeviceEnvironment<'_> {
         cursor: &ota_protocol::ReadLogsRequest,
         cx: &mut core::task::Context<'_>,
     ) -> ota_protocol::ReadLogsResponse {
-        self.runtime.logs.read_and_subscribe(cursor, cx)
+        self.runtime.logs.store.read_and_subscribe(cursor, cx)
     }
     fn now_us(&self) -> u64 {
         Instant::now().as_micros()
