@@ -405,7 +405,7 @@ impl Dashboard {
             );
             frame.render_widget(
                 Line::styled(
-                    "↑↓ Choose   Enter Upload and verify   Esc Back",
+                    "↑↓ Choose   Enter Upload and verify   ← / Esc Back",
                     Style::new().fg(MUTED),
                 ),
                 hint,
@@ -604,8 +604,8 @@ impl Dashboard {
         } else {
             match self.focus {
                 Focus::Boards => "←→ Switch pane   ↑↓ Select board   Enter Actions",
-                Focus::Actions => "←→ Switch pane   ↑↓ Choose action   Enter Run",
-                Focus::Logs => "←→ Switch pane   ↑↓ Scroll logs   Enter Live",
+                Focus::Actions => "← Boards   → Logs   ↑↓ Choose   Enter Run   Esc Back",
+                Focus::Logs => "← Actions   → Boards   ↑↓ Scroll   Enter Live   Esc Boards",
             }
         };
         let shortcuts = if self.workflow.busy() {
@@ -739,7 +739,7 @@ async fn dashboard(
                         match key.code {
                             KeyCode::Up => app.workflow.previous_image(),
                             KeyCode::Down => app.workflow.next_image(),
-                            KeyCode::Esc => app.workflow.cancel_picker(),
+                            KeyCode::Left | KeyCode::Esc => app.workflow.cancel_picker(),
                             KeyCode::Enter if key.kind == KeyEventKind::Press => {
                                 app.workflow.verify_selected(
                                     app.targets.get(app.selected).map(|target| target.address),
@@ -789,6 +789,9 @@ async fn dashboard(
                             key.code
                         };
                     match command {
+                        KeyCode::Esc if !busy && app.focus != Focus::Boards => {
+                            app.focus = Focus::Boards;
+                        }
                         KeyCode::Char('q') | KeyCode::Esc if !busy => return Ok(()),
                         KeyCode::Char('c')
                             if !busy && key.modifiers.contains(KeyModifiers::CONTROL) =>

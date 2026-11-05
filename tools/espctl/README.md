@@ -28,7 +28,8 @@ Run the dashboard in an interactive terminal with a board running the gRPC
 management firmware. The dashboard uses its own dark palette on terminals
 with 256-color support. It scans the local network on launch. Use Left/Right
 or Tab to move between Boards, Actions, and Logs. Use Up/Down to select a board
-or action, and Enter to open or run the selection. In Logs, Up/Down or Page
+or action, and Enter to open or run the selection. From Actions, press Left
+or Esc to return to Boards. In Logs, Up/Down or Page
 Up/Page Down scroll the last 1,000 rows, and Enter or End returns to live
 output. Actions includes the severity filter and rescan. F, R, and Q are
 shortcuts for filtering, rescanning, and quitting. Status refreshes every two seconds alongside the live log
@@ -57,7 +58,7 @@ tracked files have local changes. Pass `-- VERSION` to override it. The export
 lands in `target/ota/<version>.bin`. Select a board, then choose **Firmware
 images** under Actions or press **U** to browse compatible binaries in
 `target/ota`. Use **↑/↓** to choose an image and **Enter** to write and verify
-the inactive slot. The picker reads
+the inactive slot. Press Left or Esc to leave the picker. The picker reads
 the version from the image. For an image elsewhere, launch with
 `tui --image /path/to/app.bin` and press **U**.
 
