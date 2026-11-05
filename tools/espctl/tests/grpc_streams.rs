@@ -39,6 +39,9 @@ impl device_grpc::Environment for Env {
     fn status(&self) -> ota_protocol::StatusResponse {
         ota_protocol::status("mock", "device-demo", "v1", 0).unwrap()
     }
+    fn read_logs(&self, cursor: &ReadLogsRequest) -> ota_protocol::ReadLogsResponse {
+        self.0.borrow().logs.read(cursor)
+    }
     fn logs(
         &self,
         cursor: &ReadLogsRequest,
@@ -406,6 +409,141 @@ async fn live_log_traffic_cannot_keep_an_abandoned_upload_holding_flash() {
             assert!(memory.try_borrow_mut().is_ok());
             drop(tx);
             drop(replies);
+        })
+        .await;
+}
+#[tokio::test]
+async fn unary_log_snapshot_does_not_replace_stream_wakeup() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut client, server, _, env) = fixture().await;
+            let mut stream = logs(&mut client, Default::default()).await.unwrap();
+            stream.message().await.unwrap().unwrap();
+            client.ready().await.unwrap();
+            let snapshot = client
+                .unary(
+                    tonic::Request::new(body(Op::ReadLogs(Default::default()), 1)),
+                    device_grpc::READ_LOGS_PATH.parse().unwrap(),
+                    RawCodec,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                response(&snapshot.into_inner()).payload,
+                Some(ResponsePayload::Logs(_))
+            ));
+            env.log("after snapshot");
+            let bytes = tokio::time::timeout(Duration::from_secs(1), stream.message())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let Some(ResponsePayload::Logs(batch)) = response(&bytes).payload else {
+                panic!()
+            };
+            assert!(batch.entries.iter().any(|e| e.message == "after snapshot"));
+            server.abort();
+            let _ = server.await;
+        })
+        .await;
+}
+#[tokio::test]
+async fn two_connections_share_exclusive_flash_without_sharing_idle_timeouts() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let target = Rc::new(RefCell::new(Memory(vec![0xff; 256 * 1024])));
+            let flash = target.clone();
+            let server = tokio::task::spawn_local(async move {
+                let mut sessions = tokio::task::JoinSet::new();
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let flash = flash.clone();
+                    sessions.spawn_local(async move {
+                        let watchdog = Rc::new(device_grpc::watchdog::UploadWatchdog::new());
+                        let timer = protolink::tokio::TokioTimer::new();
+                        let env = Env(Rc::new(RefCell::new(Events {
+                            logs: ota_protocol::logs::LogBuffer::new(1),
+                            wake: None,
+                            watchdog: watchdog.clone(),
+                            timer,
+                        })));
+                        let mut handler =
+                            device_grpc::StreamingManagement::new(&flash, 0x10000, env);
+                        let connection = protolink::tokio::server(stream)
+                            .with_config(device_grpc::config())
+                            .build()
+                            .serve(&mut handler);
+                        embassy_futures::select::select(connection, watchdog.expired(&timer)).await;
+                    });
+                }
+                while sessions.join_next().await.is_some() {}
+            });
+            let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+                .unwrap()
+                .connect()
+                .await
+                .unwrap();
+            let mut first = Client::new(channel);
+            let (tx, mut pending) = upload(&mut first).await.unwrap();
+            op(&tx, &mut pending, begin(&image(), "v1"), 1)
+                .await
+                .unwrap();
+            let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+                .unwrap()
+                .connect()
+                .await
+                .unwrap();
+            let mut second = Client::new(channel);
+            second.ready().await.unwrap();
+            second
+                .unary(
+                    tonic::Request::new(body(Op::Status(Default::default()), 1)),
+                    device_grpc::STATUS_PATH.parse().unwrap(),
+                    RawCodec,
+                )
+                .await
+                .unwrap();
+            let (other_tx, mut other) = upload(&mut second).await.unwrap();
+            assert_eq!(
+                op(&other_tx, &mut other, begin(&image(), "v1"), 1)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::ResourceExhausted
+            );
+            drop(other_tx);
+            drop(other);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(7), pending.message())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            drop(tx);
+            drop(first);
+            // The abandoned first upload must not close the second connection.
+            second.ready().await.unwrap();
+            second
+                .unary(
+                    tonic::Request::new(body(Op::Status(Default::default()), 2)),
+                    device_grpc::STATUS_PATH.parse().unwrap(),
+                    RawCodec,
+                )
+                .await
+                .unwrap();
+            let (tx, mut replies) = upload(&mut second).await.unwrap();
+            op(&tx, &mut replies, begin(&image(), "v1"), 1)
+                .await
+                .unwrap();
+            op(&tx, &mut replies, Op::Abort(Default::default()), 2)
+                .await
+                .unwrap();
+            assert!(replies.message().await.unwrap().is_none());
+            assert!(target.try_borrow_mut().is_ok());
+            server.abort();
+            let _ = server.await;
         })
         .await;
 }

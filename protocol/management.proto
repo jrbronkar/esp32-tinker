@@ -1,10 +1,11 @@
 syntax = "proto3";
 package esp.experimental;
 import "ota.proto";
-// Cleartext development HTTP/2 endpoint on port 7780. Upload supports explicit
+// Cleartext development HTTP/2 endpoint on port 7779. Upload supports explicit
 // Commit after Finish; clients await each ACK before sending the next operation.
 // The package name remains stable for clients of the initial prototype.
 service Management {
+  rpc ReadLogs(ota.Request) returns (ota.Response);
   rpc Logs(ota.Request) returns (stream ota.Response);
   rpc Upload(stream ota.Request) returns (stream ota.Response);
   rpc Status(ota.Request) returns (ota.Response);

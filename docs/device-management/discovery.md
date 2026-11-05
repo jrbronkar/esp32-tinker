@@ -23,13 +23,13 @@ Firmware uses `edge-mdns` to advertise `_espctl._tcp.local.`. The CLI uses
 | PTR | Lists service instances |
 | SRV | Gives each instance's target hostname and management port |
 | A | Resolves the target hostname to its current IPv4 address |
-| TXT | Carries id, application, firmware, protocol, state, ota, upload and grpc_port metadata |
+| TXT | Carries id, application, firmware, protocol, state, ota and transport metadata |
 
 Hostnames derive from each board's MAC. The client follows advertised SRV ports
 and A records rather than assuming a management endpoint. TXT keys and the
-protocol version are shared constants in `ota-protocol`. The status SRV port
-remains read-only; `upload=grpc` and `grpc_port=7780` identify the sole update
-transport. The CLI displays both addresses.
+protocol version are shared constants in `ota-protocol`. The SRV port
+identifies the single Management service. `transport=grpc` distinguishes it from
+older length-prefixed services; the CLI ignores incompatible transport records.
 
 The responder matches query names, record types and classes, including ANY
 queries and the mDNS unicast-response class bit. Related A/SRV/TXT records remain
@@ -37,7 +37,7 @@ available in the additional section. DNS parsing and serialization belong to the
 library; a small wrapper adds type/class matching to its name-based handler.
 
 TXT states are idle, receiving, verified and committing. The service task owns
-Runtime; concurrent read-only TCP, gRPC and mDNS futures borrow it. Upload
+Runtime; concurrent gRPC connections and mDNS futures borrow it. Upload
 completion/cancellation restores idle unless activation has been latched. State changes request fresh announcements.
 Fixed-size firmware buffers bound packet storage; records have a 60-second TTL
 and unique records use cache-flush semantics. Address records are rebuilt when

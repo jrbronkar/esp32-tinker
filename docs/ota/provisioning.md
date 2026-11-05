@@ -61,10 +61,10 @@ The image is built with your Wi-Fi credentials: keep it private. Nothing loads
 
 ## Upload, verify, then optionally activate
 
-Uploads use gRPC/HTTP2 on port **7780** by default, including the status preflight
+Uploads use gRPC/HTTP2 on port **7779** by default, including the status preflight
 on that same connection. Add `--logs` for concurrent server-push logs. `--port`
 overrides the gRPC endpoint. The separate status/profiling commands still use
-7779, which is read-only. The legacy OTA writer and CLI fallback are removed;
+7779 through the same gRPC Management service. The legacy OTA writer and CLI fallback are removed;
 there is no automatic protocol fallback or replay after an operation fails.
 Boards without working gRPC Commit require a normal USB update (or an older
 release's migration client) before the current CLI can update them. Preserve

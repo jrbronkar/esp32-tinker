@@ -1,4 +1,4 @@
-//! HTTP/2/gRPC management and OTA; the TCP status/log endpoint is read-only.
+//! Two bounded HTTP/2 connections on the single management port.
 use core::time::Duration as CoreDuration;
 use device_grpc::protolink;
 use device_grpc::{Environment, StreamingManagement, UploadEvent};
@@ -27,6 +27,25 @@ pub async fn serve(
     target: &core::cell::RefCell<crate::flash_target::FlashTarget>,
     target_offset: u32,
 ) {
+    embassy_futures::join::join(
+        serve_connection(stack, identity, runtime, target, target_offset, 0),
+        serve_connection(stack, identity, runtime, target, target_offset, 1),
+    )
+    .await;
+}
+struct Connection {
+    watchdog: device_grpc::watchdog::UploadWatchdog,
+    reboot: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>,
+    activation_started: core::cell::Cell<bool>,
+}
+async fn serve_connection(
+    stack: Stack<'static>,
+    identity: &ota_protocol::StatusResponse,
+    runtime: &crate::runtime::Runtime,
+    target: &core::cell::RefCell<crate::flash_target::FlashTarget>,
+    target_offset: u32,
+    slot: usize,
+) {
     let mut rx = [0; 1024];
     let mut tx = [0; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx, &mut tx);
@@ -34,10 +53,20 @@ pub async fn serve(
     loop {
         stack.wait_config_up().await;
         if socket.accept(device_grpc::PORT).await.is_ok() {
+            let connection_state = Connection {
+                watchdog: Default::default(),
+                reboot: Default::default(),
+                activation_started: core::cell::Cell::new(false),
+            };
             let mut handler = StreamingManagement::new(
                 target,
                 target_offset,
-                DeviceEnvironment { identity, runtime },
+                DeviceEnvironment {
+                    identity,
+                    runtime,
+                    connection: &connection_state,
+                    slot,
+                },
             );
             {
                 let (reader, writer) = socket.split();
@@ -50,14 +79,14 @@ pub async fn serve(
                         .serve(&mut handler),
                 );
                 let reboot = async {
-                    runtime.reboot.wait().await;
+                    connection_state.reboot.wait().await;
                     // Give the driver a bounded opportunity to send the commit ACK and
                     // trailers even when another RPC (such as Logs) remains open.
                     Timer::after_secs(2).await;
                 };
                 let stop = embassy_futures::select::select(
                     reboot,
-                    runtime.upload_watchdog.expired(&EmbassyClock),
+                    connection_state.watchdog.expired(&EmbassyClock),
                 );
                 if let embassy_futures::select::Either::Second(
                     embassy_futures::select::Either::Second(()),
@@ -70,7 +99,8 @@ pub async fn serve(
                 }
             }
             drop(handler);
-            if runtime.activation_pending.get() {
+            runtime.log_waker.borrow_mut()[slot] = None;
+            if connection_state.activation_started.get() {
                 // Flush bytes already handed to TCP before reset. This is best
                 // effort: a lost ACK still leaves commit outcome uncertain.
                 let _ = with_timeout(Duration::from_millis(500), socket.flush()).await;
@@ -97,6 +127,8 @@ pub async fn serve(
 struct DeviceEnvironment<'a> {
     identity: &'a ota_protocol::StatusResponse,
     runtime: &'a crate::runtime::Runtime,
+    connection: &'a Connection,
+    slot: usize,
 }
 impl Environment for DeviceEnvironment<'_> {
     fn status(&self) -> ota_protocol::StatusResponse {
@@ -110,8 +142,14 @@ impl Environment for DeviceEnvironment<'_> {
         cursor: &ota_protocol::ReadLogsRequest,
         cx: &mut core::task::Context<'_>,
     ) -> ota_protocol::ReadLogsResponse {
-        *self.runtime.log_waker.borrow_mut() = Some(cx.waker().clone());
+        self.runtime.log_waker.borrow_mut()[self.slot] = Some(cx.waker().clone());
         self.runtime.logs.borrow().read(cursor)
+    }
+    fn read_logs(&self, cursor: &ota_protocol::ReadLogsRequest) -> ota_protocol::ReadLogsResponse {
+        self.runtime.logs.borrow().read(cursor)
+    }
+    fn now_us(&self) -> u64 {
+        Instant::now().as_micros()
     }
     fn activation_pending(&self) -> bool {
         self.runtime.activation_pending.get()
@@ -119,12 +157,12 @@ impl Environment for DeviceEnvironment<'_> {
     fn event(&self, event: UploadEvent) {
         match event {
             UploadEvent::Receiving | UploadEvent::ChunkWritten { .. } | UploadEvent::Verified => {
-                self.runtime
-                    .upload_watchdog
+                self.connection
+                    .watchdog
                     .activity(CoreDuration::from_micros(Instant::now().as_micros()));
             }
             UploadEvent::Released | UploadEvent::ActivationPending => {
-                self.runtime.upload_watchdog.clear()
+                self.connection.watchdog.clear()
             }
             UploadEvent::Committed => {}
         }
@@ -132,7 +170,8 @@ impl Environment for DeviceEnvironment<'_> {
             UploadEvent::ActivationPending => {
                 self.runtime.activation_pending.set(true);
                 self.runtime.transition(crate::runtime::State::Committing);
-                self.runtime.reboot.signal(());
+                self.connection.activation_started.set(true);
+                self.connection.reboot.signal(());
             }
             UploadEvent::Receiving => self.runtime.transition(crate::runtime::State::Receiving),
             UploadEvent::Verified => self.runtime.transition(crate::runtime::State::Verified),

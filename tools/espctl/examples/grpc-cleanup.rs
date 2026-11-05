@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let image = std::fs::read(&args[2])?;
     tokio::time::timeout(Duration::from_secs(15),async {
-        let channel=tonic::transport::Endpoint::from_shared(format!("http://{}:7780",args[1]))?.connect().await?;
+        let channel=tonic::transport::Endpoint::from_shared(format!("http://{}:7779",args[1]))?.connect().await?;
         let mut client=Client::new(channel);
         client.ready().await?;
         let reply=client.unary(tonic::Request::new(body(Op::Status(Default::default()),1)),device_grpc::STATUS_PATH.parse()?,RawCodec).await?;

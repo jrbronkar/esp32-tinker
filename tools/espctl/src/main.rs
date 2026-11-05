@@ -88,7 +88,7 @@ struct UploadArgs {
     #[arg(long)]
     logs: bool,
     #[command(flatten)]
-    target: UploadTargetArgs,
+    target: TargetArgs,
     /// Application-only .bin exported by espflash (not ELF or a merged image)
     #[arg(long)]
     image: std::path::PathBuf,
@@ -101,24 +101,12 @@ struct UploadArgs {
 }
 
 #[derive(Args)]
-struct UploadTargetArgs {
-    #[arg(long, value_name = "IP")]
-    host: IpAddr,
-    /// gRPC upload port
-    #[arg(long, default_value_t = device_grpc::PORT, value_parser = clap::value_parser!(u16).range(1..))]
-    port: u16,
-    /// Per-operation timeout in milliseconds (180-second total upload deadline)
-    #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..=60000))]
-    timeout_ms: u64,
-}
-
-#[derive(Args)]
 struct TargetArgs {
     /// Device IPv4 or IPv6 address (not a URL or hostname)
     #[arg(long, value_name = "IP")]
     host: IpAddr,
 
-    /// Device TCP port
+    /// gRPC management port
     #[arg(long, default_value_t = ota_protocol::PORT, value_parser = clap::value_parser!(u16).range(1..))]
     port: u16,
 
@@ -202,18 +190,14 @@ fn run_discover(args: DiscoverArgs) -> Result<(), String> {
             );
         } else {
             println!(
-                "{:<34} {:<22} {:<22} {:<22} {:<14} OTA",
-                "Device", "Status address", "Upload (gRPC)", "Firmware", "Advertised state"
+                "{:<34} {:<22} {:<22} {:<14} OTA",
+                "Device", "Management (gRPC)", "Firmware", "Advertised state"
             );
             for device in result.devices {
                 println!(
-                    "{:<34} {:<22} {:<22} {:<22} {:<14} {}",
+                    "{:<34} {:<22} {:<22} {:<14} {}",
                     device.device_id.escape_debug().to_string(),
                     device.address,
-                    device
-                        .upload_address
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|| "-".into()),
                     device.firmware.escape_debug().to_string(),
                     device.management_state.escape_debug().to_string(),
                     if device.ota_available { "yes" } else { "no" }
@@ -317,13 +301,9 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     }
     if args.timings {
         if let Some(device) = status.timings() {
-            println!(
-                "Device read: {} us (accept to complete request)",
-                device.request_read_us
-            );
+            println!("Device read: unavailable at the gRPC handler boundary");
             println!("Device decode: {} us", device.decode_us);
             println!("Device prepare: {} us", device.prepare_us);
-            println!("Device send/ACK/close timings: see STATUS_TRACE in serial logs");
         } else {
             println!("Device timings unavailable; flash the instrumented device-demo");
         }
@@ -334,9 +314,11 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
             ms(t.retry_wait),
             t.refused_connects
         );
-        println!("Encode/send: {:.3} ms", ms(t.write));
-        println!("First byte:  {:.3} ms after request sent", ms(t.first_byte));
-        println!("Read rest:   {:.3} ms after first byte", ms(t.read));
+        println!("Encode:      {:.3} ms", ms(t.encode));
+        println!(
+            "RPC response:{:.3} ms (send, server work, body and trailers)",
+            ms(t.rpc)
+        );
         println!("Decode/check:{:.3} ms", ms(t.decode_validate));
     }
     Ok(())
@@ -349,7 +331,7 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
     let mut device_timings = Vec::new();
     if args.csv {
         println!(
-            "sample,total_ms,connect_ms,retry_wait_ms,write_ms,first_byte_ms,read_ms,decode_validate_ms,refused_connects,device_read_us,device_decode_us,device_prepare_us"
+            "sample,total_ms,connect_ms,retry_wait_ms,encode_ms,rpc_ms,decode_validate_ms,refused_connects,device_decode_us,device_prepare_us"
         );
     }
     for index in 1..=args.samples {
@@ -359,21 +341,15 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                 let t = query.timings;
                 if args.csv {
                     println!(
-                        "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{}",
+                        "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{}",
                         index,
                         ms(t.total),
                         ms(t.connect),
                         ms(t.retry_wait),
-                        ms(t.write),
-                        ms(t.first_byte),
-                        ms(t.read),
+                        ms(t.encode),
+                        ms(t.rpc),
                         ms(t.decode_validate),
                         t.refused_connects,
-                        query
-                            .status
-                            .timings()
-                            .map(|d| d.request_read_us.to_string())
-                            .unwrap_or_default(),
                         query
                             .status
                             .timings()
@@ -419,12 +395,8 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                 "retry wait*",
                 samples.iter().map(|t| ms(t.retry_wait)).collect(),
             ),
-            ("encode/send", samples.iter().map(|t| ms(t.write)).collect()),
-            (
-                "first byte",
-                samples.iter().map(|t| ms(t.first_byte)).collect(),
-            ),
-            ("read rest", samples.iter().map(|t| ms(t.read)).collect()),
+            ("encode", samples.iter().map(|t| ms(t.encode)).collect()),
+            ("rpc", samples.iter().map(|t| ms(t.rpc)).collect()),
             (
                 "decode/check",
                 samples.iter().map(|t| ms(t.decode_validate)).collect(),
@@ -451,15 +423,11 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
             );
             for (name, mut values) in [
                 (
-                    "read request",
+                    "decode",
                     device_timings
                         .iter()
-                        .map(|d| d.request_read_us)
+                        .map(|d| d.decode_us)
                         .collect::<Vec<_>>(),
-                ),
-                (
-                    "decode",
-                    device_timings.iter().map(|d| d.decode_us).collect(),
                 ),
                 (
                     "prepare",
@@ -471,7 +439,6 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                     (values[(values.len() - 1) / 2] as f64 + values[values.len() / 2] as f64) / 2.0;
                 println!("  {name}: median {median:.1} us");
             }
-            println!("Encoding, enqueue, ACK and close: STATUS_TRACE serial logs.");
         }
         println!(
             "* Retry wait is included in connect. Refused connects: {}. Host timing, not device CPU time.",

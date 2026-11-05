@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use ota_protocol::{Request, RequestPayload, Response, ResponsePayload, StatusResponse};
 use protolink::{CallContext, Handler, MethodKind, Route, ServerConfig, Status};
 
-pub const PORT: u16 = 7780;
+pub const PORT: u16 = ota_protocol::PORT;
 pub const STATUS_PATH: &str = "/esp.experimental.Management/Status";
 
 /// Small prototype limits, not a measured peak heap guarantee.
@@ -31,24 +31,43 @@ impl<F: FnMut() -> StatusResponse> Handler for Management<F> {
         (path == STATUS_PATH).then_some(Route::new(MethodKind::Unary, 0))
     }
     fn call(&mut self, _: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
-        let request: Request = ota_protocol::decode(request)
-            .map_err(|_| Status::invalid_argument("invalid management request"))?;
-        if request.protocol_version != ota_protocol::VERSION
-            || !matches!(request.payload, Some(RequestPayload::Status(_)))
-        {
-            return Err(Status::invalid_argument(
-                "expected protocol v1 status request",
-            ));
-        }
-        let response = Response {
-            protocol_version: ota_protocol::VERSION,
-            request_id: request.request_id,
-            payload: Some(ResponsePayload::Status((self.0)())),
-        };
-        ota_protocol::encode(&response)
-            .map(|bytes| bytes.as_slice().to_vec())
-            .map_err(|_| Status::internal("status encoding failed"))
+        status_response(request, || (self.0)(), || 0)
     }
+}
+
+fn status_response(
+    request: &[u8],
+    status: impl FnOnce() -> StatusResponse,
+    now: impl Fn() -> u64,
+) -> Result<Vec<u8>, Status> {
+    let started = now();
+    let request: Request = ota_protocol::decode(request)
+        .map_err(|_| Status::invalid_argument("invalid management request"))?;
+    let Some(RequestPayload::Status(options)) = request.payload else {
+        return Err(Status::invalid_argument("expected status request"));
+    };
+    if request.protocol_version != ota_protocol::VERSION {
+        return Err(Status::invalid_argument("expected protocol v1"));
+    }
+    let decoded = now();
+    let mut current = status();
+    if !options.include_boot {
+        current.clear_boot();
+    }
+    if options.include_timings {
+        current.set_timings(ota_protocol::DeviceTimings {
+            request_read_us: 0,
+            decode_us: decoded.saturating_sub(started),
+            prepare_us: now().saturating_sub(decoded),
+        });
+    } else {
+        current.clear_timings();
+    }
+    encode(&Response {
+        protocol_version: ota_protocol::VERSION,
+        request_id: request.request_id,
+        payload: Some(ResponsePayload::Status(current)),
+    })
 }
 
 use core::{
@@ -57,6 +76,7 @@ use core::{
 };
 use ota_protocol::{ReadLogsRequest, ReadLogsResponse, UploadAck, UploadPhase};
 use protolink::{CallId, Next};
+pub const READ_LOGS_PATH: &str = "/esp.experimental.Management/ReadLogs";
 pub const LOGS_PATH: &str = "/esp.experimental.Management/Logs";
 pub const UPLOAD_PATH: &str = "/esp.experimental.Management/Upload";
 
@@ -90,6 +110,10 @@ impl core::fmt::Display for UploadEvent {
 pub trait Environment {
     fn status(&self) -> StatusResponse;
     fn logs(&self, cursor: &ReadLogsRequest, cx: &mut Context<'_>) -> ReadLogsResponse;
+    fn read_logs(&self, cursor: &ReadLogsRequest) -> ReadLogsResponse;
+    fn now_us(&self) -> u64 {
+        0
+    }
     fn event(&self, event: UploadEvent);
     fn activation_pending(&self) -> bool {
         false
@@ -292,13 +316,29 @@ impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T,
     fn route(&self, path: &str) -> Option<Route> {
         match path {
             STATUS_PATH => Some(Route::new(MethodKind::Unary, 0)),
+            READ_LOGS_PATH => Some(Route::new(MethodKind::Unary, 3)),
             LOGS_PATH => Some(Route::new(MethodKind::ServerStreaming, 1)),
             UPLOAD_PATH => Some(Route::new(MethodKind::BidiStreaming, 2)),
             _ => None,
         }
     }
     fn call(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
-        Management(|| self.env.status()).call(ctx, request)
+        if ctx.route.method == 3 {
+            let request: Request = ota_protocol::decode(request)
+                .map_err(|_| Status::invalid_argument("invalid log request"))?;
+            if request.protocol_version != ota_protocol::VERSION {
+                return Err(Status::invalid_argument("expected protocol v1"));
+            }
+            let Some(RequestPayload::ReadLogs(cursor)) = request.payload else {
+                return Err(Status::invalid_argument("expected log cursor"));
+            };
+            return encode(&Response {
+                protocol_version: ota_protocol::VERSION,
+                request_id: request.request_id,
+                payload: Some(ResponsePayload::Logs(self.env.read_logs(&cursor))),
+            });
+        }
+        status_response(request, || self.env.status(), || self.env.now_us())
     }
     fn on_message(&mut self, ctx: &mut CallContext<'_>, message: &[u8]) -> Result<(), Status> {
         let result = self.message(ctx, message);
@@ -376,5 +416,48 @@ impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T,
 impl<T: ota_core::Target, E: Environment> Drop for StreamingManagement<'_, T, E> {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use core::cell::Cell;
+    fn current() -> StatusResponse {
+        let mut status = ota_protocol::status("mock", "device-demo", "v1", 1).unwrap();
+        status.set_boot(ota_protocol::BootInfo::default());
+        status
+    }
+    #[test]
+    fn status_honors_boot_and_timing_flags() {
+        for include in [false, true] {
+            let request = Request {
+                protocol_version: 1,
+                request_id: 1,
+                payload: Some(RequestPayload::Status(ota_protocol::StatusRequest {
+                    include_boot: include,
+                    include_timings: include,
+                })),
+            };
+            let clock = Cell::new(0u64);
+            let response =
+                status_response(&ota_protocol::encode(&request).unwrap(), current, || {
+                    let n = clock.get();
+                    clock.set(n + 5);
+                    n
+                })
+                .unwrap();
+            let response: Response = ota_protocol::decode(&response).unwrap();
+            let Some(ResponsePayload::Status(status)) = response.payload else {
+                panic!()
+            };
+            assert_eq!(status.boot().is_some(), include);
+            assert_eq!(status.timings().is_some(), include);
+            if let Some(t) = status.timings() {
+                assert_eq!(t.request_read_us, 0);
+                assert_eq!(t.decode_us, 5);
+                assert_eq!(t.prepare_us, 5);
+            }
+        }
     }
 }

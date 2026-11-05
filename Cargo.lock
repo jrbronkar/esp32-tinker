@@ -1297,6 +1297,7 @@ dependencies = [
  "device-grpc",
  "edge-mdns",
  "embassy-futures",
+ "hyper-util",
  "mdns-sd",
  "ota-core",
  "ota-protocol",
@@ -1304,6 +1305,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tower",
 ]
 
 [[package]]

@@ -47,6 +47,7 @@ message StatusResponse {
 // Device monotonic elapsed wall time, including executor preemption.
 // Encoding, enqueue, ACK, and close occur later and are logged over serial.
 message DeviceTimings {
+  // Reserved legacy measurement; zero for gRPC (handler receives a complete body).
   uint64 request_read_us = 1;
   uint64 decode_us = 2;
   uint64 prepare_us = 3;

@@ -20,7 +20,6 @@ const MAX_STATE_BYTES: usize = 16;
 #[derive(Debug, Clone)]
 pub struct Device {
     pub address: SocketAddr,
-    pub upload_address: Option<SocketAddr>,
     pub device_id: String,
     pub firmware: String,
     pub management_state: String,
@@ -52,6 +51,7 @@ impl Collector {
         self.devices.retain(|(instance, _), _| instance != name);
         if info.ty_domain != ota_protocol::SERVICE_TYPE
             || info.get_port() == 0
+            || info.get_property_val_str(txt::TRANSPORT) != Some("grpc")
             || info.get_property_val_str(txt::PROTOCOL) != Some(ota_protocol::VERSION_TXT)
         {
             return;
@@ -72,13 +72,6 @@ impl Collector {
             .get_property_val_str(txt::STATE)
             .filter(|s| s.len() <= MAX_STATE_BYTES)
             .unwrap_or("unknown");
-        let upload_port = (info.get_property_val_str(txt::UPLOAD) == Some("grpc"))
-            .then(|| {
-                info.get_property_val_str(txt::GRPC_PORT)
-                    .and_then(|s| s.parse::<u16>().ok())
-                    .filter(|p| *p != 0)
-            })
-            .flatten();
         for ip in info.get_addresses_v4() {
             if ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
                 continue;
@@ -92,7 +85,6 @@ impl Collector {
                 (name.to_owned(), address),
                 Device {
                     address,
-                    upload_address: upload_port.map(|port| SocketAddr::new(ip.into(), port)),
                     device_id: id.to_owned(),
                     firmware: firmware.to_owned(),
                     management_state: state.to_owned(),
@@ -168,8 +160,7 @@ mod tests {
                 (txt::PROTOCOL, "1"),
                 (txt::STATE, "verified"),
                 (txt::OTA, "1"),
-                (txt::UPLOAD, "grpc"),
-                (txt::GRPC_PORT, "34567"),
+                (txt::TRANSPORT, "grpc"),
             ]
             .as_slice(),
         )
@@ -186,10 +177,6 @@ mod tests {
         assert_eq!(r.devices[0].address, "192.0.2.2:23456".parse().unwrap());
         assert_eq!(r.devices[0].management_state, "verified");
         assert!(r.devices[0].ota_available);
-        assert_eq!(
-            r.devices[0].upload_address,
-            Some("192.0.2.2:34567".parse().unwrap())
-        );
     }
     #[test]
     fn removal_clears_instance_and_duplicates_do_not_multiply() {
@@ -209,6 +196,23 @@ mod tests {
         let mut c = Collector::default();
         let bad = info("bad", 0, "192.0.2.1");
         c.resolved(&bad);
+        assert!(c.devices.is_empty());
+        let old_transport = mdns_sd::ServiceInfo::new(
+            ota_protocol::SERVICE_TYPE,
+            "legacy",
+            "device.local.",
+            "192.0.2.1",
+            7779,
+            [
+                (txt::ID, "board"),
+                (txt::FIRMWARE, "test"),
+                (txt::PROTOCOL, "1"),
+            ]
+            .as_slice(),
+        )
+        .unwrap()
+        .as_resolved_service();
+        c.resolved(&old_transport);
         assert!(c.devices.is_empty());
         for i in 0..70 {
             c.resolved(&info(&format!("device-{i}"), 123, "192.0.2.1"));

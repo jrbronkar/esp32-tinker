@@ -190,16 +190,15 @@ The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telem
 ## Device management and development OTA
 
 The sensor-free `device-demo` firmware serves gRPC management and OTA over
-HTTP/2 on TCP **7780**, enabled in the default build. The existing Protobuf TCP
-status/log service remains on **7779**. DNS-SD advertises `_espctl._tcp.local.`;
-`espctl discover` displays the status and gRPC upload endpoints. The Mac connects
+HTTP/2 on TCP **7779**, enabled in the default build. One `Management` service
+provides status, log snapshots/streams and uploads. DNS-SD advertises
+`_espctl._tcp.local.`; `espctl discover` displays its single gRPC endpoint. The Mac connects
 directly to the board without a cloud service or separate backend.
 
 `espctl upload` uses gRPC by default. Add `--logs` to stream management logs over
 the same HTTP/2 connection during transfer, and `--commit` to activate the
 verified image and reboot. Without `--commit`, the current application remains
-selected. Legacy OTA and `--legacy` have been removed; port 7779 accepts only
-read-only status/log requests. USB/BOOT/RESET remains the recovery path.
+selected. The legacy TCP listener, OTA transport and `--legacy` have been removed. USB/BOOT/RESET remains the recovery path.
 
 The firmware exposes device identity, version, uptime, OTA availability and boot
 inventory. Uploads require the supported partition layout. USB/BOOT/RESET remains

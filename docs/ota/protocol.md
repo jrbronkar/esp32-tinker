@@ -1,6 +1,6 @@
 # Management and OTA protocol
 
-Firmware updates use standard HTTP/2 and gRPC on TCP **7780**, implemented by
+All management operations use standard HTTP/2 and gRPC on TCP **7779**, implemented by
 pinned Protolink. The schema is [`management.proto`](../../protocol/management.proto),
 using the fixed-capacity messages in [`ota.proto`](../../protocol/ota.proto).
 See [implementation, limits and validation](../device-management/protolink.md).
@@ -11,6 +11,7 @@ The `esp.experimental` service name is retained for client compatibility.
 | RPC | Shape | Payload |
 | --- | --- | --- |
 | Management/Status | Unary | Status request and current identity/boot information |
+| Management/ReadLogs | Unary | One retained-log snapshot for polling/follow |
 | Management/Logs | Server streaming | One cursor request; batches of up to four retained records |
 | Management/Upload | Bidirectional streaming | Ordered Begin/Chunk/Finish/Commit or Abort operations and ACKs |
 
@@ -57,18 +58,15 @@ clear the watchdog; pending activation uses the reboot path instead.
 The connection also has a ten-second TCP inactivity timeout and a 180-second
 absolute lifetime. Client-requested gRPC deadlines can expire sooner.
 
-## Read-only TCP endpoint
+## Single endpoint and discovery
 
-TCP **7779** remains for status, profiling and log polling. A four-byte big-endian
-length precedes a body of 1–512 bytes. Only Status and ReadLogs are served;
-Begin, Chunk, Finish, Commit and Abort are rejected as InvalidRequest. The
-listener has no flash target reference and cannot dispatch an OTA writer.
-The old upload transport, CLI `--legacy` and its manual harness are removed.
+One Management service serves every RPC on TCP **7779**. Two bounded connections
+allow a second client to query status during an upload. Connections have independent
+idle watchdogs and share one exclusive flash lease. The raw TCP listener and the
+separate port 7780 are removed; old length-prefixed clients must be updated.
 
-## Discovery and limits
-
-DNS-SD `_espctl._tcp.local.` advertises the read-only status port, identity,
-firmware, state, OTA availability, `upload=grpc` and `grpc_port=7780`.
+DNS-SD `_espctl._tcp.local.` advertises this single endpoint using the SRV port,
+identity, firmware, state, OTA availability and `transport=grpc`.
 
 Image layout/bounds and boot selection are unchanged by the transport migration.
 Unsigned development updates remain unauthenticated and unencrypted. TLS,

@@ -1,9 +1,10 @@
 # Concurrent gRPC management and OTA
 
-Every `device-demo` build includes cleartext HTTP/2/gRPC on TCP **7780**. gRPC is
-the sole OTA transport. TCP **7779** remains read-only for status, profiling and
-log polling. The legacy writer, CLI `--legacy`, old manual upload harness and
-optional `experimental-grpc` feature are removed. USB/BOOT/RESET is recovery.
+Every `device-demo` build exposes one cleartext HTTP/2/gRPC Management service
+on TCP **7779**, serving Status, ReadLogs, Logs and Upload. The old raw TCP
+listener and separate TCP 7780 listener are removed. Two bounded connections
+share one flash lease; each has its own upload watchdog and reboot ownership.
+UDP 5353 remains for mDNS discovery.
 
 Protolink is pinned to `62cc2c87a687ba65fc6885e7c9691cefacf2d064`; Cargo.lock pins
 zerodds HTTP/2 and HPACK to 1.0.0-rc.7. The original `esp.experimental.Management`
@@ -13,13 +14,13 @@ service name remains stable. Raw Handler protobuf bodies use existing micropb
 ## API and resource limits
 
 See [protocol](../ota/protocol.md) and `protocol/management.proto`. Status is
-unary, Logs is server streaming, and Upload is bidirectional streaming. Upload
+and ReadLogs are unary, Logs is server streaming, and Upload is bidirectional streaming. Upload
 operations are Begin, ordered sector-sized Chunk, Finish, then explicit Commit
 or Abort. Clients await each correlated ACK. Finish validates the actual stored
 image; the complete firmware is never buffered in device RAM.
 
-Two active streams, two fixed subscription slots and one upload lease are
-allowed per connection. Each upload has one pending ACK. Receive windows are
+Two active streams and two fixed subscription slots are allowed per connection.
+One flash lease is shared across both connections. Each upload has one pending ACK. Receive windows are
 8192 bytes per stream, the connection window is 65535 (the HTTP/2 minimum),
 decoded headers are capped at 1024, serialized output at 8192 and messages at
 4608. Responses are bounded to 512 bytes. Compression is disabled.
@@ -56,7 +57,7 @@ are uncertain outcomes, never automatic retries.
 | No replay, lost commit ACK and metadata errors | Tests include actual TCP cuts before/after Commit and storage failure |
 | Cancellation, disconnect and exclusive ownership | Tonic tests and repeated board Begin/Abort/resubscription probes |
 | Five-second upload inactivity | Virtual-clock tests, live-log TCP test and hardware PING/idle probe |
-| Retained status, boot inventory and logs | Existing read-only TCP endpoint plus gRPC status/streaming logs |
+| Retained status, boot inventory and logs | Single gRPC service: status/boot inventory, snapshot and streaming logs |
 | Concurrent transfer/log progress | One-connection Tonic and hardware probes, including a stalled log window |
 
 TLS/authentication, automatic rollback and dependable power-loss recovery were
@@ -64,13 +65,13 @@ not implemented by legacy OTA and are not claimed as parity guarantees.
 
 ## Automated validation
 
-`cargo test` includes **64 tests**. All pass. Transport tests accept exactly one
-TCP connection and use independent Tonic/h2 clients against the actual Handler.
+`cargo test` includes **66 tests**. All pass. Transport tests use independent
+Tonic/h2 clients against the actual Handler, including one-connection streaming
+and two-client admission/timeout cases.
 Coverage includes malformed protobuf/ACKs, all metadata/digest/order categories,
 pre-verification commit rejection, activation write blocking, before/after-commit
 TCP loss, log errors without loss of commit context, cancellation, deadlines,
-flow-control isolation, overwritten history and read-only rejection of every
-old upload opcode. The watchdog's reset/clear/expiry behavior is tested with
+flow-control isolation, overwritten history, status flags and gRPC polling. The watchdog's reset/clear/expiry behavior is tested with
 virtual time; another TCP test generates live logs during an abandoned upload.
 
 The ESP32-S3 default release build passes without extra features. Formatting and
@@ -79,6 +80,26 @@ nightly; the default Clippy selects Rust 1.79. Host mocks do not establish flash
 power-loss behavior or worst-case scheduling/heap/stack bounds.
 
 ## Hardware evidence, 2026-11-04
+
+Single-service validation (`grpc-single-1`): migrated by gRPC with concurrent
+logs and committed a 626128-byte image to ota_0. Status/boot inventory, profiling
+(including CSV), snapshot polling and discovery all used TCP 7779. Discovery
+reported one endpoint while state was receiving. A second client queried status
+during an upload; competing Begin was rejected. The abandoned upload expired
+about five seconds after its last operation despite PINGs; Begin/Abort then
+succeeded, and TCP 7780 refused connections. Cancellation/resubscription probes
+passed. All 153 chunk logs arrived before their next chunks during a full
+verify-only transfer; a second full transfer verified with log consumption
+stalled at a 1024-byte window and reported overwrite on resumption. Concurrent
+polling/profiling passed; observed heap peak was 74828/102400 bytes. These runs
+are samples, not worst-case memory guarantees.
+
+A second 626128-byte image (`grpc-single-2`) uploaded with live logs and an
+acknowledged Commit through default port 7779. Post-reboot status confirmed
+ota_1 at 0x310000, idle and OTA available. The single-service firmware therefore
+updated itself without the retired endpoint.
+
+Earlier migration evidence (before endpoint consolidation):
 
 Identity checked before writes: `esp32s3-a4:cb:8f:d8:13:c8` at `10.128.248.68`.
 Expected layout: 16 MiB flash with two 3 MiB application slots.
@@ -134,3 +155,5 @@ probe requires uniquely identified chunk logs before sending the next chunk;
 stale retained records cannot count as current progress. The stalled variant
 requires a dropped-history indication on resumption. See [provisioning and
 recovery](../ota/provisioning.md) and [test limits](../ota/testing.md).
+
+Earlier results above mentioning separate endpoints or legacy-write rejection describe firmware before the single-service consolidation.

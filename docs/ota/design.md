@@ -1,7 +1,8 @@
 # OTA design
 
 Every `device-demo` build includes gRPC/HTTP2 management and unsigned development
-updates on TCP 7780. TCP 7779 is read-only for status, profiling and log polling.
+updates on TCP 7779. One Management gRPC service also handles status, profiling,
+log snapshots and streams; the raw TCP listener is removed.
 Legacy OTA is removed after feature-parity checks; USB/BOOT/RESET is recovery.
 
 ## Architecture and ownership

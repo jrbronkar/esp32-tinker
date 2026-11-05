@@ -1,8 +1,9 @@
 # espctl: device status, profiling, and development OTA
 
 A Mac CLI for querying and updating one board by IP using
-bounded Protobuf messages. Uploads use gRPC/HTTP2 on 7780, with optional live logs
-on the same connection; TCP 7779 remains read-only for status and log polling.
+bounded Protobuf messages. One Management gRPC/HTTP2 service on TCP 7779 serves
+status, profiling, log snapshots/streams and uploads. Upload and live logs share
+one connection; a second client can query the same port concurrently.
 Updates require provisioned `device-demo` firmware. Legacy OTA and `--legacy`
 have been removed; recovery uses USB/BOOT/RESET.
 
@@ -60,7 +61,7 @@ cargo run -p espctl -- upload --host 10.128.248.68 \
   --image target/ota/ota-next.bin --firmware-version ota-next --logs --commit
 ```
 
-Upload defaults: `--port 7780`, `--timeout-ms 5000`, 180-second total deadline.
+Upload defaults: `--port 7779`, `--timeout-ms 5000`, 180-second total deadline.
 The firmware also releases an upload after five seconds without an accepted
 upload operation, even when HTTP/2/log traffic continues.
 
@@ -82,7 +83,7 @@ cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
 ```
 
 These check per-chunk live logs, flow-control isolation, cancellation, idle
-expiry and read-only rejection of removed legacy writes. Tonic integration tests
+expiry, concurrent status clients and closure of the retired port 7780. Tonic integration tests
 and shared host helpers also live in this package. See [test details and
 limits](../../docs/ota/testing.md).
 
@@ -110,34 +111,20 @@ cargo run -p espctl -- profile --host 10.128.248.68 --samples 50 --interval-ms 1
 queries. Each sample opens a fresh connection. Failures go to stderr and cause a
 nonzero exit after sampling; CSV has one row per successful query. The interval
 is a pause between completed samples, excluded from latency. `--timings` splits
-status into connect (including retry wait), encode/send, first response byte,
-remaining bytes, and local decode/validation. These are host observations, not
-ESP32 CPU timings. Retry wait is already included in connect; do not add it twice.
+status into TCP connect (including retry wait), protobuf encode, RPC response
+(including HTTP/2 setup, send, server processing, body and trailers), and local
+decode/validation. Retry wait is already included in connect.
 Defaults: 30 samples, 100 ms interval. Max samples: 1000.
 
-`--timings` and `profile` request optional ESP32 diagnostics. Instrumented firmware
-returns read/decode/prepare elapsed microseconds and prints `STATUS_TRACE` serial
-lines for encode, enqueue, ACK wait, and close. Ordinary status does not request
-these logs. Older firmware reports device timings unavailable; CSV device columns
-are blank. Device durations include task preemption and overlap host/network
-phases; do not add all durations together or treat them as pure CPU time.
-
-Build and flash the instrumented version with your exported Wi-Fi settings:
-
-```sh
-FIRMWARE_VERSION=status-profile-v1 cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
-```
-
-Flash/monitor as below, keep serial open, then run `profile --samples 10
---interval-ms 250`. Serial output happens after the response but can delay the
-next accept; spacing queries reduces that interference. The fixed 10 ms backoff
-and abort-flush cleanup are outside the per-session trace. A non-complete trace
-identifies the active stage in `phase`; uncompleted stage durations are not valid.
+Optional device diagnostics report decode and response preparation microseconds.
+Request read time is unavailable at the gRPC handler boundary, so its reserved
+field is zero. Device durations include task preemption and overlap host phases.
+CSV columns are `sample,total_ms,connect_ms,retry_wait_ms,encode_ms,rpc_ms,decode_validate_ms,refused_connects,device_decode_us,device_prepare_us`.
 
 ## Provision the first board
 
 Use the dedicated `device-demo` firmware for device-management work. It starts
-Wi-Fi, DHCP/reconnection, and the read-only status service. It requires no sensors,
+Wi-Fi, DHCP/reconnection, and the gRPC Management service. It requires no sensors,
 LED configuration, UDP destination, or OTA partition changes. Connected IMU wiring
 can stay in place; this firmware does not access it.
 
@@ -225,7 +212,7 @@ cargo run -p espctl -- logs --host <device-ip>
 cargo run -p espctl -- logs --host <device-ip> --follow
 ```
 
-Requires log-enabled firmware. A snapshot drains the retained entries; `--follow`
+Requires log-enabled firmware. A snapshot pages through the retained entries; `--follow`
 polls every 500 ms when caught up and retries connection failures. The firmware
 keeps 32 entries in RAM, each with a boot-scoped sequence, uptime in milliseconds,
 severity, and up to 64 UTF-8 bytes of message text. Four entries fit in one existing
@@ -236,7 +223,7 @@ a warning. Output escapes terminal control characters.
 This first version records management startup, image-confirmation failure, upload
 state transitions, and failed/timed-out sessions. It does not capture all serial
 output or pre-service Wi-Fi startup. Reading logs does not itself add an entry.
-Read-only polling on 7779 remains available during gRPC uploads on 7780.
+Status and log polling remain available on the same port during an upload through a second connection.
 For server-push logs on the upload connection, use `upload --logs`. Slow readers
 may miss overwritten entries. Old firmware may return an unsupported-operation error. The TUI can reuse `espctl::read_logs` and
 its cursor without a separate backend.

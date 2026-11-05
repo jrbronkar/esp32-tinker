@@ -27,8 +27,7 @@ pub mod txt {
     pub const PROTOCOL: &str = "protocol";
     pub const STATE: &str = "state";
     pub const OTA: &str = "ota";
-    pub const UPLOAD: &str = "upload";
-    pub const GRPC_PORT: &str = "grpc_port";
+    pub const TRANSPORT: &str = "transport";
 }
 
 pub const MAX_FRAME: usize = 512;
@@ -52,7 +51,7 @@ pub fn frame_length(prefix: [u8; 4]) -> Result<usize, Error> {
     }
 }
 
-/// Encode a body only. The transport sends a four-byte big-endian length first.
+/// Encode a bounded protobuf body; gRPC supplies transport framing.
 pub fn encode<M: MessageEncode>(message: &M) -> Result<Frame, Error> {
     let mut encoder = PbEncoder::new(Frame::new());
     message.encode(&mut encoder).map_err(|_| Error::Encode)?;
@@ -315,32 +314,3 @@ mod upload_tests {
 }
 
 pub mod logs;
-
-#[cfg(test)]
-mod read_only_management_tests {
-    use super::*;
-    #[test]
-    fn read_only_endpoint_rejects_every_upload_operation() {
-        let operations = [
-            RequestPayload::Begin(Default::default()),
-            RequestPayload::Chunk(Default::default()),
-            RequestPayload::Finish(Default::default()),
-            RequestPayload::Commit(Default::default()),
-            RequestPayload::Abort(Default::default()),
-        ];
-        for payload in operations {
-            let response = respond(
-                Request {
-                    protocol_version: VERSION,
-                    request_id: 42,
-                    payload: Some(payload),
-                },
-                status("mock", "device-demo", "v1", 0).unwrap(),
-            );
-            assert_eq!(response.request_id, 42);
-            assert!(
-                matches!(response.payload,Some(ResponsePayload::Error(error)) if error.code==ErrorCode::InvalidRequest)
-            );
-        }
-    }
-}

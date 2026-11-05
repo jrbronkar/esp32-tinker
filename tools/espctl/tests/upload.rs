@@ -124,6 +124,9 @@ impl device_grpc::Environment for Env {
         status.set_boot(boot);
         status
     }
+    fn read_logs(&self, cursor: &ota_protocol::ReadLogsRequest) -> ota_protocol::ReadLogsResponse {
+        self.0.logs.borrow().0.read(cursor)
+    }
     fn logs(
         &self,
         cursor: &ota_protocol::ReadLogsRequest,
@@ -491,7 +494,7 @@ fn cli_exposes_grpc_upload_logs_and_rejects_removed_legacy_option() {
         .unwrap();
     assert!(output.status.success());
     let text = String::from_utf8_lossy(&output.stdout);
-    for expected in ["--logs", "7780"] {
+    for expected in ["--logs", "7779"] {
         assert!(text.contains(expected), "{text}");
     }
     assert!(!text.contains("--legacy"));

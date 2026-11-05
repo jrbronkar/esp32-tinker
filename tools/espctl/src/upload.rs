@@ -296,7 +296,7 @@ async fn run(
                 message=stream.message()=> {
                     let result=match message {
                         Ok(Some(bytes))=>decode(&bytes,77).and_then(|response| match response.payload {
-                            Some(ResponsePayload::Logs(batch))=>{validate_logs(&mut cursor,&batch)?;Ok(batch)},
+                            Some(ResponsePayload::Logs(batch))=>{super::validate_logs(&cursor,&batch)?;cursor.boot_id=batch.boot_id;cursor.after_sequence=batch.next_sequence;Ok(batch)},
                             _=>Err(invalid("missing log batch")),
                         }),
                         Ok(None)=>Err(invalid("log stream ended")),
@@ -362,32 +362,4 @@ async fn exchange(
     })
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC upload operation timed out"))?
-}
-
-fn validate_logs(
-    cursor: &mut ota_protocol::ReadLogsRequest,
-    batch: &ota_protocol::ReadLogsResponse,
-) -> io::Result<()> {
-    if batch.boot_id == 0
-        || (cursor.boot_id != 0 && cursor.boot_id != batch.boot_id && !batch.reset)
-    {
-        return Err(invalid("invalid log boot cursor"));
-    }
-    let mut previous = if batch.reset {
-        0
-    } else {
-        cursor.after_sequence
-    };
-    for entry in &batch.entries {
-        if entry.sequence <= previous {
-            return Err(invalid("non-increasing log sequence"));
-        }
-        previous = entry.sequence;
-    }
-    if batch.next_sequence != previous {
-        return Err(invalid("invalid log progress"));
-    }
-    cursor.boot_id = batch.boot_id;
-    cursor.after_sequence = batch.next_sequence;
-    Ok(())
 }

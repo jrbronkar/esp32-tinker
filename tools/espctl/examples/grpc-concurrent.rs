@@ -20,11 +20,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .map_err(|e| format!("invalid image: {e:?}"))?;
     tokio::time::timeout(Duration::from_secs(170), async {
-        let channel=tonic::transport::Endpoint::from_shared(format!("http://{}:7780",args[1]))?.initial_stream_window_size(Some(1024)).connect().await?;
+        let channel=tonic::transport::Endpoint::from_shared(format!("http://{}:7779",args[1]))?.initial_stream_window_size(Some(1024)).connect().await?;
         let mut client=Client::new(channel);
         let stalled = std::env::var_os("GRPC_STALL_LOGS").is_some();
         client.ready().await?;
-        let reply=client.unary(tonic::Request::new(ota_protocol::encode(&ota_protocol::status_request(1)).map_err(|e|format!("encode: {e:?}"))?.to_vec()),device_grpc::STATUS_PATH.parse()?,RawCodec).await?;
+        let reply=client.unary(tonic::Request::new(body(Op::Status(ota_protocol::StatusRequest{include_boot:true,..Default::default()}),1)),device_grpc::STATUS_PATH.parse()?,RawCodec).await?;
         let status=response(&reply.into_inner());
         let Some(ResponsePayload::Status(status))=status.payload else {return Err("missing status".into())};
         if status.device_id!="esp32s3-a4:cb:8f:d8:13:c8" {return Err(format!("unexpected board: {}",status.device_id).into())}

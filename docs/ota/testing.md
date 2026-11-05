@@ -8,13 +8,14 @@ cargo test
 cargo check -p espctl --all-targets
 ```
 
-The suite contains 64 tests. The gRPC migration reuses ota-core validation;
+The suite contains 66 tests. The gRPC migration reuses ota-core validation;
 transport tests exercise the actual Handler against independent Tonic/h2 peers.
 Tests cover metadata/image/digest/order rejection, verify-only, explicit commit,
 lost ACKs and actual TCP loss before/after Commit, no replay, activation write
 blocking, cancellation, deadlines, competing streams and overwritten logs.
 The portable watchdog has virtual-time tests, plus a TCP test that produces
-live logs while the upload is abandoned. Port 7779 rejects every upload opcode.
+live logs while the upload is abandoned. Tests also cover status during an upload
+on a second connection, independent watchdogs, and log snapshot/stream wakeups.
 
 ## Hardware probes
 
@@ -37,7 +38,8 @@ consumption behind a 1024-byte stream window; upload must still finish and log
 resumption must report overwritten history. `grpc-cleanup` tests cancellation and
 resubscription. `grpc-parity` abandons an upload with HTTP/2 keepalives and an open
 log stream, requires expiry around five seconds, checks a new Begin/Abort, and
-requires port 7779 to reject Begin/Chunk/Finish/Commit/Abort.
+requires a second client to query status while flash is leased, rejects a
+competing upload, and requires retired port 7780 to be closed.
 The examples check the known development board identity before upload admission.
 
 Legacy OTA, its CLI flag and the old upload-fault-probe harness are removed.

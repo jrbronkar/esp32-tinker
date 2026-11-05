@@ -1,29 +1,12 @@
-use ota_protocol::{
-    ReadLogsRequest, ReadLogsResponse, Request, RequestPayload, Response, ResponsePayload,
-};
-use std::{
-    io::{Read, Write},
-    net::TcpListener,
-    process::Command,
-    thread,
-    time::Duration,
-};
+use ota_protocol::{ReadLogsRequest, ReadLogsResponse, RequestPayload, Response, ResponsePayload};
+use std::{process::Command, thread, time::Duration};
+#[path = "support/server.rs"]
+mod server;
 
 #[test]
 fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
     for variant in 0..9 {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut prefix = [0; 4];
-            socket.read_exact(&mut prefix).unwrap();
-            let mut body = vec![0; u32::from_be_bytes(prefix) as usize];
-            socket.read_exact(&mut body).unwrap();
-            let request: Request = ota_protocol::decode(&body).unwrap();
+        let (address, handle) = server::spawn(1, 1, Duration::ZERO, move |request| {
             assert_eq!(
                 request.payload,
                 Some(RequestPayload::ReadLogs(ReadLogsRequest {
@@ -82,14 +65,7 @@ fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
                 _ => {}
             }
             let bytes = ota_protocol::encode(&reply).unwrap();
-            // Exercise fragmented framing on the new reader.
-            for byte in (bytes.len() as u32)
-                .to_be_bytes()
-                .iter()
-                .chain(bytes.iter())
-            {
-                socket.write_all(&[*byte]).unwrap();
-            }
+            Ok(bytes.to_vec())
         });
         let result = espctl::read_logs(
             address,
@@ -124,37 +100,21 @@ fn adversarial_server(
     bytes: Vec<u8>,
     trickle: bool,
 ) -> (std::net::SocketAddr, thread::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let handle = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut prefix = [0; 4];
-        socket.read_exact(&mut prefix).unwrap();
-        let mut body = vec![0; ota_protocol::frame_length(prefix).unwrap()];
-        socket.read_exact(&mut body).unwrap();
-        for byte in bytes {
-            if socket.write_all(&[byte]).is_err() {
-                break;
-            }
-            if trickle {
-                thread::sleep(Duration::from_millis(40));
-            }
-        }
-    });
-    (address, handle)
+    server::spawn(
+        1,
+        if trickle { 1 } else { usize::MAX },
+        if trickle {
+            Duration::from_millis(40)
+        } else {
+            Duration::ZERO
+        },
+        move |_| Ok(bytes.clone()),
+    )
 }
 
 #[test]
 fn logs_reject_hostile_framing_and_truncated_protobuf() {
-    for bytes in [
-        vec![0, 0, 0, 0],
-        u32::MAX.to_be_bytes().to_vec(),
-        vec![0, 0, 0, 8, 8],
-        vec![0, 0, 0, 1, 255],
-    ] {
+    for bytes in [vec![], vec![0; 513], vec![8], vec![255]] {
         let (address, handle) = adversarial_server(bytes, false);
         assert!(
             espctl::read_logs(address, Duration::from_secs(2), ReadLogsRequest::default()).is_err()
@@ -197,8 +157,7 @@ fn cli_escapes_remote_terminal_control_sequences() {
         payload: Some(ResponsePayload::Logs(logs)),
     };
     let body = ota_protocol::encode(&response).unwrap();
-    let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
-    bytes.extend_from_slice(&body);
+    let bytes = body.to_vec();
     let (address, handle) = adversarial_server(bytes, false);
     let output = Command::new(env!("CARGO_BIN_EXE_espctl"))
         .args([
