@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     version,
     about = "Manage ESP32 status and development firmware updates",
-    long_about = "Protobuf device status, profiling, and unsigned development uploads over plain TCP. Device identity is not authenticated. Uploads write the inactive slot; activation requires --commit."
+    long_about = "Device status and profiling, plus unsigned development uploads over gRPC/HTTP2. Device identity is not authenticated. Uploads write the inactive slot; activation requires --commit."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -35,7 +35,7 @@ enum Commands {
 struct LogsArgs {
     #[command(flatten)]
     target: TargetArgs,
-    /// Poll until interrupted
+    /// Stream until interrupted
     #[arg(long)]
     follow: bool,
 }
@@ -84,6 +84,9 @@ struct ProfileArgs {
 
 #[derive(Args)]
 struct UploadArgs {
+    /// Stream management logs over the same HTTP/2 connection during upload
+    #[arg(long)]
+    logs: bool,
     #[command(flatten)]
     target: TargetArgs,
     /// Application-only .bin exported by espflash (not ELF or a merged image)
@@ -103,7 +106,7 @@ struct TargetArgs {
     #[arg(long, value_name = "IP")]
     host: IpAddr,
 
-    /// Device TCP port
+    /// gRPC management port
     #[arg(long, default_value_t = ota_protocol::PORT, value_parser = clap::value_parser!(u16).range(1..))]
     port: u16,
 
@@ -119,13 +122,45 @@ fn run(command: Commands) -> Result<(), String> {
         Commands::Discover(args) => run_discover(args),
         Commands::Profile(args) => run_profile(args),
         Commands::Upload(args) => {
-            let result = espctl::upload::upload(
-                SocketAddr::new(args.target.host, args.target.port),
-                Duration::from_millis(args.target.timeout_ms),
-                &args.image,
-                &args.firmware_version,
-                args.commit,
-            )
+            let address = SocketAddr::new(args.target.host, args.target.port);
+            let timeout = Duration::from_millis(args.target.timeout_ms);
+            let result = if args.logs {
+                espctl::upload::upload_with_logs(
+                    address,
+                    timeout,
+                    &args.image,
+                    &args.firmware_version,
+                    args.commit,
+                    &mut |batch| match batch {
+                        Ok(batch) => {
+                            if batch.reset {
+                                eprintln!("Log cursor reset.");
+                            }
+                            if batch.dropped {
+                                eprintln!("Older log entries were overwritten.");
+                            }
+                            for entry in batch.entries {
+                                eprintln!(
+                                    "{} {:>10} {} {}",
+                                    entry.sequence,
+                                    entry.uptime_ms,
+                                    log_severity(entry.severity),
+                                    entry.message.escape_debug()
+                                );
+                            }
+                        }
+                        Err(error) => eprintln!("Log stream unavailable: {}", error.escape_debug()),
+                    },
+                )
+            } else {
+                espctl::upload::upload(
+                    address,
+                    timeout,
+                    &args.image,
+                    &args.firmware_version,
+                    args.commit,
+                )
+            }
             .map_err(|e| e.to_string())?;
             println!(
                 "Verified {} bytes in slot at 0x{:x}",
@@ -156,7 +191,7 @@ fn run_discover(args: DiscoverArgs) -> Result<(), String> {
         } else {
             println!(
                 "{:<34} {:<22} {:<22} {:<14} OTA",
-                "Device", "Address", "Firmware", "Advertised state"
+                "Device", "Management (gRPC)", "Firmware", "Advertised state"
             );
             for device in result.devices {
                 println!(
@@ -206,7 +241,6 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     println!("Chip:        {}", status.chip.escape_debug());
     println!("Application: {}", status.application.escape_debug());
     println!("Firmware:    {}", status.firmware_version.escape_debug());
-    println!("Protocol:    {}", ota_protocol::VERSION);
     if !status.management_state.is_empty() {
         println!("State:       {}", status.management_state.escape_debug());
     }
@@ -266,13 +300,10 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     }
     if args.timings {
         if let Some(device) = status.timings() {
-            println!(
-                "Device read: {} us (accept to complete request)",
-                device.request_read_us
-            );
-            println!("Device decode: {} us", device.decode_us);
+            if device.decode_us != 0 {
+                println!("Device decode: {} us", device.decode_us);
+            }
             println!("Device prepare: {} us", device.prepare_us);
-            println!("Device send/ACK/close timings: see STATUS_TRACE in serial logs");
         } else {
             println!("Device timings unavailable; flash the instrumented device-demo");
         }
@@ -283,9 +314,11 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
             ms(t.retry_wait),
             t.refused_connects
         );
-        println!("Encode/send: {:.3} ms", ms(t.write));
-        println!("First byte:  {:.3} ms after request sent", ms(t.first_byte));
-        println!("Read rest:   {:.3} ms after first byte", ms(t.read));
+        println!("Encode:      {:.3} ms", ms(t.encode));
+        println!(
+            "RPC response:{:.3} ms (send, server work, body and trailers)",
+            ms(t.rpc)
+        );
         println!("Decode/check:{:.3} ms", ms(t.decode_validate));
     }
     Ok(())
@@ -298,7 +331,7 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
     let mut device_timings = Vec::new();
     if args.csv {
         println!(
-            "sample,total_ms,connect_ms,retry_wait_ms,write_ms,first_byte_ms,read_ms,decode_validate_ms,refused_connects,device_read_us,device_decode_us,device_prepare_us"
+            "sample,total_ms,connect_ms,retry_wait_ms,encode_ms,rpc_ms,decode_validate_ms,refused_connects,device_decode_us,device_prepare_us"
         );
     }
     for index in 1..=args.samples {
@@ -308,24 +341,19 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                 let t = query.timings;
                 if args.csv {
                     println!(
-                        "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{},{}",
+                        "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{}",
                         index,
                         ms(t.total),
                         ms(t.connect),
                         ms(t.retry_wait),
-                        ms(t.write),
-                        ms(t.first_byte),
-                        ms(t.read),
+                        ms(t.encode),
+                        ms(t.rpc),
                         ms(t.decode_validate),
                         t.refused_connects,
                         query
                             .status
                             .timings()
-                            .map(|d| d.request_read_us.to_string())
-                            .unwrap_or_default(),
-                        query
-                            .status
-                            .timings()
+                            .filter(|d| d.decode_us != 0)
                             .map(|d| d.decode_us.to_string())
                             .unwrap_or_default(),
                         query
@@ -368,12 +396,8 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                 "retry wait*",
                 samples.iter().map(|t| ms(t.retry_wait)).collect(),
             ),
-            ("encode/send", samples.iter().map(|t| ms(t.write)).collect()),
-            (
-                "first byte",
-                samples.iter().map(|t| ms(t.first_byte)).collect(),
-            ),
-            ("read rest", samples.iter().map(|t| ms(t.read)).collect()),
+            ("encode", samples.iter().map(|t| ms(t.encode)).collect()),
+            ("rpc", samples.iter().map(|t| ms(t.rpc)).collect()),
             (
                 "decode/check",
                 samples.iter().map(|t| ms(t.decode_validate)).collect(),
@@ -400,27 +424,26 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
             );
             for (name, mut values) in [
                 (
-                    "read request",
+                    "decode",
                     device_timings
                         .iter()
-                        .map(|d| d.request_read_us)
+                        .map(|d| d.decode_us)
+                        .filter(|&value| value != 0)
                         .collect::<Vec<_>>(),
-                ),
-                (
-                    "decode",
-                    device_timings.iter().map(|d| d.decode_us).collect(),
                 ),
                 (
                     "prepare",
                     device_timings.iter().map(|d| d.prepare_us).collect(),
                 ),
             ] {
+                if values.is_empty() {
+                    continue;
+                }
                 values.sort_unstable();
                 let median =
                     (values[(values.len() - 1) / 2] as f64 + values[values.len() / 2] as f64) / 2.0;
                 println!("  {name}: median {median:.1} us");
             }
-            println!("Encoding, enqueue, ACK and close: STATUS_TRACE serial logs.");
         }
         println!(
             "* Retry wait is included in connect. Refused connects: {}. Host timing, not device CPU time.",
@@ -443,48 +466,51 @@ fn main() -> ExitCode {
     }
 }
 
+fn log_severity(severity: ota_protocol::LogSeverity) -> &'static str {
+    match severity {
+        ota_protocol::LogSeverity::Info => "Info",
+        ota_protocol::LogSeverity::Warn => "Warn",
+        ota_protocol::LogSeverity::Error => "Error",
+        _ => "Unknown",
+    }
+}
+
 fn run_logs(args: LogsArgs) -> Result<(), String> {
     if args.follow {
-        eprintln!("Log polling pauses during OTA uploads and resumes when the device is available.");
+        eprintln!("Following management logs; reconnecting after device resets or network loss.");
     }
     let mut cursor = ota_protocol::ReadLogsRequest::default();
     loop {
-        let logs = match espctl::read_logs(
+        let result = espctl::stream_logs(
             SocketAddr::new(args.target.host, args.target.port),
             Duration::from_millis(args.target.timeout_ms),
-            cursor.clone(),
-        ) {
-            Ok(logs) => logs,
-            Err(error) if args.follow && error.kind() != std::io::ErrorKind::InvalidData => {
-                eprintln!("Logs unavailable: {error}; retrying.");
-                std::thread::sleep(Duration::from_millis(500));
-                continue;
+            args.follow,
+            &mut cursor,
+            |logs| {
+                if logs.reset {
+                    eprintln!("Device boot or cursor changed; log cursor reset.");
+                }
+                if logs.dropped {
+                    eprintln!("Older log entries were overwritten.");
+                }
+                for entry in &logs.entries {
+                    println!(
+                        "{} {:>10} {} {}",
+                        entry.sequence,
+                        entry.uptime_ms,
+                        log_severity(entry.severity),
+                        entry.message.escape_debug()
+                    );
+                }
+            },
+        );
+        match result {
+            Ok(()) if !args.follow => return Ok(()),
+            Err(error) if !args.follow || error.kind() == std::io::ErrorKind::InvalidData => {
+                return Err(error.to_string());
             }
-            Err(error) => return Err(error.to_string()),
-        };
-        if logs.reset {
-            eprintln!("Device boot or cursor changed; log cursor reset.");
-        }
-        if logs.dropped {
-            eprintln!("Older log entries were overwritten.");
-        }
-        for entry in &logs.entries {
-            println!(
-                "{} {:>10} {:?} {}",
-                entry.sequence,
-                entry.uptime_ms,
-                entry.severity,
-                entry.message.escape_debug()
-            );
-        }
-        cursor.boot_id = logs.boot_id;
-        cursor.after_sequence = logs.next_sequence;
-        // Drain available batches before sleeping or completing a snapshot.
-        if logs.entries.len() == 4 {
-            continue;
-        }
-        if !args.follow {
-            return Ok(());
+            Err(error) => eprintln!("Logs unavailable: {error}; retrying."),
+            Ok(()) => {}
         }
         std::thread::sleep(Duration::from_millis(500));
     }

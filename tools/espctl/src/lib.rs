@@ -1,46 +1,171 @@
-//! Blocking host client, independent of CLI presentation and reusable by a future GUI.
+//! Blocking gRPC host client shared by CLI presentation and future GUI callers.
 pub mod discovery;
-use ota_protocol::{Request, Response, ResponsePayload, StatusResponse, MAX_FRAME, VERSION};
+mod grpc_codec;
+pub mod upload;
+use grpc_codec::RawCodec;
+use ota_protocol::StatusResponse;
 use std::{
-    io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    io,
+    net::SocketAddr,
     time::{Duration, Instant},
+};
+use tonic::{
+    client::Grpc,
+    transport::{Channel, Endpoint},
 };
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
-
-/// Host-observed phases. Connect includes retry_wait; phase durations are not
-/// device CPU timings or pure network RTT. All timestamps use a monotonic clock.
+fn rpc(error: tonic::Status) -> io::Error {
+    let kind = match error.code() {
+        tonic::Code::DeadlineExceeded => io::ErrorKind::TimedOut,
+        tonic::Code::Unavailable | tonic::Code::Unknown => io::ErrorKind::ConnectionAborted,
+        tonic::Code::Cancelled => io::ErrorKind::Interrupted,
+        _ => io::ErrorKind::InvalidData,
+    };
+    io::Error::new(
+        kind,
+        format!("gRPC {}: {}", error.code(), error.message().escape_debug()),
+    )
+}
+/// Host elapsed phases. Connect includes TCP retry wait and channel setup. RPC
+/// includes HTTP/2 setup, request transmission, server work, body and trailers.
 #[derive(Debug, Clone, Default)]
 pub struct QueryTimings {
     pub total: Duration,
     pub connect: Duration,
     pub retry_wait: Duration,
-    pub write: Duration,
-    pub first_byte: Duration,
-    pub read: Duration,
+    pub encode: Duration,
+    pub rpc: Duration,
     pub decode_validate: Duration,
     pub refused_connects: u32,
 }
-
 #[derive(Debug)]
 pub struct StatusQuery {
     pub status: StatusResponse,
     pub timings: QueryTimings,
 }
-
-/// One request/response per connection, with one total deadline (including connect).
-pub fn query_status(address: SocketAddr, timeout: Duration) -> io::Result<StatusResponse> {
-    query_status_with_options(address, timeout, false, false).map(|query| query.status)
+fn deadline(started: Instant, timeout: Duration) -> io::Result<tokio::time::Instant> {
+    if timeout.is_zero() {
+        return Err(invalid("timeout must be positive"));
+    }
+    started
+        .checked_add(timeout)
+        .map(tokio::time::Instant::from_std)
+        .ok_or_else(|| invalid("timeout too large"))
+}
+fn timed_out() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "management query deadline exceeded",
+    )
+}
+fn runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+async fn connect(
+    address: SocketAddr,
+    end: tokio::time::Instant,
+    timings: &mut QueryTimings,
+    keep_alive: bool,
+) -> io::Result<Grpc<Channel>> {
+    let started = Instant::now();
+    let stream = loop {
+        match tokio::time::timeout_at(end, tokio::net::TcpStream::connect(address))
+            .await
+            .map_err(|_| timed_out())?
+        {
+            Ok(stream) => break stream,
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                timings.refused_connects += 1;
+                let retry = Instant::now();
+                tokio::time::timeout_at(end, tokio::time::sleep(Duration::from_millis(50)))
+                    .await
+                    .map_err(|_| timed_out())?;
+                timings.retry_wait += retry.elapsed();
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    stream.set_nodelay(true)?;
+    // One established TCP connection only. The channel must not silently dial
+    // again/replay an established query after a transport failure.
+    let mut stream = Some(stream);
+    let connector = tower::service_fn(move |_| {
+        std::future::ready(
+            stream
+                .take()
+                .map(hyper_util::rt::TokioIo::new)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "query connection cannot be replayed",
+                    )
+                }),
+        )
+    });
+    let mut endpoint =
+        Endpoint::from_shared(format!("http://{address}")).map_err(|e| invalid(e.to_string()))?;
+    if keep_alive {
+        endpoint = endpoint
+            .http2_keep_alive_interval(Duration::from_secs(5))
+            .keep_alive_while_idle(true);
+    }
+    let channel = tokio::time::timeout_at(end, endpoint.connect_with_connector(connector))
+        .await
+        .map_err(|_| timed_out())?
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                format!("HTTP/2 setup: {e}"),
+            )
+        })?;
+    timings.connect = started.elapsed();
+    Ok(Grpc::new(channel)
+        .max_decoding_message_size(ota_protocol::MAX_FRAME)
+        .max_encoding_message_size(ota_protocol::MAX_FRAME))
+}
+async fn query(
+    address: SocketAddr,
+    end: tokio::time::Instant,
+    request: &impl ota_protocol::MessageEncode,
+    path: &'static str,
+    timings: &mut QueryTimings,
+) -> io::Result<Vec<u8>> {
+    let mut client = connect(address, end, timings, false).await?;
+    client.ready().await.map_err(|e| invalid(e.to_string()))?;
+    let started = Instant::now();
+    let bytes = ota_protocol::encode(request)
+        .map_err(|e| invalid(format!("encode query: {e:?}")))?
+        .to_vec();
+    timings.encode = started.elapsed();
+    let started = Instant::now();
+    let mut message = tonic::Request::new(bytes);
+    message.set_timeout(end.saturating_duration_since(tokio::time::Instant::now()));
+    let reply = tokio::time::timeout_at(
+        end,
+        client.unary(
+            message,
+            path.parse().map_err(|_| invalid("invalid RPC path"))?,
+            RawCodec,
+        ),
+    )
+    .await
+    .map_err(|_| timed_out())?
+    .map_err(rpc)?;
+    timings.rpc = started.elapsed();
+    Ok(reply.into_inner())
 }
 
+pub fn query_status(address: SocketAddr, timeout: Duration) -> io::Result<StatusResponse> {
+    query_status_with_options(address, timeout, false, false).map(|q| q.status)
+}
 pub fn query_status_profiled(address: SocketAddr, timeout: Duration) -> io::Result<StatusQuery> {
     query_status_with_options(address, timeout, true, false)
 }
-
-/// Collect host timings, optionally requesting device timing/serial tracing.
 pub fn query_status_with_diagnostics(
     address: SocketAddr,
     timeout: Duration,
@@ -48,7 +173,6 @@ pub fn query_status_with_diagnostics(
 ) -> io::Result<StatusQuery> {
     query_status_with_options(address, timeout, device_timings, false)
 }
-
 pub fn query_status_with_options(
     address: SocketAddr,
     timeout: Duration,
@@ -56,181 +180,119 @@ pub fn query_status_with_options(
     include_boot: bool,
 ) -> io::Result<StatusQuery> {
     let started = Instant::now();
-    let mut timings = QueryTimings::default();
-    if timeout.is_zero() {
-        return Err(invalid("timeout must be positive"));
-    }
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .ok_or_else(|| invalid("timeout too large"))?;
-    // A single-socket device can briefly stop listening while closing the last
-    // session. Retry only refused connects; never replay an established request.
-    let mut stream = loop {
-        match TcpStream::connect_timeout(&address, remaining(deadline)?) {
-            Ok(stream) => break stream,
-            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                timings.refused_connects += 1;
-                let sleep_started = Instant::now();
-                std::thread::sleep(Duration::from_millis(50).min(remaining(deadline)?));
-                timings.retry_wait += sleep_started.elapsed();
-            }
-            Err(error) => return Err(error),
+    let end = deadline(started, timeout)?;
+    runtime()?.block_on(async {
+        let mut timings = QueryTimings::default();
+        let request = ota_protocol::StatusRequest {
+            include_timings: device_timings,
+            include_boot,
+        };
+        let response = query(
+            address,
+            end,
+            &request,
+            device_grpc::STATUS_PATH,
+            &mut timings,
+        )
+        .await?;
+        let validated = Instant::now();
+        let status: StatusResponse =
+            ota_protocol::decode(&response).map_err(|_| invalid("invalid status response"))?;
+        if status.device_id.is_empty()
+            || status.application.is_empty()
+            || status.firmware_version.is_empty()
+            || status.chip.is_empty()
+        {
+            return Err(invalid("status response is missing identity fields"));
         }
-    };
-    timings.connect = started.elapsed();
-    let write_started = Instant::now();
-    stream.set_nodelay(true)?;
-    let mut request = ota_protocol::status_request(1);
-    if let Some(ota_protocol::RequestPayload::Status(status)) = &mut request.payload {
-        status.include_timings = device_timings;
-        status.include_boot = include_boot;
-    }
-    write_request(&mut stream, &request, deadline)?;
-    timings.write = write_started.elapsed();
-    let response_started = Instant::now();
-    let mut prefix = [0u8; 4];
-    read_exact(&mut stream, &mut prefix[..1], deadline)?;
-    timings.first_byte = response_started.elapsed();
-    let read_started = Instant::now();
-    read_exact(&mut stream, &mut prefix[1..], deadline)?;
-    let length = ota_protocol::frame_length(prefix)
-        .map_err(|_| invalid("response length outside 1..=512"))?;
-    let mut body = [0u8; MAX_FRAME];
-    read_exact(&mut stream, &mut body[..length], deadline)?;
-    timings.read = read_started.elapsed();
-    let decode_started = Instant::now();
-    let response: Response = ota_protocol::decode(&body[..length])
-        .map_err(|e| invalid(format!("decode response: {e:?}")))?;
-    if response.protocol_version != VERSION {
-        return Err(invalid(format!(
-            "unsupported response version {}",
-            response.protocol_version
-        )));
-    }
-    if response.request_id != request.request_id {
-        return Err(invalid("response request ID mismatch"));
-    }
-    match response.payload {
-        Some(ResponsePayload::Status(status)) => {
-            if status.device_id.is_empty()
-                || status.application.is_empty()
-                || status.firmware_version.is_empty()
-                || status.chip.is_empty()
-            {
-                return Err(invalid("status response is missing identity fields"));
-            }
-            timings.decode_validate = decode_started.elapsed();
-            timings.total = started.elapsed();
-            Ok(StatusQuery { status, timings })
-        }
-        Some(ResponsePayload::Error(error)) => Err(invalid(format!(
-            "device error {:?}: {}",
-            error.code,
-            error.message.escape_debug()
-        ))),
-        _ => Err(invalid("response has no supported payload")),
-    }
+        timings.decode_validate += validated.elapsed();
+        timings.total = started.elapsed();
+        Ok(StatusQuery { status, timings })
+    })
 }
-
-fn remaining(deadline: Instant) -> io::Result<Duration> {
-    deadline
-        .checked_duration_since(Instant::now())
-        .filter(|d| !d.is_zero())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "status deadline exceeded"))
-}
-
-fn write_request(stream: &mut TcpStream, request: &Request, deadline: Instant) -> io::Result<()> {
-    let body =
-        ota_protocol::encode(request).map_err(|e| invalid(format!("encode request: {e:?}")))?;
-    for mut bytes in [&(body.len() as u32).to_be_bytes()[..], body.as_slice()] {
-        while !bytes.is_empty() {
-            stream.set_write_timeout(Some(remaining(deadline)?))?;
-            let n = stream.write(bytes)?;
-            if n == 0 {
-                return Err(io::ErrorKind::WriteZero.into());
-            }
-            bytes = &bytes[n..];
-        }
-    }
-    Ok(())
-}
-
-fn read_exact(stream: &mut TcpStream, mut bytes: &mut [u8], deadline: Instant) -> io::Result<()> {
-    while !bytes.is_empty() {
-        stream.set_read_timeout(Some(remaining(deadline)?))?;
-        let n = stream.read(bytes)?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "device disconnected before complete response",
-            ));
-        }
-        bytes = &mut bytes[n..];
-    }
-    Ok(())
-}
-
-pub mod upload;
-
-/// Fetch one bounded log batch using the existing control-frame transport.
-pub fn read_logs(
+/// Read retained logs on one stream, optionally waiting for new entries.
+pub fn stream_logs(
     address: SocketAddr,
     timeout: Duration,
-    cursor: ota_protocol::ReadLogsRequest,
-) -> io::Result<ota_protocol::ReadLogsResponse> {
-    if timeout.is_zero() {
-        return Err(invalid("timeout must be positive"));
-    }
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .ok_or_else(|| invalid("timeout too large"))?;
-    let mut stream = loop {
-        match TcpStream::connect_timeout(&address, remaining(deadline)?) {
-            Ok(stream) => break stream,
-            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                std::thread::sleep(Duration::from_millis(50).min(remaining(deadline)?));
+    follow: bool,
+    cursor: &mut ota_protocol::ReadLogsRequest,
+    mut on_batch: impl FnMut(&ota_protocol::ReadLogsResponse),
+) -> io::Result<()> {
+    let end = deadline(Instant::now(), timeout)?;
+    runtime()?.block_on(async {
+        let mut client = connect(address, end, &mut QueryTimings::default(), follow).await?;
+        let mut stream = tokio::time::timeout_at(end, async {
+            client
+                .ready()
+                .await
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            let bytes = ota_protocol::encode(cursor).map_err(|_| invalid("encode log cursor"))?;
+            client
+                .server_streaming(
+                    tonic::Request::new(bytes.to_vec()),
+                    device_grpc::LOGS_PATH
+                        .parse()
+                        .map_err(|_| invalid("invalid logs RPC path"))?,
+                    RawCodec,
+                )
+                .await
+                .map(|response| response.into_inner())
+                .map_err(rpc)
+        })
+        .await
+        .map_err(|_| timed_out())??;
+        let mut started = false;
+        loop {
+            let message = if follow && started {
+                stream.message().await
+            } else {
+                tokio::time::timeout_at(end, stream.message())
+                    .await
+                    .map_err(|_| timed_out())?
             }
-            Err(error) => return Err(error),
+            .map_err(rpc)?;
+            let Some(bytes) = message else {
+                return if follow && started {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "log stream ended before the read completed",
+                    ))
+                };
+            };
+            let batch: ota_protocol::ReadLogsResponse =
+                ota_protocol::decode(&bytes).map_err(|_| invalid("invalid log batch"))?;
+            validate_logs(cursor, &batch)?;
+            cursor.boot_id = batch.boot_id;
+            cursor.after_sequence = batch.next_sequence;
+            on_batch(&batch);
+            if !follow && !batch.more {
+                return Ok(());
+            }
+            started = true;
         }
-    };
-    let request = Request {
-        protocol_version: VERSION,
-        request_id: 1,
-        payload: Some(ota_protocol::RequestPayload::ReadLogs(cursor.clone())),
-    };
-    write_request(&mut stream, &request, deadline)?;
-    let mut prefix = [0; 4];
-    read_exact(&mut stream, &mut prefix, deadline)?;
-    let length =
-        ota_protocol::frame_length(prefix).map_err(|_| invalid("invalid log frame length"))?;
-    let mut body = [0; MAX_FRAME];
-    read_exact(&mut stream, &mut body[..length], deadline)?;
-    let response: Response =
-        ota_protocol::decode(&body[..length]).map_err(|_| invalid("invalid log response"))?;
-    if response.protocol_version != VERSION || response.request_id != request.request_id {
-        return Err(invalid("log response version or request ID mismatch"));
+    })
+}
+pub(crate) fn validate_logs(
+    cursor: &ota_protocol::ReadLogsRequest,
+    logs: &ota_protocol::ReadLogsResponse,
+) -> io::Result<()> {
+    if logs.boot_id == 0 {
+        return Err(invalid("missing log boot ID"));
     }
-    match response.payload {
-        Some(ResponsePayload::Logs(logs)) if logs.boot_id != 0 => {
-            if cursor.boot_id != 0 && logs.boot_id != cursor.boot_id && !logs.reset {
-                return Err(invalid("changed log boot ID without cursor reset"));
-            }
-            let mut previous = if logs.reset { 0 } else { cursor.after_sequence };
-            for entry in &logs.entries {
-                if entry.sequence <= previous {
-                    return Err(invalid("log entries are not strictly increasing"));
-                }
-                previous = entry.sequence;
-            }
-            if logs.next_sequence != previous {
-                return Err(invalid("log cursor does not match returned entries"));
-            }
-            Ok(logs)
+    if cursor.boot_id != 0 && logs.boot_id != cursor.boot_id && !logs.reset {
+        return Err(invalid("changed log boot ID without cursor reset"));
+    }
+    let mut previous = if logs.reset { 0 } else { cursor.after_sequence };
+    for entry in &logs.entries {
+        if entry.sequence <= previous {
+            return Err(invalid("log entries are not strictly increasing"));
         }
-        Some(ResponsePayload::Error(error)) => Err(invalid(format!(
-            "device error: {}",
-            error.message.escape_debug()
-        ))),
-        _ => Err(invalid("missing log payload or boot ID")),
+        previous = entry.sequence;
     }
+    if logs.next_sequence != previous {
+        return Err(invalid("log cursor does not match returned entries"));
+    }
+    Ok(())
 }

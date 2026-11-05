@@ -96,7 +96,7 @@ impl HostAnswers for Advertisement<'_> {
             (txt::ID, self.identity.device_id.as_str()),
             (txt::APPLICATION, self.identity.application.as_str()),
             (txt::FIRMWARE, self.identity.firmware_version.as_str()),
-            (txt::PROTOCOL, ota_protocol::VERSION_TXT),
+            (txt::TRANSPORT, "grpc"),
             (txt::STATE, self.runtime.state()),
             (
                 txt::OTA,

@@ -1,0 +1,10 @@
+syntax = "proto3";
+package esp.experimental;
+import "ota.proto";
+// Cleartext development HTTP/2 endpoint on port 7779. Upload supports explicit
+// Commit after Finish; clients await each ACK before sending the next operation.
+service Management {
+  rpc Logs(ota.ReadLogsRequest) returns (stream ota.ReadLogsResponse);
+  rpc Upload(stream ota.UploadRequest) returns (stream ota.UploadAck);
+  rpc Status(ota.StatusRequest) returns (ota.StatusResponse);
+}

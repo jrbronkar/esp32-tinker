@@ -189,77 +189,25 @@ The Rust application in `tools/soil-visualizer` listens for Wi-Fi UDP soil telem
 
 ## Device management and development OTA
 
-The sensor-free `device-demo` firmware hosts a device-management service on TCP
-port **7779** and advertises `_espctl._tcp.local.` through mDNS/DNS-SD. Find boards
-with `cargo run -p espctl -- discover`. The Mac initiates requests with `espctl`; no cloud service or
-separate backend is required. The API uses **Protobuf over length-prefixed TCP**.
-gRPC (client, server, or gateway) and HTTP/2 integration are explicitly out of
-scope. Use `espctl` rather than `curl`.
-
-The firmware exposes read-only status: device identity, firmware version, uptime,
-OTA availability, and optional boot inventory and timing diagnostics. Uploads
-are included in every `device-demo` build and require the supported partition layout.
-
-From the repository root:
+The sensor-free `device-demo` firmware exposes one gRPC/HTTP2 Management service
+on TCP 7779 for status, logs and OTA. Upload and live logs share one connection;
+a second client can query the same endpoint concurrently. `espctl discover`
+resolves boards through mDNS on UDP 5353.
 
 ```sh
 nix develop
-# Export WIFI_SSID and WIFI_PASSWORD in your local environment before building.
-cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
+cargo run -p espctl -- status --host BOARD_IP --boot
+cargo run -p espctl -- upload --host BOARD_IP \
+  --image IMAGE.bin --firmware-version VERSION --logs --commit
 ```
 
-Once the device firmware is installed and its Wi-Fi address is known:
+Uploads verify the inactive application slot; only `--commit` selects it and
+reboots. This is unsigned, unauthenticated development OTA. Keep credential-bearing
+firmware images private. USB/BOOT/RESET is recovery.
 
-```sh
-cargo run -p espctl -- status --host <board-ip> --boot
-cargo run -p espctl -- status --host <board-ip> --timings
-cargo run -p espctl -- profile --host <board-ip> --samples 10 --interval-ms 500
-```
-
-Host commands use the compiler's native target. Wi-Fi credentials are embedded at compile time; keep them out
-of tracked files and treat exported firmware images as containing credentials.
-
-For updates, follow the [provisioning and upload guide](docs/ota/provisioning.md)
-to install the 16 MiB board layout over USB and export an application binary.
-The updater writes the inactive 3 MiB app slot, reads back and verifies the image,
-then changes boot selection and resets only when `--commit` is requested.
-A verify-only upload leaves the existing application selected. USB/BOOT/RESET
-remain the recovery path.
-
-### Code layout
-
-| Component | Responsibility |
-| --- | --- |
-| `crates/device-demo` | Standalone management firmware without sensors or telemetry |
-| `crates/wifi-network` | Shared Wi-Fi connection, reconnection, DHCP, and network runner |
-| `crates/wifi-telemetry` | UDP telemetry sender attached to an existing network stack |
-| `crates/device-service` | TCP status/upload handling, partition inspection, flash access, and boot selection |
-| `crates/ota-core` | Portable update validation and transfer rules |
-| `crates/ota-protocol`, `protocol/ota.proto` | Shared fixed-capacity micropb messages and framing helpers |
-| `tools/espctl` | Clap-based status, profiling, and upload CLI |
-| `partitions` | Provisioning layout and operational guide |
-
-IMU and soil firmware use the shared networking layer for telemetry; they do not
-yet start the management service. OTA development stays in `device-demo` until
-that integration is ready.
-
-### Verification and remaining work
-
-The development update path has been exercised on a real ESP32-S3: USB-provisioned
-A → Wi-Fi B → Wi-Fi C, alternating slots. Disconnect and digest-mismatch tests
-left the running firmware selected, and NVS remained byte-identical. Host tests
-cover protocol bounds, TCP client behavior, and update validation.
-
-Updates are currently **unsigned and unencrypted**. Hashes detect corruption,
-but do not authorize a sender. Authentication, dependable automatic rollback,
-health deadlines, and power-loss testing remain pending. Cross-network inventory, a
-management dashboard, and the Wi-Fi latency investigation are deferred.
-See [docs/ota/design.md](docs/ota/design.md) for evidence and next steps, and
-[docs/ota/protocol.md](docs/ota/protocol.md) for operation contracts, sequence diagrams,
-upload states, and the boot lifecycle.
-
-See [OTA automated tests and manual fault harness](docs/ota/testing.md) for the validation
-matrix, board probe modes, physical fault procedures, and result template.
+See [CLI usage](tools/espctl/README.md), [provisioning](docs/ota/provisioning.md),
+[protocol](docs/ota/protocol.md), [architecture and production gaps](docs/ota/design.md)
+and [validation](docs/ota/testing.md).
 
 ## References
 

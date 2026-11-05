@@ -1,9 +1,26 @@
 fn main() {
     println!("cargo:rerun-if-changed=../../protocol/ota.proto");
+    println!("cargo:rerun-if-changed=../../protocol/management.proto");
+    let out =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
+    let descriptors = out.join("management.fdset");
+    protolink_grpc_gen::Generator::micropb()
+        .with_include("../../protocol")
+        .with_runtime_path("::protolink_grpc")
+        .with_client(false)
+        .with_blocking_client(false)
+        .with_file_descriptor_set_path(&descriptors)
+        .compile_protos(
+            &[
+                "../../protocol/management.proto",
+                "../../protocol/ota.proto",
+            ],
+            out.join("management.rs"),
+        )
+        .expect("generate Management service");
     let mut generator = micropb_gen::Generator::new();
     generator
-        .use_container_heapless()
-        .add_protoc_arg("-I../../protocol")
+        .use_container_heapless_v0_8()
         .configure(".", micropb_gen::Config::new().max_bytes(64))
         .configure(
             ".ota.PartitionInfo.label",
@@ -30,9 +47,6 @@ fn main() {
         micropb_gen::Config::new().max_bytes(64),
     );
     generator
-        .compile_protos(
-            &["../../protocol/ota.proto"],
-            std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("ota.rs"),
-        )
-        .expect("generate OTA protocol (requires protoc on PATH)");
+        .compile_fdset_file(&descriptors, out.join("ota.rs"))
+        .expect("generate OTA messages");
 }

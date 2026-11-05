@@ -51,7 +51,7 @@ impl Collector {
         self.devices.retain(|(instance, _), _| instance != name);
         if info.ty_domain != ota_protocol::SERVICE_TYPE
             || info.get_port() == 0
-            || info.get_property_val_str(txt::PROTOCOL) != Some(ota_protocol::VERSION_TXT)
+            || info.get_property_val_str(txt::TRANSPORT) != Some("grpc")
         {
             return;
         }
@@ -156,9 +156,9 @@ mod tests {
             [
                 (txt::ID, "board"),
                 (txt::FIRMWARE, "test"),
-                (txt::PROTOCOL, "1"),
                 (txt::STATE, "verified"),
                 (txt::OTA, "1"),
+                (txt::TRANSPORT, "grpc"),
             ]
             .as_slice(),
         )
@@ -195,6 +195,18 @@ mod tests {
         let bad = info("bad", 0, "192.0.2.1");
         c.resolved(&bad);
         assert!(c.devices.is_empty());
+        let old_transport = mdns_sd::ServiceInfo::new(
+            ota_protocol::SERVICE_TYPE,
+            "legacy",
+            "device.local.",
+            "192.0.2.1",
+            7779,
+            [(txt::ID, "board"), (txt::FIRMWARE, "test")].as_slice(),
+        )
+        .unwrap()
+        .as_resolved_service();
+        c.resolved(&old_transport);
+        assert!(c.devices.is_empty());
         for i in 0..70 {
             c.resolved(&info(&format!("device-{i}"), 123, "192.0.2.1"));
         }
@@ -203,7 +215,7 @@ mod tests {
         assert!(r.limit_reached);
     }
     #[test]
-    fn incompatible_protocol_is_ignored_and_bad_windows_fail_before_network() {
+    fn incompatible_transport_is_ignored_and_bad_windows_fail_before_network() {
         let bad = mdns_sd::ServiceInfo::new(
             ota_protocol::SERVICE_TYPE,
             "bad",
@@ -213,7 +225,7 @@ mod tests {
             [
                 (txt::ID, "board"),
                 (txt::FIRMWARE, "test"),
-                (txt::PROTOCOL, "2"),
+                (txt::TRANSPORT, "unsupported"),
             ]
             .as_slice(),
         )

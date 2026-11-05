@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+device-grpc = { path = "../device-grpc" }
 ota-protocol = { path = "../ota-protocol" }
 embassy-executor = "0.10.0"
 embassy-net = { version = "0.9.0", features = ["medium-ethernet", "tcp", "udp", "multicast"] }

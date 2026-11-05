@@ -56,6 +56,7 @@ impl LogBuffer {
             result.next_sequence = entry.sequence;
             let _ = result.entries.push(entry.clone());
         }
+        result.more = result.next_sequence < self.next - 1;
         result
     }
 }
@@ -70,6 +71,7 @@ mod tests {
         }
         let first = logs.read(&ReadLogsRequest::default());
         assert!(first.dropped);
+        assert!(first.more);
         assert_eq!(first.entries[0].sequence, 9);
         assert_eq!(first.next_sequence, 12);
         let next = logs.read(&ReadLogsRequest {
@@ -78,6 +80,12 @@ mod tests {
         });
         assert!(!next.dropped);
         assert_eq!(next.entries[0].sequence, 13);
+        let final_batch = logs.read(&ReadLogsRequest {
+            boot_id: 7,
+            after_sequence: 36,
+        });
+        assert_eq!(final_batch.entries.len(), 4);
+        assert!(!final_batch.more);
         let reset = logs.read(&ReadLogsRequest {
             boot_id: 6,
             after_sequence: 999,
@@ -106,14 +114,8 @@ mod tests {
         for _ in 0..4 {
             logs.push(u64::MAX, LogSeverity::Error, &"é".repeat(40));
         }
-        let response = crate::Response {
-            protocol_version: 1,
-            request_id: u32::MAX,
-            payload: Some(crate::ResponsePayload::Logs(
-                logs.read(&ReadLogsRequest::default()),
-            )),
-        };
+        let response = logs.read(&ReadLogsRequest::default());
         let bytes = crate::encode(&response).unwrap();
-        assert_eq!(crate::decode::<crate::Response>(&bytes).unwrap(), response);
+        assert_eq!(crate::decode::<ReadLogsResponse>(&bytes).unwrap(), response);
     }
 }

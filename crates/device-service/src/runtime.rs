@@ -13,7 +13,8 @@ pub enum State {
 pub struct Runtime {
     // Both consumers are joined futures within the same executor task.
     state: Cell<State>,
-    pub logs: core::cell::RefCell<ota_protocol::logs::LogBuffer>,
+    pub activation_pending: Cell<bool>,
+    pub logs: device_grpc::logs::LogStore<2>,
     pub announce: Signal<CriticalSectionRawMutex, ()>,
 }
 impl Runtime {
@@ -22,13 +23,13 @@ impl Runtime {
         let boot_id = ((rng.random() as u64) << 32 | rng.random() as u64).max(1);
         Self {
             state: Cell::new(State::Idle),
-            logs: core::cell::RefCell::new(ota_protocol::logs::LogBuffer::new(boot_id)),
+            activation_pending: Cell::new(false),
+            logs: device_grpc::logs::LogStore::new(boot_id),
             announce: Signal::new(),
         }
     }
     pub fn log(&self, severity: ota_protocol::LogSeverity, message: &str) {
         self.logs
-            .borrow_mut()
             .push(embassy_time::Instant::now().as_millis(), severity, message);
     }
     pub fn state(&self) -> &'static str {
@@ -43,16 +44,5 @@ impl Runtime {
         self.state.set(state);
         self.log(ota_protocol::LogSeverity::Info, self.state());
         self.announce.signal(());
-    }
-}
-pub struct UploadGuard<'a>(&'a Runtime);
-impl<'a> UploadGuard<'a> {
-    pub fn new(runtime: &'a Runtime) -> Self {
-        Self(runtime)
-    }
-}
-impl Drop for UploadGuard<'_> {
-    fn drop(&mut self) {
-        self.0.transition(State::Idle);
     }
 }

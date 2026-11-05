@@ -1,14 +1,9 @@
-//! Unsigned development uploads. Never retries a request after transmission.
-use ota_protocol::{
-    Request, RequestPayload as Op, Response, ResponsePayload, UploadPhase, VERSION,
-};
-use std::{
-    fs,
-    io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
-    path::Path,
-    time::{Duration, Instant},
-};
+//! gRPC development uploads. No operation is replayed after transmission.
+use crate::grpc_codec::RawCodec;
+use ota_protocol::{UploadAck, UploadOperation as Op, UploadPhase, UploadRequest};
+use std::{fs, io, net::SocketAddr, path::Path, time::Duration};
+use tokio::sync::mpsc;
+use tonic::{client::Grpc, transport::Endpoint};
 
 #[derive(Debug)]
 pub struct UploadResult {
@@ -19,6 +14,18 @@ pub struct UploadResult {
 fn invalid(text: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, text.into())
 }
+fn rpc(error: tonic::Status) -> io::Error {
+    invalid(format!(
+        "gRPC {}: {}",
+        error.code(),
+        error.message().escape_debug()
+    ))
+}
+fn uncertain(error: io::Error) -> io::Error {
+    invalid(format!(
+        "commit outcome uncertain: {error}; reconnect and check firmware version before retrying"
+    ))
+}
 
 pub fn upload(
     address: SocketAddr,
@@ -27,6 +34,28 @@ pub fn upload(
     version: &str,
     commit: bool,
 ) -> io::Result<UploadResult> {
+    upload_impl(address, timeout, path, version, commit, None)
+}
+/// Consume management logs concurrently with the upload on the same connection.
+/// Log failures are reported to the callback and never erase commit outcome.
+pub fn upload_with_logs(
+    address: SocketAddr,
+    timeout: Duration,
+    path: &Path,
+    version: &str,
+    commit: bool,
+    on_log: &mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>),
+) -> io::Result<UploadResult> {
+    upload_impl(address, timeout, path, version, commit, Some(on_log))
+}
+fn upload_impl(
+    address: SocketAddr,
+    timeout: Duration,
+    path: &Path,
+    version: &str,
+    commit: bool,
+    on_log: Option<&mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>)>,
+) -> io::Result<UploadResult> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() || metadata.len() > ota_core::SLOT_SIZE as u64 {
         return Err(invalid(
@@ -34,166 +63,299 @@ pub fn upload(
         ));
     }
     let image = fs::read(path)?;
-    ota_core::validate_image(&mut ota_core::SliceImage(&image),image.len() as u32,version)
-        .map_err(|e|invalid(format!("image validation: {e:?}; build device-demo and export an application-only image")))?;
-    let device = super::query_status_with_options(address, timeout, false, true)?.status;
+    ota_core::validate_image(
+        &mut ota_core::SliceImage(&image),
+        image.len() as u32,
+        version,
+    )
+    .map_err(|e| {
+        invalid(format!(
+            "image validation: {e:?}; build device-demo and export an application-only image"
+        ))
+    })?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            // Each exchange applies the remaining absolute budget. Do not wrap this
+            // whole future in a timeout that could erase commit-uncertainty context.
+            run(address, timeout, &image, version, commit, on_log).await
+        })
+}
+fn remaining(deadline: tokio::time::Instant, timeout: Duration) -> io::Result<Duration> {
+    deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .map(|v| v.min(timeout))
+        .filter(|v| !v.is_zero())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "upload total deadline exceeded"))
+}
+async fn run(
+    address: SocketAddr,
+    timeout: Duration,
+    image: &[u8],
+    version: &str,
+    commit: bool,
+    mut on_log: Option<&mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>)>,
+) -> io::Result<UploadResult> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let endpoint = Endpoint::from_shared(format!("http://{address}"))
+        .map_err(|e| invalid(e.to_string()))?
+        .connect_timeout(timeout);
+    let channel = tokio::time::timeout(remaining(deadline, timeout)?, endpoint.connect())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC connect timed out"))?
+        .map_err(|e| invalid(format!("gRPC connect: {e}")))?;
+    let mut client = Grpc::new(channel)
+        .max_decoding_message_size(ota_protocol::MAX_FRAME)
+        .max_encoding_message_size(ota_protocol::UPLOAD_FRAME);
+    client.ready().await.map_err(|e| invalid(e.to_string()))?;
+    let bytes = ota_protocol::encode(&ota_protocol::StatusRequest {
+        include_boot: true,
+        ..Default::default()
+    })
+    .map_err(|_| invalid("encode status request"))?
+    .to_vec();
+    let reply = tokio::time::timeout(
+        remaining(deadline, timeout)?,
+        client.unary(
+            tonic::Request::new(bytes),
+            device_grpc::STATUS_PATH
+                .parse()
+                .map_err(|_| invalid("invalid status RPC path"))?,
+            RawCodec,
+        ),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC status timed out"))?
+    .map_err(rpc)?;
+    let device: ota_protocol::StatusResponse = ota_protocol::decode(&reply.into_inner())
+        .map_err(|_| invalid("invalid status response"))?;
     if !device.ota_available || device.application.as_str() != ota_core::APP {
         return Err(invalid(
             "device is not a provisioned development OTA target",
         ));
     }
-    let deadline = Instant::now() + Duration::from_secs(180);
-    let mut socket = loop {
-        match TcpStream::connect_timeout(&address, super::remaining(deadline)?.min(timeout)) {
-            Ok(s) => break s,
-            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                std::thread::sleep(Duration::from_millis(50))
-            }
-            Err(e) => return Err(e),
+    let running = device
+        .boot()
+        .and_then(|b| b.running())
+        .ok_or_else(|| invalid("missing running partition"))?
+        .offset;
+    let expected_target = match running {
+        0x10000 => 0x310000,
+        0x310000 => 0x10000,
+        _ => return Err(invalid("unexpected running slot")),
+    };
+    let mut log_stream = None;
+    let mut cursor = ota_protocol::ReadLogsRequest::default();
+    if let Some(callback) = on_log.as_mut() {
+        let result = async {
+            client.ready().await.map_err(|e| invalid(e.to_string()))?;
+            let request = tonic::Request::new(
+                ota_protocol::encode(&cursor)
+                    .map_err(|_| invalid("encode log cursor"))?
+                    .to_vec(),
+            );
+            let response = tokio::time::timeout(
+                remaining(deadline, timeout)?,
+                client.server_streaming(
+                    request,
+                    device_grpc::LOGS_PATH
+                        .parse()
+                        .map_err(|_| invalid("invalid logs RPC path"))?,
+                    RawCodec,
+                ),
+            )
+            .await
+            .map_err(|_| invalid("log subscription timed out"))?
+            .map_err(rpc)?;
+            Ok::<_, io::Error>(response.into_inner())
         }
-    };
-    socket.set_nodelay(true)?;
-    let digest = ota_core::hash(&image);
-    let begin = ota_protocol::BeginUpdate {
-        application: ota_core::APP.try_into().unwrap(),
-        chip: "esp32s3".try_into().unwrap(),
-        version: version
-            .try_into()
-            .map_err(|_| invalid("version too long"))?,
-        image_size: image.len() as u32,
-        sha256: digest.as_slice().try_into().unwrap(),
-    };
-    let mut id = 1;
-    let ack = exchange(&mut socket, id, Op::Begin(begin), deadline, timeout)?;
-    expect(&ack, UploadPhase::Receiving, 0)?;
-    let target = ack.target_offset;
-    if target != 0x10000 && target != 0x310000 {
-        return Err(invalid("unexpected target slot"));
+        .await;
+        match result {
+            Ok(stream) => log_stream = Some(stream),
+            Err(e) => callback(Err(e.to_string())),
+        }
     }
-    for (index, bytes) in image.chunks(ota_protocol::CHUNK_SIZE).enumerate() {
-        id += 1;
-        let offset = (index * ota_protocol::CHUNK_SIZE) as u32;
-        let chunk = ota_protocol::FirmwareChunk {
-            offset,
-            data: bytes.try_into().unwrap(),
+    let transfer = async {
+        client.ready().await.map_err(|e| invalid(e.to_string()))?;
+        let (tx, rx) = mpsc::channel(1);
+        let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
+        request.set_timeout(remaining(deadline, Duration::from_secs(180))?);
+        let response = tokio::time::timeout(
+            remaining(deadline, timeout)?,
+            client.streaming(
+                request,
+                device_grpc::UPLOAD_PATH
+                    .parse()
+                    .map_err(|_| invalid("invalid upload RPC path"))?,
+                RawCodec,
+            ),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC upload start timed out"))?
+        .map_err(rpc)?;
+        let mut replies = response.into_inner();
+        let begin = ota_protocol::BeginUpdate {
+            application: ota_core::APP
+                .try_into()
+                .map_err(|_| invalid("application name exceeds protocol capacity"))?,
+            chip: "esp32s3"
+                .try_into()
+                .map_err(|_| invalid("chip name exceeds protocol capacity"))?,
+            version: version
+                .try_into()
+                .map_err(|_| invalid("version too long"))?,
+            image_size: image.len() as u32,
+            sha256: ota_core::hash(image)
+                .as_slice()
+                .try_into()
+                .map_err(|_| invalid("digest exceeds protocol capacity"))?,
         };
-        let ack = exchange(&mut socket, id, Op::Chunk(chunk), deadline, timeout)?;
-        expect(&ack, UploadPhase::Receiving, offset + bytes.len() as u32)?;
-        if ack.target_offset != target {
-            return Err(invalid("target changed during transfer"));
+        let mut id = 1;
+        let ack = exchange(&tx, &mut replies, id, Op::Begin(begin), deadline, timeout).await?;
+        expect(&ack, UploadPhase::Receiving, 0, expected_target)?;
+        for (i, bytes) in image.chunks(ota_protocol::CHUNK_SIZE).enumerate() {
+            id += 1;
+            let offset = (i * ota_protocol::CHUNK_SIZE) as u32;
+            let ack = exchange(
+                &tx,
+                &mut replies,
+                id,
+                Op::Chunk(ota_protocol::FirmwareChunk {
+                    offset,
+                    data: bytes
+                        .try_into()
+                        .map_err(|_| invalid("chunk exceeds protocol capacity"))?,
+                }),
+                deadline,
+                timeout,
+            )
+            .await?;
+            expect(
+                &ack,
+                UploadPhase::Receiving,
+                offset + bytes.len() as u32,
+                expected_target,
+            )?;
         }
-    }
-    id += 1;
-    let ack = exchange(
-        &mut socket,
-        id,
-        Op::Finish(ota_protocol::FinishUpdate {}),
-        deadline,
-        timeout,
-    )?;
-    expect(&ack, UploadPhase::Verified, image.len() as u32)?;
-    if ack.target_offset != target {
-        return Err(invalid("target changed during verification"));
-    }
-    id += 1;
-    if commit {
-        let ack=exchange(&mut socket,id,Op::Commit(ota_protocol::CommitUpdate{}),deadline,timeout)
-            .map_err(|e|invalid(format!("commit outcome uncertain: {e}; reconnect and check firmware version before retrying")))?;
-        expect(&ack, UploadPhase::Committed, image.len() as u32)?;
-    } else {
+        id += 1;
         let ack = exchange(
-            &mut socket,
+            &tx,
+            &mut replies,
             id,
-            Op::Abort(ota_protocol::AbortUpdate {}),
+            Op::Finish(Default::default()),
             deadline,
             timeout,
+        )
+        .await?;
+        expect(
+            &ack,
+            UploadPhase::Verified,
+            image.len() as u32,
+            expected_target,
         )?;
-        expect(&ack, UploadPhase::Aborted, image.len() as u32)?;
+        id += 1;
+        let final_op = if commit {
+            Op::Commit(Default::default())
+        } else {
+            Op::Abort(Default::default())
+        };
+        let result = async {
+            let ack = exchange(&tx, &mut replies, id, final_op, deadline, timeout).await?;
+            expect(
+                &ack,
+                if commit {
+                    UploadPhase::Committed
+                } else {
+                    UploadPhase::Aborted
+                },
+                image.len() as u32,
+                expected_target,
+            )
+        }
+        .await;
+        if commit {
+            result.map_err(uncertain)?;
+        } else {
+            result?;
+        }
+        // The validated Committed ACK is authoritative. Reset may truncate trailers.
+        drop(tx);
+        Ok(UploadResult {
+            bytes: image.len() as u32,
+            target_offset: expected_target,
+            committed: commit,
+        })
+    };
+    tokio::pin!(transfer);
+    loop {
+        if let Some(stream) = log_stream.as_mut() {
+            tokio::select! {
+                result=&mut transfer=>return result,
+                message=stream.message()=> {
+                    let result=match message {
+                        Ok(Some(bytes))=>ota_protocol::decode::<ota_protocol::ReadLogsResponse>(&bytes)
+                            .map_err(|_| invalid("invalid log batch")).and_then(|batch| {
+                                super::validate_logs(&cursor,&batch)?;
+                                cursor.boot_id=batch.boot_id;cursor.after_sequence=batch.next_sequence;Ok(batch)
+                            }),
+                        Ok(None)=>Err(invalid("log stream ended")),
+                        Err(e)=>Err(rpc(e)),
+                    };
+                    let failed=result.is_err();
+                    if let Some(callback)=on_log.as_mut(){callback(result.map_err(|e|e.to_string()));}
+                    if failed {log_stream=None;}
+                }
+            }
+        } else {
+            return transfer.await;
+        }
     }
-    Ok(UploadResult {
-        bytes: image.len() as u32,
-        target_offset: target,
-        committed: commit,
-    })
 }
-fn expect(ack: &ota_protocol::UploadAck, phase: UploadPhase, offset: u32) -> io::Result<()> {
-    if ack.phase != phase || ack.next_offset != offset {
-        Err(invalid("unexpected upload phase/offset"))
+fn encode(payload: Op, id: u32) -> io::Result<Vec<u8>> {
+    ota_protocol::encode_upload(&UploadRequest {
+        request_id: id,
+        payload: Some(payload),
+    })
+    .map(|b| b.to_vec())
+    .map_err(|e| invalid(format!("encode upload: {e:?}")))
+}
+fn decode(bytes: &[u8], id: u32) -> io::Result<UploadAck> {
+    let response: UploadAck =
+        ota_protocol::decode(bytes).map_err(|_| invalid("invalid upload response"))?;
+    if response.request_id != id {
+        return Err(invalid("upload request ID mismatch"));
+    }
+    Ok(response)
+}
+fn expect(ack: &UploadAck, phase: UploadPhase, offset: u32, target: u32) -> io::Result<()> {
+    if ack.phase != phase || ack.next_offset != offset || ack.target_offset != target {
+        Err(invalid("unexpected upload phase/offset/target"))
     } else {
         Ok(())
     }
 }
-fn exchange(
-    socket: &mut TcpStream,
+async fn exchange(
+    tx: &mpsc::Sender<Vec<u8>>,
+    replies: &mut tonic::Streaming<Vec<u8>>,
     id: u32,
     payload: Op,
-    deadline: Instant,
+    deadline: tokio::time::Instant,
     timeout: Duration,
-) -> io::Result<ota_protocol::UploadAck> {
-    let request = Request {
-        protocol_version: VERSION,
-        request_id: id,
-        payload: Some(payload),
-    };
-    let bytes = ota_protocol::encode_upload(&request)
-        .map_err(|e| invalid(format!("encode upload: {e:?}")))?;
-    write_exact(
-        socket,
-        &(bytes.len() as u32).to_be_bytes(),
-        deadline,
-        timeout,
-    )?;
-    write_exact(socket, &bytes, deadline, timeout)?;
-    let mut prefix = [0; 4];
-    read_exact(socket, &mut prefix, deadline, timeout)?;
-    let n = ota_protocol::frame_length(prefix)
-        .map_err(|_| invalid("invalid upload response length"))?;
-    let mut body = [0; ota_protocol::MAX_FRAME];
-    read_exact(socket, &mut body[..n], deadline, timeout)?;
-    let response: Response =
-        ota_protocol::decode(&body[..n]).map_err(|_| invalid("invalid upload response"))?;
-    if response.protocol_version != VERSION || response.request_id != id {
-        return Err(invalid("upload version/request ID mismatch"));
-    }
-    match response.payload {
-        Some(ResponsePayload::Upload(ack)) => Ok(ack),
-        Some(ResponsePayload::Error(error)) => Err(invalid(format!(
-            "device rejected update: {}",
-            error.message.escape_debug()
-        ))),
-        _ => Err(invalid("missing upload acknowledgement")),
-    }
-}
-
-fn read_exact(
-    socket: &mut TcpStream,
-    mut bytes: &mut [u8],
-    deadline: Instant,
-    timeout: Duration,
-) -> io::Result<()> {
-    while !bytes.is_empty() {
-        socket.set_read_timeout(Some(super::remaining(deadline)?.min(timeout)))?;
-        let n = socket.read(bytes)?;
-        if n == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        bytes = &mut bytes[n..];
-    }
-    Ok(())
-}
-fn write_exact(
-    socket: &mut TcpStream,
-    mut bytes: &[u8],
-    deadline: Instant,
-    timeout: Duration,
-) -> io::Result<()> {
-    while !bytes.is_empty() {
-        socket.set_write_timeout(Some(super::remaining(deadline)?.min(timeout)))?;
-        let n = socket.write(bytes)?;
-        if n == 0 {
-            return Err(io::ErrorKind::WriteZero.into());
-        }
-        bytes = &bytes[n..];
-    }
-    Ok(())
+) -> io::Result<UploadAck> {
+    let bytes = encode(payload, id)?;
+    tokio::time::timeout(remaining(deadline, timeout)?, async {
+        tx.send(bytes)
+            .await
+            .map_err(|_| invalid("request stream closed"))?;
+        let bytes = replies
+            .message()
+            .await
+            .map_err(rpc)?
+            .ok_or_else(|| invalid("missing upload acknowledgement"))?;
+        let response = decode(&bytes, id)?;
+        Ok(response)
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC upload operation timed out"))?
 }
