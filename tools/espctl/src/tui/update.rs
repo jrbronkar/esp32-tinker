@@ -104,6 +104,23 @@ impl Workflow {
         self.picker.is_some()
     }
 
+    pub(super) fn images(&self) -> Option<(&[(PathBuf, String)], usize)> {
+        self.picker
+            .as_ref()
+            .map(|picker| (picker.images.as_slice(), picker.selected))
+    }
+
+    pub(super) fn can_activate(&self) -> bool {
+        self.verified.is_some()
+    }
+
+    pub(super) fn write_progress(&self) -> Option<(u32, u32)> {
+        match *self.job.as_ref()?.progress.borrow() {
+            Some(Progress::Writing { written, total }) => Some((written, total)),
+            _ => None,
+        }
+    }
+
     pub(super) fn previous_image(&mut self) {
         if let Some(picker) = &mut self.picker {
             picker.selected = picker.selected.saturating_sub(1);
@@ -309,28 +326,18 @@ impl Workflow {
                 Some(Progress::CheckingBoot) => "Checking running firmware and slot".into(),
             };
         }
-        if let Some(picker) = &self.picker {
-            let (path, version) = &picker.images[picker.selected];
-            return format!(
-                "Image {}/{} · {} · {}\n↑/↓ Choose   Enter Upload and verify   Esc Cancel",
-                picker.selected + 1,
-                picker.images.len(),
-                version.escape_debug(),
-                path.display().to_string().escape_debug(),
-            );
-        }
         if let Some(verified) = &self.verified {
             let board = &verified.board;
             let id = board.id.escape_debug();
             let version = board.version.escape_debug();
             return if self.confirming {
                 format!(
-                    "Activate {} on {} ({}) and reboot?\nY Resend, verify, and activate   Esc Cancel",
+                    "Activate {} on {} ({}) and reboot?\nResend and verify the image before rebooting.",
                     version, id, board.address
                 )
             } else {
                 format!(
-                    "Verified {} on {} · slot 0x{:x}\nA Review activation   U Verify again",
+                    "Verified {} on {} · slot 0x{:x}\nReview activation from Actions.",
                     version, id, verified.slot
                 )
             };

@@ -25,10 +25,13 @@ cargo run -p espctl -- tui --host BOARD_IP
 ```
 
 Run the dashboard in an interactive terminal with a board running the gRPC
-management firmware. The dashboard scans the local network on launch. Use Left/Right to switch
-boards and R to rescan. Use Up/Down or Page Up/Page Down to scroll the
-last 1,000 rows, End to return to live output, F to cycle severity filters,
-and Q to quit. Status refreshes every two seconds alongside the live log
+management firmware. The dashboard uses its own dark palette on terminals
+with 256-color support. It scans the local network on launch. Use Left/Right
+or Tab to move between Boards, Actions, and Logs. Use Up/Down to select a board
+or action, and Enter to open or run the selection. In Logs, Up/Down or Page
+Up/Page Down scroll the last 1,000 rows, and Enter or End returns to live
+output. Actions includes the severity filter and rescan. F, R, and Q are
+shortcuts for filtering, rescanning, and quitting. Status refreshes every two seconds alongside the live log
 stream on the same HTTP/2 connection. After a disconnect, the dashboard
 reconnects and resumes from its last cursor, marking device resets and
 overwritten history. The stream contains firmware management logs. Use the
@@ -51,14 +54,17 @@ nix run .#espctl -- tui
 
 The version defaults to the short Git commit hash, with a second hash when
 tracked files have local changes. Pass `-- VERSION` to override it. The export
-lands in `target/ota/<version>.bin`. Select a board and press **U** to browse compatible application binaries in `target/ota`. Use **↑/↓** to choose
-an image and **Enter** to write and verify the inactive slot. The picker reads
+lands in `target/ota/<version>.bin`. Select a board, then choose **Firmware
+images** under Actions or press **U** to browse compatible binaries in
+`target/ota`. Use **↑/↓** to choose an image and **Enter** to write and verify
+the inactive slot. The picker reads
 the version from the image. For an image elsewhere, launch with
 `tui --image /path/to/app.bin` and press **U**.
 
 The dashboard streams logs on the upload connection and resumes status polling
-when the transfer ends. After verification, press **A** to review the board, version, and reboot prompt, then **Y** to activate or
-**Esc** to dismiss the prompt. The dashboard releases the first upload session
+when the transfer ends. After verification, choose **Review activation** under
+Actions or press **A**. The prompt starts on **Cancel**. Use **→** to select
+**Activate & reboot**, then press **Enter**. **Y** confirms and **Esc** cancels. The dashboard releases the first upload session
 after verification. Activation resends and verifies the same in-memory image
 before committing it. The dashboard checks the running version and slot after
 reboot and reports an unknown outcome if it loses the activation response and

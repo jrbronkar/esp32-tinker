@@ -15,10 +15,10 @@ use ratatui::{
         execute,
         terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
     },
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
-    widgets::{Block, List, ListState, Paragraph},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Gauge, List, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -209,10 +209,58 @@ impl Filter {
     }
 }
 
+// Explicit xterm colors keep the dashboard dark even with a light terminal profile.
+const BACKGROUND: Color = Color::Indexed(233);
+const PANEL: Color = Color::Indexed(235);
+const BORDER: Color = Color::Indexed(60);
+const TEXT: Color = Color::Indexed(255);
+const MUTED: Color = Color::Indexed(250);
+const CYAN: Color = Color::Indexed(87);
+const VIOLET: Color = Color::Indexed(147);
+const AMBER: Color = Color::Indexed(221);
+const RED: Color = Color::Indexed(210);
+
+fn panel(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
+    Block::bordered()
+        .title(title)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(if focused { CYAN } else { BORDER }))
+        .title_style(Style::new().fg(if focused { CYAN } else { MUTED }))
+        .style(Style::new().bg(PANEL).fg(TEXT))
+}
+
+fn highlight() -> Style {
+    Style::new()
+        .bg(CYAN)
+        .fg(BACKGROUND)
+        .add_modifier(Modifier::BOLD)
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Focus {
+    #[default]
+    Boards,
+    Actions,
+    Logs,
+}
+
+impl Focus {
+    fn shift(self, right: bool) -> Self {
+        match (self, right) {
+            (Self::Boards, true) | (Self::Logs, false) => Self::Actions,
+            (Self::Actions, true) | (Self::Boards, false) => Self::Logs,
+            (Self::Logs, true) | (Self::Actions, false) => Self::Boards,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Dashboard {
     targets: Vec<Target>,
     selected: usize,
+    focus: Focus,
+    action: usize,
+    activation_selected: bool,
     session: Option<Session>,
     status: Option<StatusResponse>,
     connection: String,
@@ -300,27 +348,158 @@ impl Dashboard {
         }
     }
 
+    fn actions(&self, direct: bool) -> Vec<(KeyCode, String)> {
+        let mut actions = vec![(KeyCode::Char('u'), "Firmware images".into())];
+        if self.workflow.can_activate() {
+            actions.insert(0, (KeyCode::Char('a'), "Review activation".into()));
+        }
+        actions.push((
+            KeyCode::Char('f'),
+            format!("Log filter · {}", self.filter.label()),
+        ));
+        actions.push((KeyCode::End, "Follow live logs".into()));
+        if !direct {
+            actions.push((KeyCode::Char('r'), "Scan for boards".into()));
+        }
+        actions.push((KeyCode::Char('q'), "Quit".into()));
+        actions
+    }
+
+    fn pause_monitor(&mut self) {
+        if self.workflow.busy() {
+            self.focus = Focus::Logs;
+            self.session = None;
+            self.connection = "Update in progress".into();
+        }
+    }
+
+    fn draw_firmware(&self, frame: &mut Frame<'_>, area: Rect) {
+        if !self.workflow.enabled() {
+            return;
+        }
+        if let Some((images, selected)) = self.workflow.images() {
+            let shell = panel(
+                format!(" Firmware library · {}/{} ", selected + 1, images.len()),
+                true,
+            );
+            let [list, hint] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+                .areas(shell.inner(area));
+            frame.render_widget(shell, area);
+            let rows = images.iter().map(|(path, version)| {
+                let name = path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
+                Line::from(vec![
+                    Span::raw(version.escape_debug().to_string()),
+                    Span::raw(format!("  ·  {}", name.escape_debug())),
+                ])
+            });
+            let mut state = ListState::default().with_selected(Some(selected));
+            frame.render_stateful_widget(
+                List::new(rows)
+                    .highlight_symbol("▸ ")
+                    .highlight_style(highlight()),
+                list,
+                &mut state,
+            );
+            frame.render_widget(
+                Line::styled(
+                    "↑↓ Choose   Enter Upload and verify   Esc Back",
+                    Style::new().fg(MUTED),
+                ),
+                hint,
+            );
+            return;
+        }
+        let confirming = self.workflow.confirming();
+        let shell = panel(
+            if confirming {
+                " Confirm activation "
+            } else {
+                " Firmware update "
+            },
+            confirming || self.workflow.busy(),
+        );
+        let inner = shell.inner(area);
+        frame.render_widget(shell, area);
+        if confirming {
+            let [message, buttons] =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+            frame.render_widget(
+                Paragraph::new(self.workflow.text()).wrap(Wrap { trim: true }),
+                message,
+            );
+            let choice = |selected| {
+                if selected {
+                    highlight()
+                } else {
+                    Style::new().fg(AMBER)
+                }
+            };
+            frame.render_widget(
+                Line::from(vec![
+                    Span::styled(" Cancel ", choice(!self.activation_selected)),
+                    Span::raw("  "),
+                    Span::styled(" Activate & reboot ", choice(self.activation_selected)),
+                    Span::styled("   ←→ Choose   Enter Confirm", Style::new().fg(MUTED)),
+                ]),
+                buttons,
+            );
+        } else if let Some((written, total)) = self.workflow.write_progress() {
+            frame.render_widget(
+                Gauge::default()
+                    .ratio(f64::from(written) / f64::from(total.max(1)))
+                    .label(format!("Writing flash  ·  {written}/{total} bytes"))
+                    .gauge_style(Style::new().fg(CYAN).bg(PANEL)),
+                inner,
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(self.workflow.text()).wrap(Wrap { trim: true }),
+                inner,
+            );
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame<'_>, direct: bool) {
+        frame.render_widget(
+            Block::default().style(Style::new().bg(BACKGROUND).fg(TEXT)),
+            frame.area(),
+        );
+        let firmware_height = if self.workflow.picking() {
+            (frame.area().height / 2).clamp(5, 14)
+        } else if self.workflow.confirming() {
+            7
+        } else if self.workflow.enabled() {
+            4
+        } else {
+            0
+        };
         let [header, body, update, footer] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(0),
-            Constraint::Length(if self.workflow.enabled() { 5 } else { 0 }),
+            Constraint::Length(firmware_height),
             Constraint::Length(2),
         ])
         .areas(frame.area());
-        let [devices, board] =
-            Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-                .areas(body);
+        let [sidebar, board] = Layout::horizontal([
+            Constraint::Length((frame.area().width / 3).min(36)),
+            Constraint::Min(0),
+        ])
+        .areas(body);
+        let [devices, actions] =
+            Layout::vertical([Constraint::Min(3), Constraint::Length(8)]).areas(sidebar);
         let [status, logs] =
             Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).areas(board);
 
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(
-                    "ESP32  /  DEVICE MONITOR",
-                    Style::default().add_modifier(Modifier::BOLD),
+                    "◈ ESP32  /  DEVICE CONTROL",
+                    Style::new().fg(CYAN).add_modifier(Modifier::BOLD),
                 ),
-                Line::raw(&self.discovery),
+                Line::styled(&self.discovery, Style::new().fg(VIOLET)),
             ]),
             header,
         );
@@ -329,15 +508,29 @@ impl Dashboard {
             ListState::default().with_selected((!self.targets.is_empty()).then_some(self.selected));
         frame.render_stateful_widget(
             List::new(names)
-                .block(Block::bordered().title(" Boards "))
-                .highlight_symbol("› ")
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                .block(panel(" Boards ", self.focus == Focus::Boards))
+                .highlight_symbol("▸ ")
+                .highlight_style(if self.focus == Focus::Boards {
+                    highlight()
+                } else {
+                    Style::new().fg(VIOLET)
+                }),
             devices,
             &mut selected,
+        );
+        let options = self.actions(direct);
+        self.action = self.action.min(options.len() - 1);
+        let mut selected_action = ListState::default().with_selected(
+            (self.focus == Focus::Actions && !self.workflow.busy()).then_some(self.action),
+        );
+        frame.render_stateful_widget(
+            List::new(options.into_iter().map(|(_, label)| label))
+                .style(Style::new().fg(if self.workflow.busy() { MUTED } else { TEXT }))
+                .block(panel(" Actions ", self.focus == Focus::Actions))
+                .highlight_symbol("▸ ")
+                .highlight_style(highlight()),
+            actions,
+            &mut selected_action,
         );
 
         let mut details = Vec::new();
@@ -372,7 +565,7 @@ impl Dashboard {
         }
         frame.render_widget(
             Paragraph::new(details.into_iter().map(Line::raw).collect::<Vec<_>>())
-                .block(Block::bordered().title(" Status ")),
+                .block(panel(" Status ", false)),
             status,
         );
 
@@ -389,50 +582,42 @@ impl Dashboard {
             .iter()
             .map(|row| {
                 let color = match row.severity {
-                    Some(LogSeverity::Error) => Color::Red,
-                    Some(LogSeverity::Warn) => Color::Yellow,
-                    None => Color::Cyan,
-                    _ => Color::Reset,
+                    Some(LogSeverity::Error) => RED,
+                    Some(LogSeverity::Warn) => AMBER,
+                    None => CYAN,
+                    _ => TEXT,
                 };
                 Line::styled(&row.text, Style::default().fg(color))
             })
             .collect::<Vec<_>>();
         let mode = if self.scroll == 0 { "live" } else { "scrolled" };
         frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::bordered().title(format!(" Logs · {} · {mode} ", self.filter.label())),
-            ),
+            Paragraph::new(lines).block(panel(
+                format!(" Logs · {} · {mode} ", self.filter.label()),
+                self.focus == Focus::Logs,
+            )),
             logs,
         );
-        if self.workflow.enabled() {
-            let color = if self.workflow.confirming() {
-                Color::Yellow
-            } else {
-                Color::Cyan
-            };
-            frame.render_widget(
-                Paragraph::new(self.workflow.text())
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .block(
-                        Block::bordered()
-                            .title(" Firmware update ")
-                            .border_style(Style::default().fg(color)),
-                    ),
-                update,
-            );
-        }
-        let controls = if self.workflow.busy() || direct {
-            "↑/↓ Scroll   PgUp/PgDn Page   End Live"
+        self.draw_firmware(frame, update);
+        let controls = if self.workflow.busy() {
+            "↑↓ Scroll logs   PgUp/PgDn Page   End Live"
         } else {
-            "←/→ Board   R Scan   ↑/↓ Scroll   PgUp/PgDn Page   End Live"
+            match self.focus {
+                Focus::Boards => "←→ Switch pane   ↑↓ Select board   Enter Actions",
+                Focus::Actions => "←→ Switch pane   ↑↓ Choose action   Enter Run",
+                Focus::Logs => "←→ Switch pane   ↑↓ Scroll logs   Enter Live",
+            }
         };
-        let actions = if self.workflow.busy() {
-            "F Severity   Board selection and quit resume after update"
+        let shortcuts = if self.workflow.busy() {
+            "F Filter   Board selection and quit resume after update"
         } else {
-            "F Severity   U Firmware   Q Quit"
+            "U Firmware   A Review activation   F Filter   R Scan   Q Quit"
         };
         frame.render_widget(
-            Paragraph::new(vec![Line::raw(controls), Line::raw(actions)]),
+            Paragraph::new(vec![
+                Line::styled(controls, Style::new().fg(CYAN)),
+                Line::styled(shortcuts, Style::new().fg(MUTED)),
+            ]),
             footer,
         );
     }
@@ -483,6 +668,10 @@ async fn dashboard(
         let updating = app.workflow.busy();
         redraw |= app.workflow.poll().await;
         if updating && !app.workflow.busy() {
+            if app.workflow.can_activate() {
+                app.focus = Focus::Actions;
+                app.action = 0;
+            }
             if let Some(target) = app.targets.get(app.selected) {
                 app.session = Some(Session::start(target.address, timeout));
                 app.connection = "Reconnecting after update…".into();
@@ -557,10 +746,7 @@ async fn dashboard(
                                     app.status.as_ref(),
                                     timeout,
                                 );
-                                if app.workflow.busy() {
-                                    app.session = None;
-                                    app.connection = "Update in progress".into();
-                                }
+                                app.pause_monitor();
                             }
                             _ => {}
                         }
@@ -568,22 +754,41 @@ async fn dashboard(
                     }
                     if app.workflow.confirming() {
                         match key.code {
+                            KeyCode::Left => app.activation_selected = false,
+                            KeyCode::Right => app.activation_selected = true,
+                            KeyCode::Enter if key.kind == KeyEventKind::Press => {
+                                if app.activation_selected {
+                                    app.workflow.activate(timeout);
+                                } else {
+                                    app.workflow.cancel_confirmation();
+                                }
+                            }
                             KeyCode::Char('y')
                                 if key.kind == KeyEventKind::Press && key.modifiers.is_empty() =>
                             {
-                                app.workflow.activate(timeout)
+                                app.workflow.activate(timeout);
                             }
                             KeyCode::Esc | KeyCode::Char('n') => app.workflow.cancel_confirmation(),
                             _ => {}
                         }
-                        if app.workflow.busy() {
-                            app.session = None;
-                            app.connection = "Update in progress".into();
-                        }
+                        app.pause_monitor();
                         continue;
                     }
                     let busy = app.workflow.busy();
-                    match key.code {
+                    let command =
+                        if !busy && key.kind == KeyEventKind::Press && key.code == KeyCode::Enter {
+                            match app.focus {
+                                Focus::Boards => {
+                                    app.focus = Focus::Actions;
+                                    continue;
+                                }
+                                Focus::Actions => app.actions(direct.is_some())[app.action].0,
+                                Focus::Logs => KeyCode::End,
+                            }
+                        } else {
+                            key.code
+                        };
+                    match command {
                         KeyCode::Char('q') | KeyCode::Esc if !busy => return Ok(()),
                         KeyCode::Char('c')
                             if !busy && key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -601,10 +806,7 @@ async fn dashboard(
                                 app.status.as_ref(),
                                 timeout,
                             );
-                            if app.workflow.busy() {
-                                app.session = None;
-                                app.connection = "Update in progress".into();
-                            }
+                            app.pause_monitor();
                         }
                         KeyCode::Char('a')
                             if !busy
@@ -612,13 +814,32 @@ async fn dashboard(
                                 && key.kind == KeyEventKind::Press
                                 && key.modifiers.is_empty() =>
                         {
-                            app.workflow.ask_activation()
+                            app.activation_selected = false;
+                            app.workflow.ask_activation();
                         }
-                        KeyCode::Left if !busy && app.selected > 0 => {
-                            app.select(app.selected - 1, timeout)
+                        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab
+                            if !busy =>
+                        {
+                            app.focus = app
+                                .focus
+                                .shift(matches!(key.code, KeyCode::Right | KeyCode::Tab));
                         }
-                        KeyCode::Right if !busy && app.selected + 1 < app.targets.len() => {
-                            app.select(app.selected + 1, timeout)
+                        KeyCode::Up if !busy && app.focus == Focus::Boards && app.selected > 0 => {
+                            app.select(app.selected - 1, timeout);
+                        }
+                        KeyCode::Down
+                            if !busy
+                                && app.focus == Focus::Boards
+                                && app.selected + 1 < app.targets.len() =>
+                        {
+                            app.select(app.selected + 1, timeout);
+                        }
+                        KeyCode::Up if !busy && app.focus == Focus::Actions => {
+                            app.action = app.action.saturating_sub(1);
+                        }
+                        KeyCode::Down if !busy && app.focus == Focus::Actions => {
+                            app.action =
+                                (app.action + 1).min(app.actions(direct.is_some()).len() - 1);
                         }
                         KeyCode::Char('r') if !busy && direct.is_none() && scanning.is_none() => {
                             app.discovery = "Scanning the local network…".into();
@@ -628,8 +849,10 @@ async fn dashboard(
                             app.filter = app.filter.next();
                             app.scroll = 0;
                         }
-                        KeyCode::Up => app.scroll += 1,
-                        KeyCode::Down => app.scroll = app.scroll.saturating_sub(1),
+                        KeyCode::Up if busy || app.focus == Focus::Logs => app.scroll += 1,
+                        KeyCode::Down if busy || app.focus == Focus::Logs => {
+                            app.scroll = app.scroll.saturating_sub(1)
+                        }
                         KeyCode::PageUp => app.scroll += app.page,
                         KeyCode::PageDown => app.scroll = app.scroll.saturating_sub(app.page),
                         KeyCode::End => app.scroll = 0,
