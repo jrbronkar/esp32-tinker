@@ -52,7 +52,6 @@ impl Collector {
         if info.ty_domain != ota_protocol::SERVICE_TYPE
             || info.get_port() == 0
             || info.get_property_val_str(txt::TRANSPORT) != Some("grpc")
-            || info.get_property_val_str(txt::PROTOCOL) != Some(ota_protocol::VERSION_TXT)
         {
             return;
         }
@@ -157,7 +156,6 @@ mod tests {
             [
                 (txt::ID, "board"),
                 (txt::FIRMWARE, "test"),
-                (txt::PROTOCOL, "1"),
                 (txt::STATE, "verified"),
                 (txt::OTA, "1"),
                 (txt::TRANSPORT, "grpc"),
@@ -203,12 +201,7 @@ mod tests {
             "device.local.",
             "192.0.2.1",
             7779,
-            [
-                (txt::ID, "board"),
-                (txt::FIRMWARE, "test"),
-                (txt::PROTOCOL, "1"),
-            ]
-            .as_slice(),
+            [(txt::ID, "board"), (txt::FIRMWARE, "test")].as_slice(),
         )
         .unwrap()
         .as_resolved_service();
@@ -222,7 +215,7 @@ mod tests {
         assert!(r.limit_reached);
     }
     #[test]
-    fn incompatible_protocol_is_ignored_and_bad_windows_fail_before_network() {
+    fn incompatible_transport_is_ignored_and_bad_windows_fail_before_network() {
         let bad = mdns_sd::ServiceInfo::new(
             ota_protocol::SERVICE_TYPE,
             "bad",
@@ -232,7 +225,7 @@ mod tests {
             [
                 (txt::ID, "board"),
                 (txt::FIRMWARE, "test"),
-                (txt::PROTOCOL, "2"),
+                (txt::TRANSPORT, "unsupported"),
             ]
             .as_slice(),
         )

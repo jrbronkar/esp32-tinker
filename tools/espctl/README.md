@@ -42,7 +42,7 @@ cargo run -p espctl -- status --help
 ```
 
 Options: `--port 7779`, `--timeout-ms 5000`. The host is an IP literal, not a URL.
-Success prints identity, application, version, protocol, uptime, OTA availability,
+Success prints identity, application, version, uptime, OTA availability,
 and total query latency in milliseconds. Timing includes TCP connection setup,
 refused-connect retries, request/response I/O, and response validation. It excludes
 Cargo startup/build time, argument parsing, and output rendering; this is not a

@@ -23,11 +23,11 @@ Firmware uses `edge-mdns` to advertise `_espctl._tcp.local.`. The CLI uses
 | PTR | Lists service instances |
 | SRV | Gives each instance's target hostname and management port |
 | A | Resolves the target hostname to its current IPv4 address |
-| TXT | Carries id, application, firmware, protocol, state, ota and transport metadata |
+| TXT | Carries id, application, firmware, state, ota and transport metadata |
 
 Hostnames derive from each board's MAC. The client follows advertised SRV ports
-and A records rather than assuming a management endpoint. TXT keys and the
-protocol version are shared constants in `ota-protocol`. The SRV port
+and A records rather than assuming a management endpoint. TXT keys are shared
+constants in `ota-protocol`. The SRV port
 identifies the single Management service. `transport=grpc` distinguishes it from
 older length-prefixed services; the CLI ignores incompatible transport records.
 

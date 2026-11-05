@@ -15,7 +15,7 @@ The `esp.experimental` service name is retained for client compatibility.
 | Management/Logs | Server streaming | One cursor request; batches of up to four retained records |
 | Management/Upload | Bidirectional streaming | Ordered Begin/Chunk/Finish/Commit or Abort operations and ACKs |
 
-Bodies use protocol version 1 and echoed request IDs. gRPC owns message framing,
+Bodies echo request IDs for correlation. gRPC owns message framing,
 HTTP/2 routing, stream flow control and status trailers; no legacy four-byte
 length prefix is placed inside a gRPC body. Messages are bounded to 4608 bytes,
 and responses to 512. Firmware streams 4096-byte sectors into the inactive slot;
@@ -37,7 +37,7 @@ it never buffers a complete firmware image.
    selection. Written bytes remain in the inactive slot; a new upload must start
    from Begin. There is no cross-session commit token or resume facility.
 
-Clients await each ACK before the next operation and validate version, ID,
+Clients await each ACK before the next operation and validate ID,
 phase, next offset and target. No transmitted operation is automatically replayed.
 A valid Committed ACK is success even if reboot truncates trailers. If it is lost
 or invalid, activation is uncertain: reconnect and inspect firmware/slot before
@@ -71,3 +71,16 @@ identity, firmware, state, OTA availability and `transport=grpc`.
 Image layout/bounds and boot selection are unchanged by the transport migration.
 Unsigned development updates remain unauthenticated and unencrypted. TLS,
 signatures, automatic rollback and dependable power-loss recovery are unverified.
+
+## Schema compatibility
+
+Request and Response field 1 (`protocol_version`) is reserved and never reused.
+There is no per-message version handshake. Protobuf unknown fields allow additive
+schema changes; preserve existing tags and meanings. gRPC provides transport
+interoperability, not compatibility for changed OTA semantics. Breaking API or
+behavior changes require a new versioned service/package. Firmware version,
+chip/application checks and image validation remain required.
+
+The previous firmware required the removed version field. Use a CLI built before
+this change for one migration upload, or update by USB; the new CLI does not
+reintroduce the field or negotiate the old envelope.

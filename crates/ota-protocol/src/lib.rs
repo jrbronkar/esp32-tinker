@@ -13,9 +13,6 @@ pub use generated::ota_::{
 };
 use micropb::{MessageDecode, MessageEncode, PbEncoder};
 
-pub const VERSION: u32 = 1;
-/// Decimal protocol version advertised in DNS-SD TXT records.
-pub const VERSION_TXT: &str = "1";
 pub const PORT: u16 = 7779;
 pub const SERVICE_TYPE: &str = "_espctl._tcp.local.";
 
@@ -24,7 +21,6 @@ pub mod txt {
     pub const ID: &str = "id";
     pub const APPLICATION: &str = "application";
     pub const FIRMWARE: &str = "firmware";
-    pub const PROTOCOL: &str = "protocol";
     pub const STATE: &str = "state";
     pub const OTA: &str = "ota";
     pub const TRANSPORT: &str = "transport";
@@ -73,14 +69,13 @@ pub fn decode<M: MessageDecode + Default>(bytes: &[u8]) -> Result<M, Error> {
 
 pub fn status_request(request_id: u32) -> Request {
     Request {
-        protocol_version: VERSION,
         request_id,
         payload: Some(RequestPayload::Status(StatusRequest::default())),
     }
 }
 
 /// Fixed-capacity status data shared by firmware and host mocks.
-/// Identity is descriptive; protocol v1 does not authenticate either endpoint.
+/// Identity is descriptive; gRPC does not authenticate either endpoint.
 pub fn status(
     device_id: &str,
     application: &str,
@@ -101,12 +96,7 @@ pub fn status(
 }
 
 pub fn respond(request: Request, status: StatusResponse) -> Response {
-    let payload = if request.protocol_version != VERSION {
-        error_payload(
-            ErrorCode::UnsupportedVersion,
-            "unsupported protocol version",
-        )
-    } else if !matches!(request.payload, Some(RequestPayload::Status(_))) {
+    let payload = if !matches!(request.payload, Some(RequestPayload::Status(_))) {
         error_payload(
             ErrorCode::InvalidRequest,
             "missing or unsupported operation",
@@ -115,7 +105,6 @@ pub fn respond(request: Request, status: StatusResponse) -> Response {
         ResponsePayload::Status(status)
     };
     Response {
-        protocol_version: VERSION,
         request_id: request.request_id,
         payload: Some(payload),
     }
@@ -134,14 +123,22 @@ mod tests {
 
     #[test]
     fn request_matches_protobuf_wire_format() {
-        assert_eq!(VERSION_TXT.parse::<u32>(), Ok(VERSION));
         let bytes = encode(&status_request(1)).unwrap();
-        assert_eq!(bytes.as_slice(), &[0x08, 1, 0x10, 1, 0x52, 0]);
+        assert_eq!(bytes.as_slice(), &[0x10, 1, 0x52, 0]);
         assert_eq!(decode::<Request>(&bytes).unwrap(), status_request(1));
+        // Older senders' reserved field and future unknown fields are ignored.
+        assert_eq!(
+            decode::<Request>(&[0x08, 1, 0x10, 1, 0x52, 0, 0xf8, 0x01, 7]).unwrap(),
+            status_request(1)
+        );
     }
 
     #[test]
     fn response_roundtrip_and_u64_uptime() {
+        let reply = respond(status_request(1), status("board", "soil", "1", 0).unwrap());
+        let mut bytes = encode(&reply).unwrap();
+        bytes.extend_from_slice(&[0x08, 1, 0xf8, 0x01, 7]).unwrap();
+        assert_eq!(decode::<Response>(&bytes).unwrap(), reply);
         let reply = respond(
             status_request(42),
             status("board", "soil-demo", "v1", u64::MAX).unwrap(),
@@ -214,26 +211,15 @@ mod tests {
 
     #[test]
     fn semantic_errors_echo_request_id() {
-        for (request, code) in [
-            (
-                Request {
-                    protocol_version: VERSION + 1,
-                    ..status_request(7)
-                },
-                ErrorCode::UnsupportedVersion,
-            ),
-            (
-                Request {
-                    payload: None,
-                    ..status_request(7)
-                },
-                ErrorCode::InvalidRequest,
-            ),
-        ] {
-            let reply = respond(request, status("board", "soil", "1", 0).unwrap());
-            assert_eq!(reply.request_id, 7);
-            assert!(matches!(reply.payload, Some(ResponsePayload::Error(e)) if e.code == code));
-        }
+        let request = Request {
+            payload: None,
+            ..status_request(7)
+        };
+        let reply = respond(request, status("board", "soil", "1", 0).unwrap());
+        assert_eq!(reply.request_id, 7);
+        assert!(
+            matches!(reply.payload, Some(ResponsePayload::Error(e)) if e.code == ErrorCode::InvalidRequest)
+        );
     }
 }
 
@@ -270,9 +256,8 @@ pub fn decode_upload(bytes: &[u8]) -> Result<Request, Error> {
 mod upload_tests {
     use super::*;
     #[test]
-    fn upload_and_status_share_version_without_enabling_upload_in_status_handler() {
+    fn upload_and_status_share_envelope_without_enabling_upload_in_status_handler() {
         let request = Request {
-            protocol_version: VERSION,
             request_id: 7,
             payload: Some(RequestPayload::Begin(BeginUpdate {
                 application: "device-demo".try_into().unwrap(),
@@ -284,7 +269,6 @@ mod upload_tests {
         };
         let bytes = encode(&request).unwrap();
         assert_eq!(decode::<Request>(&bytes).unwrap(), request);
-        assert_eq!(request.protocol_version, status_request(1).protocol_version);
         let response = respond(
             request,
             status("board", "device-demo", "release", 0).unwrap(),
@@ -295,13 +279,12 @@ mod upload_tests {
     }
 
     #[test]
-    fn sector_chunk_uses_same_version_but_requires_upload_frame_limit() {
+    fn sector_chunk_requires_upload_frame_limit() {
         let chunk = FirmwareChunk {
             offset: 4096,
             data: (&[7u8; 4096][..]).try_into().unwrap(),
         };
         let request = Request {
-            protocol_version: VERSION,
             request_id: 2,
             payload: Some(RequestPayload::Chunk(chunk)),
         };

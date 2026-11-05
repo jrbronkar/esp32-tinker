@@ -39,7 +39,6 @@ impl Decoder for RawDecoder {
 pub type Client = tonic::client::Grpc<tonic::transport::Channel>;
 pub fn body(payload: ota_protocol::RequestPayload, id: u32) -> Vec<u8> {
     ota_protocol::encode_upload(&ota_protocol::Request {
-        protocol_version: 1,
         request_id: id,
         payload: Some(payload),
     })

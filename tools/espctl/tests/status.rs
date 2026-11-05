@@ -30,12 +30,11 @@ fn rejects_oversized_empty_and_malformed_protobuf() {
     }
 }
 #[test]
-fn rejects_mismatched_version_id_and_missing_identity_or_payload() {
-    for variant in 0..4 {
+fn rejects_mismatched_id_and_missing_identity_or_payload() {
+    for variant in 1..4 {
         let (address, handle) = mock(move |r| {
             let mut response = reply(r);
             match variant {
-                0 => response.protocol_version += 1,
                 1 => response.request_id += 1,
                 2 => response.payload = None,
                 _ => {
@@ -54,13 +53,13 @@ fn rejects_mismatched_version_id_and_missing_identity_or_payload() {
 fn surfaces_grpc_error() {
     let (address, handle) = mock(|_| {
         Err(protolink::Status::invalid_argument(
-            "unsupported protocol version",
+            "invalid status request",
         ))
     });
     assert!(espctl::query_status(address, Duration::from_secs(2))
         .unwrap_err()
         .to_string()
-        .contains("unsupported protocol version"));
+        .contains("invalid status request"));
     handle.join().unwrap();
 }
 #[test]

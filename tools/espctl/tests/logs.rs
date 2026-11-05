@@ -5,7 +5,7 @@ mod server;
 
 #[test]
 fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
-    for variant in 0..9 {
+    for variant in [0, 2, 3, 4, 5, 6, 7, 8] {
         let (address, handle) = server::spawn(1, 1, Duration::ZERO, move |request| {
             assert_eq!(
                 request.payload,
@@ -15,7 +15,6 @@ fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
                 }))
             );
             let mut reply = Response {
-                protocol_version: 1,
                 request_id: request.request_id,
                 payload: Some(ResponsePayload::Logs(ReadLogsResponse {
                     boot_id: 7,
@@ -24,7 +23,6 @@ fn log_transport_preserves_cursor_and_rejects_invalid_envelopes() {
                 })),
             };
             match variant {
-                1 => reply.protocol_version += 1,
                 2 => reply.request_id += 1,
                 3 => reply.payload = None,
                 4 => {
@@ -152,7 +150,6 @@ fn cli_escapes_remote_terminal_control_sequences() {
         })
         .unwrap();
     let response = Response {
-        protocol_version: 1,
         request_id: 1,
         payload: Some(ResponsePayload::Logs(logs)),
     };

@@ -1,7 +1,7 @@
 //! gRPC development uploads. No operation is replayed after transmission.
 use crate::grpc_codec::RawCodec;
 use ota_protocol::{
-    Request, RequestPayload as Op, Response, ResponsePayload, UploadAck, UploadPhase, VERSION,
+    Request, RequestPayload as Op, Response, ResponsePayload, UploadAck, UploadPhase,
 };
 use std::{fs, io, net::SocketAddr, path::Path, time::Duration};
 use tokio::sync::mpsc;
@@ -314,7 +314,6 @@ async fn run(
 }
 fn encode(payload: Op, id: u32) -> io::Result<Vec<u8>> {
     ota_protocol::encode_upload(&Request {
-        protocol_version: VERSION,
         request_id: id,
         payload: Some(payload),
     })
@@ -324,8 +323,8 @@ fn encode(payload: Op, id: u32) -> io::Result<Vec<u8>> {
 fn decode(bytes: &[u8], id: u32) -> io::Result<Response> {
     let response: Response =
         ota_protocol::decode(bytes).map_err(|_| invalid("invalid upload response"))?;
-    if response.protocol_version != VERSION || response.request_id != id {
-        return Err(invalid("upload version/request ID mismatch"));
+    if response.request_id != id {
+        return Err(invalid("upload request ID mismatch"));
     }
     Ok(response)
 }

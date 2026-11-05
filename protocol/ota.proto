@@ -1,9 +1,10 @@
 syntax = "proto3";
 package ota;
 
-// All operations use protocol version 1. Uploads require a supported OTA partition layout.
+// Uploads require a supported OTA partition layout.
 message Request {
-  uint32 protocol_version = 1;
+  reserved 1;
+  reserved "protocol_version";
   uint32 request_id = 2;
   oneof payload {
     StatusRequest status = 10;
@@ -22,7 +23,8 @@ message StatusRequest {
 }
 
 message Response {
-  uint32 protocol_version = 1;
+  reserved 1;
+  reserved "protocol_version";
   uint32 request_id = 2;
   oneof payload {
     StatusResponse status = 10;
@@ -55,7 +57,8 @@ message DeviceTimings {
 message ErrorResponse {
   enum Code {
     UNSPECIFIED = 0;
-    UNSUPPORTED_VERSION = 1;
+    reserved 1;
+    reserved "UNSUPPORTED_VERSION";
     INVALID_REQUEST = 2;
   }
   Code code = 1;

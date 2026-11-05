@@ -52,9 +52,6 @@ fn status_response(
     let Some(RequestPayload::Status(options)) = request.payload else {
         return Err(Status::invalid_argument("expected status request"));
     };
-    if request.protocol_version != ota_protocol::VERSION {
-        return Err(Status::invalid_argument("expected protocol v1"));
-    }
     let decoded = now();
     let mut current = status();
     if !options.include_boot {
@@ -70,7 +67,6 @@ fn status_response(
         current.clear_timings();
     }
     encode(&Response {
-        protocol_version: ota_protocol::VERSION,
         request_id: request.request_id,
         payload: Some(ResponsePayload::Status(current)),
     })
@@ -170,9 +166,6 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
     fn message(&mut self, ctx: &CallContext<'_>, bytes: &[u8]) -> Result<(), Status> {
         let request = ota_protocol::decode_upload(bytes)
             .map_err(|_| Status::invalid_argument("invalid protobuf"))?;
-        if request.protocol_version != ota_protocol::VERSION {
-            return Err(Status::invalid_argument("expected protocol v1"));
-        }
         if ctx.route.method == 1 {
             let Some(RequestPayload::ReadLogs(cursor)) = request.payload else {
                 return Err(Status::invalid_argument("expected log cursor"));
@@ -287,7 +280,6 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             (UploadPhase::Receiving, 0)
         };
         let response = Response {
-            protocol_version: ota_protocol::VERSION,
             request_id: request.request_id,
             payload: Some(ResponsePayload::Upload(UploadAck {
                 phase,
@@ -332,14 +324,10 @@ impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T,
         if ctx.route.method == 3 {
             let request: Request = ota_protocol::decode(request)
                 .map_err(|_| Status::invalid_argument("invalid log request"))?;
-            if request.protocol_version != ota_protocol::VERSION {
-                return Err(Status::invalid_argument("expected protocol v1"));
-            }
             let Some(RequestPayload::ReadLogs(cursor)) = request.payload else {
                 return Err(Status::invalid_argument("expected log cursor"));
             };
             return encode(&Response {
-                protocol_version: ota_protocol::VERSION,
                 request_id: request.request_id,
                 payload: Some(ResponsePayload::Logs(self.env.read_logs(&cursor))),
             });
@@ -385,7 +373,6 @@ impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T,
                 sub.cursor.after_sequence = batch.next_sequence;
                 return Poll::Ready(
                     match encode(&Response {
-                        protocol_version: ota_protocol::VERSION,
                         request_id: sub.request_id,
                         payload: Some(ResponsePayload::Logs(batch)),
                     }) {
@@ -438,7 +425,6 @@ mod status_tests {
     fn status_honors_boot_and_timing_flags() {
         for include in [false, true] {
             let request = Request {
-                protocol_version: 1,
                 request_id: 1,
                 payload: Some(RequestPayload::Status(ota_protocol::StatusRequest {
                     include_boot: include,

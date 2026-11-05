@@ -205,7 +205,6 @@ impl Handler for Faulty<'_> {
             {
                 match self.state.fault {
                     "id" => response.request_id += 1,
-                    "version" => response.protocol_version += 1,
                     "truncated" => return Poll::Ready(Next::Message(vec![0xff])),
                     "disconnect" => {
                         return Poll::Ready(Next::Done(Err(Status::unavailable("connection lost"))))
@@ -322,15 +321,7 @@ async fn upload_verifies_and_activates_only_when_explicitly_requested() {
 async fn upload_rejects_bad_acknowledgements_and_does_not_replay() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            for fault in [
-                "id",
-                "version",
-                "phase",
-                "offset",
-                "target",
-                "truncated",
-                "disconnect",
-            ] {
+            for fault in ["id", "phase", "offset", "target", "truncated", "disconnect"] {
                 let (address, server, state) = fixture(fault).await;
                 assert!(
                     client_upload(address, true, fault).await.is_err(),

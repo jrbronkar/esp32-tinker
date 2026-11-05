@@ -241,7 +241,6 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     println!("Chip:        {}", status.chip.escape_debug());
     println!("Application: {}", status.application.escape_debug());
     println!("Firmware:    {}", status.firmware_version.escape_debug());
-    println!("Protocol:    {}", ota_protocol::VERSION);
     if !status.management_state.is_empty() {
         println!("State:       {}", status.management_state.escape_debug());
     }

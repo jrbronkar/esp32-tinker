@@ -107,7 +107,6 @@ mod tests {
             logs.push(u64::MAX, LogSeverity::Error, &"é".repeat(40));
         }
         let response = crate::Response {
-            protocol_version: 1,
             request_id: u32::MAX,
             payload: Some(crate::ResponsePayload::Logs(
                 logs.read(&ReadLogsRequest::default()),

@@ -8,7 +8,9 @@ UDP 5353 remains for mDNS discovery.
 
 Protolink is pinned to `62cc2c87a687ba65fc6885e7c9691cefacf2d064`; Cargo.lock pins
 zerodds HTTP/2 and HPACK to 1.0.0-rc.7. The original `esp.experimental.Management`
-service name remains stable. Raw Handler protobuf bodies use existing micropb
+service name remains stable. Envelope version fields are reserved; compatibility
+uses additive Protobuf changes and a new service/package for breaking semantics.
+Raw Handler protobuf bodies use existing micropb
 0.7, independent of Protolink's optional micropb 0.6 codec.
 
 ## API and resource limits
@@ -98,6 +100,12 @@ A second 626128-byte image (`grpc-single-2`) uploaded with live logs and an
 acknowledged Commit through default port 7779. Post-reboot status confirmed
 ota_1 at 0x310000, idle and OTA available. The single-service firmware therefore
 updated itself without the retired endpoint.
+
+Envelope-version removal (`grpc-schema-1`): the saved pre-change client migrated
+and committed a 626144-byte image; the new client confirmed ota_0 on port 7779.
+Status/boot/timings, log snapshots, profiling, concurrent status/flash exclusion,
+five-second idle cleanup and retired-port closure passed. The versionless client
+then verified the full image with all 153 chunk logs received during upload.
 
 Earlier migration evidence (before endpoint consolidation):
 

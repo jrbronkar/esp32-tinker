@@ -3,7 +3,7 @@ pub mod discovery;
 mod grpc_codec;
 pub mod upload;
 use grpc_codec::RawCodec;
-use ota_protocol::{Request, RequestPayload, Response, ResponsePayload, StatusResponse, VERSION};
+use ota_protocol::{Request, RequestPayload, Response, ResponsePayload, StatusResponse};
 use std::{
     io,
     net::SocketAddr,
@@ -154,9 +154,6 @@ async fn query(
     let started = Instant::now();
     let response: Response = ota_protocol::decode(&reply.into_inner())
         .map_err(|e| invalid(format!("decode response: {e:?}")))?;
-    if response.protocol_version != VERSION {
-        return Err(invalid("unsupported response version"));
-    }
     if response.request_id != request.request_id {
         return Err(invalid("response request ID mismatch"));
     }
@@ -193,7 +190,6 @@ pub fn query_status_with_options(
     runtime()?.block_on(async {
         let mut timings = QueryTimings::default();
         let request = Request {
-            protocol_version: VERSION,
             request_id: 1,
             payload: Some(RequestPayload::Status(ota_protocol::StatusRequest {
                 include_timings: device_timings,
@@ -233,7 +229,6 @@ pub fn read_logs(
     let end = deadline(Instant::now(), timeout)?;
     runtime()?.block_on(async {
         let request = Request {
-            protocol_version: VERSION,
             request_id: 1,
             payload: Some(RequestPayload::ReadLogs(cursor.clone())),
         };
