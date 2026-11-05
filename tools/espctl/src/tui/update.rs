@@ -17,6 +17,7 @@ use crate::upload::{self, PreparedImage, Progress};
 struct Board {
     address: SocketAddr,
     id: String,
+    application: String,
     version: String,
 }
 
@@ -191,6 +192,7 @@ impl Workflow {
                 let board = Board {
                     address,
                     id,
+                    application: image.application().to_owned(),
                     version: image.version().to_owned(),
                 };
                 self.pending = Some(PendingUpdate { board, image });
@@ -288,8 +290,8 @@ impl Workflow {
         if let Some(pending) = &self.pending {
             let board = &pending.board;
             return format!(
-                "Update {} ({}) to {}?\nThe board will reboot after the image is uploaded and verified.",
-                board.id.escape_debug(), board.address, board.version.escape_debug(),
+                "Update {} ({}) to {} {}?\nThe board will reboot after the image is uploaded and verified.",
+                board.id.escape_debug(), board.address, board.application.escape_debug(), board.version.escape_debug(),
             );
         }
         if !self.notice.is_empty() {
@@ -348,7 +350,8 @@ fn running_expected_image(board: &Board, slot: u32, timeout: Duration) -> bool {
             if status.device_id.as_str() != board.id {
                 return false;
             }
-            if status.firmware_version.as_str() == board.version
+            if status.application.as_str() == board.application
+                && status.firmware_version.as_str() == board.version
                 && status
                     .boot()
                     .and_then(|boot| boot.running())

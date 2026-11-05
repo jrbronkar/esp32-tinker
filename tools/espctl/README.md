@@ -72,8 +72,8 @@ unconfirmed activation.
 
 ## Uploads and logs
 
-Upload accepts an exported application-only `device-demo` binary with the matching
-embedded version. Without `--commit`, it writes/verifies the inactive slot and
+Upload reads the application identity and version from the exported OTA binary.
+The board checks whether it accepts that identity. Without `--commit`, it writes/verifies the inactive slot and
 preserves boot selection. `--logs` streams live logs on the upload's HTTP/2
 connection; another client can query the same endpoint concurrently. Total upload
 time is limited to 180 seconds. Operations are never replayed. If a commit ACK is

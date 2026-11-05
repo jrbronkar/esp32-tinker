@@ -72,6 +72,7 @@ const CHECKSUM_ALIGNMENT: u32 = 16;
 const SHA256_LEN: usize = 32;
 const VERSION_FIELD_LEN: usize = VERSION_FIELD.end - VERSION_FIELD.start;
 const MAX_VERSION_LEN: usize = VERSION_FIELD_LEN - 1;
+const PROJECT_NAME_LEN: usize = PROJECT_NAME_FIELD.end - PROJECT_NAME_FIELD.start;
 
 fn check_image_header(head: &[u8; IMAGE_HEADER_SIZE]) -> Result<&[u8], Error> {
     if head[0] != IMAGE_MAGIC
@@ -79,12 +80,29 @@ fn check_image_header(head: &[u8; IMAGE_HEADER_SIZE]) -> Result<&[u8], Error> {
         || head[CHIP_ID_FIELD] != ESP32_S3_CHIP_ID.to_le_bytes()
         || head[HASH_APPENDED_OFFSET] != 1
         || head[APP_MAGIC_FIELD] != APP_DESCRIPTOR_MAGIC.to_le_bytes()
-        || cstr(&head[PROJECT_NAME_FIELD]) != APP.as_bytes()
+        || !valid_application(cstr(&head[PROJECT_NAME_FIELD]))
         || cstr(&head[OTA_MARKER_FIELD]) != MARKER.as_bytes()
     {
         return Err(Error::Image);
     }
     Ok(cstr(&head[VERSION_FIELD]))
+}
+
+fn valid_application(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() < PROJECT_NAME_LEN
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// Read the application identity from an OTA-capable image descriptor.
+pub fn image_application(bytes: &[u8]) -> Result<&str, Error> {
+    let head = bytes
+        .first_chunk::<IMAGE_HEADER_SIZE>()
+        .ok_or(Error::Bounds)?;
+    check_image_header(head)?;
+    core::str::from_utf8(cstr(&head[PROJECT_NAME_FIELD])).map_err(|_| Error::Metadata)
 }
 
 /// Read the version from a compatible application header. Validate the complete
@@ -169,6 +187,7 @@ pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> R
 pub struct Update {
     size: u32,
     expected: [u8; SHA256_LEN],
+    application: [u8; PROJECT_NAME_LEN],
     version: [u8; VERSION_FIELD_LEN],
     version_len: usize,
     received: u32,
@@ -183,7 +202,7 @@ impl Update {
         size: u32,
         digest: &[u8],
     ) -> Result<Self, Error> {
-        if application != APP
+        if !valid_application(application.as_bytes())
             || chip != "esp32s3"
             || version.is_empty()
             || version.len() > MAX_VERSION_LEN
@@ -198,11 +217,13 @@ impl Update {
         let mut value = Self {
             size,
             expected: digest.try_into().unwrap(),
+            application: [0; PROJECT_NAME_LEN],
             version: [0; VERSION_FIELD_LEN],
             version_len: version.len(),
             received: 0,
             verified: false,
         };
+        value.application[..application.len()].copy_from_slice(application.as_bytes());
         value.version[..version.len()].copy_from_slice(version.as_bytes());
         Ok(value)
     }
@@ -231,7 +252,7 @@ impl Update {
                 || bytes[0] != IMAGE_MAGIC
                 || bytes[CHIP_ID_FIELD] != ESP32_S3_CHIP_ID.to_le_bytes()
                 || bytes[APP_MAGIC_FIELD] != APP_DESCRIPTOR_MAGIC.to_le_bytes()
-                || cstr(&bytes[PROJECT_NAME_FIELD]) != APP.as_bytes()
+                || cstr(&bytes[PROJECT_NAME_FIELD]) != cstr(&self.application)
                 || cstr(&bytes[OTA_MARKER_FIELD]) != MARKER.as_bytes()
                 || cstr(&bytes[VERSION_FIELD]) != &self.version[..self.version_len])
         {
@@ -364,15 +385,16 @@ mod tests {
     fn reject_metadata_bounds_and_out_of_order_without_writing() {
         let image = image(256);
         let mut target = Memory::new();
-        assert!(Update::begin(
+        let mut wrong_app = Update::begin(
             &target,
             "imu-demo",
             "esp32s3",
             "v1",
             image.len() as u32,
-            &hash(&image)
+            &hash(&image),
         )
-        .is_err());
+        .unwrap();
+        assert_eq!(wrong_app.chunk(&mut target, 0, &image), Err(Error::Image));
         assert!(Update::begin(
             &target,
             APP,

@@ -76,10 +76,15 @@ fn upload_impl(
 
 pub(crate) struct PreparedImage {
     bytes: Vec<u8>,
+    application: String,
     version: String,
 }
 
 impl PreparedImage {
+    pub(crate) fn application(&self) -> &str {
+        &self.application
+    }
+
     pub(crate) fn version(&self) -> &str {
         &self.version
     }
@@ -111,11 +116,18 @@ impl PreparedImage {
         ota_core::validate_image(&mut ota_core::SliceImage(&bytes), size, &version).map_err(
             |e| {
                 invalid(format!(
-                "image validation: {e:?}; build device-demo and export an application-only image"
-            ))
+                    "image validation: {e:?}; export an OTA-capable application-only image"
+                ))
             },
         )?;
-        Ok(Self { bytes, version })
+        let application = ota_core::image_application(&bytes)
+            .map_err(|error| invalid(format!("image application: {error:?}")))?
+            .to_owned();
+        Ok(Self {
+            bytes,
+            application,
+            version,
+        })
     }
 }
 
@@ -180,6 +192,7 @@ async fn run(
     mut policy: TransferPolicy<'_>,
     mut on_log: Option<&mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>)>,
 ) -> io::Result<UploadResult> {
+    let application = image.application.as_str();
     let version = image.version.as_str();
     let image = image.bytes.as_slice();
     let commit = policy.commit;
@@ -221,7 +234,7 @@ async fn run(
     .map_err(rpc)?;
     let device: ota_protocol::StatusResponse = ota_protocol::decode(&reply.into_inner())
         .map_err(|_| invalid("invalid status response"))?;
-    if !device.ota_available || device.application.as_str() != ota_core::APP {
+    if !device.ota_available {
         return Err(invalid(
             "device is not a provisioned development OTA target",
         ));
@@ -298,7 +311,7 @@ async fn run(
         .map_err(rpc)?;
         let mut replies = response.into_inner();
         let begin = ota_protocol::BeginUpdate {
-            application: ota_core::APP
+            application: application
                 .try_into()
                 .map_err(|_| invalid("application name exceeds protocol capacity"))?,
             chip: "esp32s3"

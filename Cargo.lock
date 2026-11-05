@@ -514,6 +514,7 @@ version = "0.1.0"
 dependencies = [
  "device-service",
  "embassy-executor",
+ "embassy-net",
  "embassy-time",
  "esp-alloc",
  "esp-backtrace",
@@ -521,8 +522,11 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-rtos",
+ "heapless 0.8.0",
+ "imu-demo",
  "static_cell",
  "wifi-network",
+ "wifi-telemetry",
 ]
 
 [[package]]

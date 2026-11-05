@@ -11,12 +11,21 @@ use static_cell::StaticCell;
 
 static LOGS: StaticCell<DeviceLogs> = StaticCell::new();
 
+#[cfg(feature = "imu")]
+mod imu;
+
+const APPLICATION: &str = if cfg!(all(feature = "imu", not(feature = "imu-migration"))) {
+    "imu-demo"
+} else {
+    "device-demo"
+};
+
 esp_bootloader_esp_idf::esp_app_desc!(
     match option_env!("FIRMWARE_VERSION") {
         Some(version) => version,
         None => env!("CARGO_PKG_VERSION"),
     },
-    "device-demo",
+    APPLICATION,
     esp_bootloader_esp_idf::BUILD_TIME,
     esp_bootloader_esp_idf::BUILD_DATE,
     "rust-dev-ota-v1",
@@ -55,7 +64,7 @@ async fn main(spawner: Spawner) -> ! {
     if let Err(error) = device_service::start_status(
         spawner,
         stack,
-        "device-demo",
+        APPLICATION,
         option_env!("FIRMWARE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
         boot,
         flash,
@@ -64,8 +73,18 @@ async fn main(spawner: Spawner) -> ! {
         println!("Device service initialization failed: {error}");
         restart_initialization().await;
     }
-    logs.log(LogSeverity::Info, "device-demo application ready");
+    logs.log(LogSeverity::Info, "Application ready");
     println!("device-demo ready: UNSIGNED DEVELOPMENT OTA; requires provisioned layout");
+    #[cfg(feature = "imu")]
+    imu::run(
+        stack,
+        peripherals.I2C0,
+        peripherals.GPIO8,
+        peripherals.GPIO9,
+        logs,
+    )
+    .await;
+    #[cfg(not(feature = "imu"))]
     loop {
         Timer::after(Duration::from_secs(10)).await;
         println!("device-demo alive");

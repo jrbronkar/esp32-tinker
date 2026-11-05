@@ -63,10 +63,15 @@ pub async fn connect(
 
     let rng = Rng::new();
     let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
+    // DHCP, DNS-SD, two management connections, and one telemetry socket.
+    const NETWORK_SOCKETS: usize = 5;
     let (stack, runner) = embassy_net::new(
         interfaces.station,
         embassy_net::Config::dhcpv4(Default::default()),
-        make_static!(StackResources<4>, StackResources::<4>::new()),
+        make_static!(
+            StackResources<NETWORK_SOCKETS>,
+            StackResources::<NETWORK_SOCKETS>::new()
+        ),
         seed,
     );
 

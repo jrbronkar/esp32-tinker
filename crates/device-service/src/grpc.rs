@@ -122,6 +122,12 @@ impl Environment for DeviceEnvironment<'_> {
         status.management_state = self.runtime.state().try_into().unwrap_or_default();
         status
     }
+    fn accepts_application(&self, application: &str) -> bool {
+        self.identity.application.as_str() == application
+            || (cfg!(feature = "imu-migration")
+                && self.identity.application.as_str() == ota_core::APP
+                && application == "imu-demo")
+    }
     fn logs(
         &self,
         cursor: &ota_protocol::ReadLogsRequest,
