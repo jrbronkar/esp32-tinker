@@ -61,7 +61,7 @@ fn upload_impl(
     commit: bool,
     on_log: Option<&mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>)>,
 ) -> io::Result<UploadResult> {
-    let image = PreparedImage::read(path, version)?;
+    let image = PreparedImage::read(path, Some(version))?;
     transfer(
         address,
         timeout,
@@ -80,7 +80,11 @@ pub(crate) struct PreparedImage {
 }
 
 impl PreparedImage {
-    pub(crate) fn read(path: &Path, version: &str) -> io::Result<Self> {
+    pub(crate) fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub(crate) fn read(path: &Path, version: Option<&str>) -> io::Result<Self> {
         if !fs::metadata(path)?.is_file() {
             return Err(invalid("image must be a regular application binary"));
         }
@@ -97,18 +101,21 @@ impl PreparedImage {
         if bytes.len() as u64 > limit {
             return Err(invalid("image exceeds the OTA slot size"));
         }
+        let version = match version {
+            Some(version) => version,
+            None => ota_core::image_version(&bytes)
+                .map_err(|error| invalid(format!("image header: {error:?}")))?,
+        }
+        .to_owned();
         let size = bytes.len() as u32;
-        ota_core::validate_image(&mut ota_core::SliceImage(&bytes), size, version).map_err(
+        ota_core::validate_image(&mut ota_core::SliceImage(&bytes), size, &version).map_err(
             |e| {
                 invalid(format!(
                 "image validation: {e:?}; build device-demo and export an application-only image"
             ))
             },
         )?;
-        Ok(Self {
-            bytes,
-            version: version.into(),
-        })
+        Ok(Self { bytes, version })
     }
 }
 

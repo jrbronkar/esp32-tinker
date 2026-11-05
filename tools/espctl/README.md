@@ -41,16 +41,21 @@ connection accepts `--port` if the board uses a custom gRPC port.
 
 ### Update firmware from the dashboard
 
-Launch with an application-only binary exported by espflash and its embedded
-`FIRMWARE_VERSION`.
+From the repository root, export `WIFI_SSID` and `WIFI_PASSWORD`, then build
+and export the image with the pinned Nix tools:
 
 ```sh
-cargo run -p espctl -- tui --host BOARD_IP \
-  --image IMAGE.bin --firmware-version VERSION
+nix run .#ota-image -- VERSION
+nix run .#espctl -- tui
 ```
 
-Select the board and press **U** to write and verify the inactive slot. The
-dashboard streams logs on the upload connection and resumes status polling
+The export lands in `target/ota/VERSION.bin`. Select a board and press **U** to
+browse compatible application binaries in `target/ota`. Use **↑/↓** to choose
+an image and **Enter** to write and verify the inactive slot. The picker reads
+the version from the image. For an image elsewhere, launch with
+`tui --image /path/to/app.bin` and press **U**.
+
+The dashboard streams logs on the upload connection and resumes status polling
 when the transfer ends. After verification, press **A** to review the board, version, and reboot prompt, then **Y** to activate or
 **Esc** to dismiss the prompt. The dashboard releases the first upload session
 after verification. Activation resends and verifies the same in-memory image

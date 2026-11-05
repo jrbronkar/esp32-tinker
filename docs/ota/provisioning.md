@@ -31,10 +31,15 @@ espflash flash --port "$SERIAL_PORT" --flash-size 16mb \
 ## Build and upload
 
 ```sh
-FIRMWARE_VERSION=ota-next cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
-mkdir -p target/ota
-espflash save-image --chip esp32s3 --flash-size 16mb \
-  target/xtensa-esp32s3-none-elf/release/device-demo target/ota/ota-next.bin
+nix run .#ota-image -- ota-next
+nix run .#espctl -- tui
+```
+
+Press **U** to select an exported image. The TUI reads its embedded version
+and prompts before activation. For scripted updates, the same image works with
+the upload subcommand:
+
+```sh
 cargo run -p espctl -- upload --host BOARD_IP \
   --image target/ota/ota-next.bin --firmware-version ota-next --logs --commit
 cargo run -p espctl -- status --host BOARD_IP --boot

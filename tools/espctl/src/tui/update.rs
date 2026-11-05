@@ -1,7 +1,8 @@
 use std::{
-    io,
+    fs,
+    io::{self, Read},
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -39,9 +40,44 @@ struct Job {
     logs: mpsc::Receiver<LogUpdate>,
 }
 
+type ImageSource = (PathBuf, Option<String>);
+
+struct Picker {
+    images: Vec<(PathBuf, String)>,
+    selected: usize,
+}
+
+fn local_images(directory: &Path) -> io::Result<Picker> {
+    let mut images = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|kind| kind.is_file())
+            || path.extension().is_none_or(|ext| ext != "bin")
+        {
+            continue;
+        }
+        let mut header = [0; ota_core::IMAGE_HEADER_SIZE];
+        let Ok(mut file) = fs::File::open(&path) else {
+            continue;
+        };
+        if file.read_exact(&mut header).is_ok() {
+            if let Ok(version) = ota_core::image_version(&header) {
+                images.push((path, version.to_owned()));
+            }
+        }
+    }
+    images.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Ok(Picker {
+        images,
+        selected: 0,
+    })
+}
+
 #[derive(Default)]
 pub(super) struct Workflow {
-    config: Option<(PathBuf, String)>,
+    config: Option<ImageSource>,
+    picker: Option<Picker>,
     verified: Option<Verified>,
     confirming: bool,
     job: Option<Job>,
@@ -49,7 +85,7 @@ pub(super) struct Workflow {
 }
 
 impl Workflow {
-    pub(super) fn new(config: Option<(PathBuf, String)>) -> Self {
+    pub(super) fn new(config: Option<ImageSource>) -> Self {
         Self {
             config,
             ..Self::default()
@@ -58,6 +94,30 @@ impl Workflow {
 
     pub(super) fn enabled(&self) -> bool {
         self.config.is_some()
+            || self.picking()
+            || self.busy()
+            || self.verified.is_some()
+            || !self.notice.is_empty()
+    }
+
+    pub(super) fn picking(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    pub(super) fn previous_image(&mut self) {
+        if let Some(picker) = &mut self.picker {
+            picker.selected = picker.selected.saturating_sub(1);
+        }
+    }
+
+    pub(super) fn next_image(&mut self) {
+        if let Some(picker) = &mut self.picker {
+            picker.selected = (picker.selected + 1).min(picker.images.len() - 1);
+        }
+    }
+
+    pub(super) fn cancel_picker(&mut self) {
+        self.picker = None;
     }
 
     pub(super) fn busy(&self) -> bool {
@@ -69,6 +129,7 @@ impl Workflow {
     }
 
     pub(super) fn clear(&mut self) {
+        self.picker = None;
         self.verified = None;
         self.confirming = false;
         self.notice.clear();
@@ -80,23 +141,59 @@ impl Workflow {
         status: Option<&StatusResponse>,
         timeout: Duration,
     ) {
-        let Some((path, version)) = self.config.clone() else {
+        if let Some(source) = self.config.clone() {
+            self.start_verify(source, address, status, timeout);
             return;
-        };
+        }
+        self.notice.clear();
+        match local_images(Path::new("target/ota")) {
+            Ok(picker) if !picker.images.is_empty() => self.picker = Some(picker),
+            Ok(_) => {
+                self.notice =
+                    "No compatible images in target/ota. Run nix run .#ota-image -- VERSION.".into()
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.notice = "No target/ota directory. Run nix run .#ota-image -- VERSION.".into();
+            }
+            Err(error) => self.notice = format!("Could not scan target/ota: {error}"),
+        }
+    }
+
+    pub(super) fn verify_selected(
+        &mut self,
+        address: Option<SocketAddr>,
+        status: Option<&StatusResponse>,
+        timeout: Duration,
+    ) {
+        if let Some(picker) = self.picker.take() {
+            if let Some((path, version)) = picker.images.into_iter().nth(picker.selected) {
+                self.start_verify((path, Some(version)), address, status, timeout);
+            }
+        }
+    }
+
+    fn start_verify(
+        &mut self,
+        (path, version): ImageSource,
+        address: Option<SocketAddr>,
+        status: Option<&StatusResponse>,
+        timeout: Duration,
+    ) {
         let Some((address, status)) = address.zip(status).filter(|(_, s)| s.ota_available) else {
             self.notice = "Select a connected board with OTA available.".into();
             return;
         };
-        let board = Board {
-            address,
-            id: status.device_id.to_string(),
-            version: version.clone(),
-        };
+        let id = status.device_id.to_string();
         self.clear();
         self.job = Some(spawn(
             "Validating application image",
             move |progress, on_log| {
-                let image = PreparedImage::read(&path, &version)?;
+                let image = PreparedImage::read(&path, version.as_deref())?;
+                let board = Board {
+                    address,
+                    id,
+                    version: image.version().to_owned(),
+                };
                 let result = upload::update_board(
                     board.address,
                     timeout,
@@ -213,6 +310,16 @@ impl Workflow {
                 Some(Progress::CheckingBoot) => "Checking running firmware and slot".into(),
             };
         }
+        if let Some(picker) = &self.picker {
+            let (path, version) = &picker.images[picker.selected];
+            return format!(
+                "Image {}/{} · {} · {}\n↑/↓ Choose   Enter Upload and verify   Esc Cancel",
+                picker.selected + 1,
+                picker.images.len(),
+                version.escape_debug(),
+                path.display().to_string().escape_debug(),
+            );
+        }
         if let Some(verified) = &self.verified {
             let board = &verified.board;
             let id = board.id.escape_debug();
@@ -232,10 +339,9 @@ impl Workflow {
         if !self.notice.is_empty() {
             return self.notice.escape_debug().to_string();
         }
-        if let Some((path, version)) = &self.config {
+        if let Some((path, _)) = &self.config {
             return format!(
-                "U Upload and verify {} ({})",
-                version.escape_debug(),
+                "U Upload and verify {}",
                 path.display().to_string().escape_debug()
             );
         }
@@ -307,6 +413,19 @@ mod mock_board;
 mod tests {
     use super::*;
 
+    #[test]
+    fn picker_reads_embedded_versions_and_ignores_incompatible_files() {
+        let directory = std::env::temp_dir().join(format!("espctl-picker-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let expected = directory.join("custom-name.bin");
+        fs::write(&expected, mock_board::image()).unwrap();
+        fs::write(directory.join("bad.bin"), b"invalid image").unwrap();
+        fs::write(directory.join("not-an-export"), mock_board::image()).unwrap();
+        let picker = local_images(&directory).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(picker.images, [(expected, "v1".into())]);
+    }
+
     async fn finish(workflow: &mut Workflow) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while workflow.busy() {
@@ -331,7 +450,7 @@ mod tests {
                         std::process::id()
                     ));
                     std::fs::write(&path, mock_board::image()).unwrap();
-                    let mut workflow = Workflow::new(Some((path.clone(), "v1".into())));
+                    let mut workflow = Workflow::new(Some((path.clone(), None)));
                     let status =
                         tokio::task::spawn_blocking(move || crate::query_status(address, timeout))
                             .await

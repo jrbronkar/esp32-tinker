@@ -46,6 +46,35 @@ fn cstr(bytes: &[u8]) -> &[u8] {
     &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())]
 }
 
+pub const IMAGE_HEADER_SIZE: usize = 176;
+
+fn check_image_header(head: &[u8; IMAGE_HEADER_SIZE]) -> Result<&[u8], Error> {
+    if head[0] != 0xe9
+        || !(1..=16).contains(&head[1])
+        || head[12..14] != [9, 0]
+        || head[23] != 1
+        || head[32..36] != 0xabcd5432u32.to_le_bytes()
+        || cstr(&head[80..112]) != APP.as_bytes()
+        || cstr(&head[144..176]) != MARKER.as_bytes()
+    {
+        return Err(Error::Image);
+    }
+    Ok(cstr(&head[48..80]))
+}
+
+/// Read the version from a compatible application header. Validate the complete
+/// image with `validate_image` before uploading it.
+pub fn image_version(bytes: &[u8]) -> Result<&str, Error> {
+    let head = bytes
+        .first_chunk::<IMAGE_HEADER_SIZE>()
+        .ok_or(Error::Bounds)?;
+    let version = check_image_header(head)?;
+    if !(1..=31).contains(&version.len()) {
+        return Err(Error::Metadata);
+    }
+    core::str::from_utf8(version).map_err(|_| Error::Metadata)
+}
+
 /// Validate ESP32-S3 application structure, project/version/capability descriptor,
 /// segment checksum, and mandatory ESP image SHA-256 footer. Never accepts ELF
 /// or merged bootloader images. Does not replace bootloader load-address checks.
@@ -53,17 +82,9 @@ pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> R
     if !(288..=SLOT_SIZE).contains(&length) {
         return Err(Error::Bounds);
     }
-    let mut head = [0u8; 176];
+    let mut head = [0u8; IMAGE_HEADER_SIZE];
     reader.read(0, &mut head)?;
-    if head[0] != 0xe9
-        || !(1..=16).contains(&head[1])
-        || head[12..14] != [9, 0]
-        || head[23] != 1
-        || head[32..36] != 0xabcd5432u32.to_le_bytes()
-        || cstr(&head[80..112]) != APP.as_bytes()
-        || cstr(&head[48..80]) != version.as_bytes()
-        || cstr(&head[144..176]) != MARKER.as_bytes()
-    {
+    if check_image_header(&head)? != version.as_bytes() {
         return Err(Error::Image);
     }
     let mut cursor = 24u32;

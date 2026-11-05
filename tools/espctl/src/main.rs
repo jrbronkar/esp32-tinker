@@ -48,10 +48,10 @@ struct TuiArgs {
     interface: Option<std::net::Ipv4Addr>,
 
     /// Application-only binary to make available in the dashboard's update controls
-    #[arg(long, requires = "firmware_version")]
+    #[arg(long)]
     image: Option<std::path::PathBuf>,
 
-    /// Embedded FIRMWARE_VERSION of the update image
+    /// Check the image against this version instead of inferring it
     #[arg(long, requires = "image")]
     firmware_version: Option<String>,
 
@@ -151,7 +151,7 @@ fn run(command: Commands) -> Result<(), String> {
                 .map(|host| SocketAddr::new(host, args.port.unwrap_or(ota_protocol::PORT))),
             args.interface,
             Duration::from_millis(args.timeout_ms),
-            args.image.zip(args.firmware_version),
+            args.image.map(|path| (path, args.firmware_version)),
         )
         .map_err(|error| error.to_string()),
         Commands::Status(args) => run_status(args),

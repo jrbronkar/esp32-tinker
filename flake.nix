@@ -85,6 +85,43 @@
         pkgs.pkg-config
       ];
 
+      otaImage = pkgs.writeShellApplication {
+        name = "ota-image";
+        runtimeInputs = firmwareTools ++ [pkgs.coreutils];
+        text = ''
+          if [[ $# -ne 1 || ! $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,30}$ ]]; then
+            echo "Usage: nix run .#ota-image -- VERSION (1–31 letters, digits, dots, underscores or hyphens)" >&2
+            exit 2
+          fi
+          if [[ ! -f flake.nix || ! -d crates/device-demo ]]; then
+            echo "Run from the ESP32 repository root." >&2
+            exit 2
+          fi
+          : "''${WIFI_SSID:?Export WIFI_SSID before building}"
+          : "''${WIFI_PASSWORD?Export WIFI_PASSWORD before building}"
+          version=$1
+          export FIRMWARE_VERSION="$version"
+          cargo build --locked --target-dir target --target xtensa-esp32s3-none-elf \
+            -Zbuild-std=core,alloc --release -p device-demo
+          mkdir -p target/ota
+          temp=$(mktemp target/ota/.image.XXXXXXXX)
+          trap 'rm -f "$temp"' EXIT
+          espflash save-image --chip esp32s3 --flash-size 16mb \
+            target/xtensa-esp32s3-none-elf/release/device-demo "$temp"
+          output="target/ota/$version.bin"
+          mv -f "$temp" "$output"
+          printf 'OTA image: %s\n' "$output"
+        '';
+      };
+
+      espctl = pkgs.writeShellApplication {
+        name = "espctl";
+        runtimeInputs = [espRust pkgs.pkg-config];
+        text = ''
+          exec cargo run --locked --quiet -p espctl -- "$@"
+        '';
+      };
+
       soilVisualizer = pkgs.rustPlatform.buildRustPackage {
         pname = "soil-visualizer";
         version = "0.1.0";
@@ -109,6 +146,8 @@
       };
 
       apps = {
+        espctl = flake-utils.lib.mkApp {drv = espctl;};
+        ota-image = flake-utils.lib.mkApp {drv = otaImage;};
         imu-visualizer = flake-utils.lib.mkApp {drv = imuVisualizer;};
         soil-visualizer = flake-utils.lib.mkApp {drv = soilVisualizer;};
       };

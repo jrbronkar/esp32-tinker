@@ -48,7 +48,7 @@ pub fn run(
     direct: Option<SocketAddr>,
     interface: Option<Ipv4Addr>,
     timeout: Duration,
-    firmware: Option<(std::path::PathBuf, String)>,
+    firmware: Option<(std::path::PathBuf, Option<String>)>,
 ) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
@@ -429,7 +429,7 @@ impl Dashboard {
         let actions = if self.workflow.busy() {
             "F Severity   Board selection and quit resume after update"
         } else {
-            "F Severity   Q Quit"
+            "F Severity   U Firmware   Q Quit"
         };
         frame.render_widget(
             Paragraph::new(vec![Line::raw(controls), Line::raw(actions)]),
@@ -449,7 +449,7 @@ async fn dashboard(
     direct: Option<SocketAddr>,
     interface: Option<Ipv4Addr>,
     timeout: Duration,
-    firmware: Option<(std::path::PathBuf, String)>,
+    firmware: Option<(std::path::PathBuf, Option<String>)>,
 ) -> io::Result<()> {
     let mut app = Dashboard {
         workflow: update::Workflow::new(firmware),
@@ -546,6 +546,26 @@ async fn dashboard(
             redraw = true;
             if let Event::Key(key) = event {
                 if key.kind != KeyEventKind::Release {
+                    if app.workflow.picking() {
+                        match key.code {
+                            KeyCode::Up => app.workflow.previous_image(),
+                            KeyCode::Down => app.workflow.next_image(),
+                            KeyCode::Esc => app.workflow.cancel_picker(),
+                            KeyCode::Enter if key.kind == KeyEventKind::Press => {
+                                app.workflow.verify_selected(
+                                    app.targets.get(app.selected).map(|target| target.address),
+                                    app.status.as_ref(),
+                                    timeout,
+                                );
+                                if app.workflow.busy() {
+                                    app.session = None;
+                                    app.connection = "Update in progress".into();
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                     if app.workflow.confirming() {
                         match key.code {
                             KeyCode::Char('y')
