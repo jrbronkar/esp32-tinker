@@ -74,7 +74,7 @@ message UploadAck {
   uint32 target_offset = 4;
 }
 
-// Cursors are scoped to a boot. Supply the returned boot_id on subsequent polls.
+// Cursors are scoped to a boot. Supply the returned boot_id when reconnecting.
 message ReadLogsRequest { uint64 boot_id = 1; uint64 after_sequence = 2; }
 message LogEntry {
   uint64 sequence = 1;
@@ -89,4 +89,5 @@ message ReadLogsResponse {
   bool reset = 3;
   bool dropped = 4;
   repeated LogEntry entries = 5;
+  bool more = 6; // More retained entries were available when this batch was read.
 }

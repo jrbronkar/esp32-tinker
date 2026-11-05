@@ -10,3 +10,4 @@ heapless = "0.8.0"
 
 [build-dependencies]
 micropb-gen = "=0.7.0"
+proc-macro2 = "1"

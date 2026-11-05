@@ -26,8 +26,8 @@ connection; another client can query the same endpoint concurrently. Total uploa
 time is limited to 180 seconds. Operations are never replayed. If a commit ACK is
 lost, check the running firmware and slot before retrying.
 
-`logs` pages through retained records; `--follow` polls every 500 ms when caught
-up and reconnects after network loss. Cursors reset after reboot and warn when
+`logs` reads retained records on one stream. `--follow` waits for new records
+and resumes from its cursor after reconnecting. Cursors reset after reboot and warn when
 history was overwritten. Output escapes remote terminal control characters.
 These are management logs, not a capture of all serial output.
 

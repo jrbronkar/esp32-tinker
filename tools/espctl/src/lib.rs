@@ -70,6 +70,7 @@ async fn connect(
     address: SocketAddr,
     end: tokio::time::Instant,
     timings: &mut QueryTimings,
+    keep_alive: bool,
 ) -> io::Result<Grpc<Channel>> {
     let started = Instant::now();
     let stream = loop {
@@ -106,8 +107,13 @@ async fn connect(
                 }),
         )
     });
-    let endpoint =
+    let mut endpoint =
         Endpoint::from_shared(format!("http://{address}")).map_err(|e| invalid(e.to_string()))?;
+    if keep_alive {
+        endpoint = endpoint
+            .http2_keep_alive_interval(Duration::from_secs(5))
+            .keep_alive_while_idle(true);
+    }
     let channel = tokio::time::timeout_at(end, endpoint.connect_with_connector(connector))
         .await
         .map_err(|_| timed_out())?
@@ -129,7 +135,7 @@ async fn query(
     path: &'static str,
     timings: &mut QueryTimings,
 ) -> io::Result<Vec<u8>> {
-    let mut client = connect(address, end, timings).await?;
+    let mut client = connect(address, end, timings, false).await?;
     client.ready().await.map_err(|e| invalid(e.to_string()))?;
     let started = Instant::now();
     let bytes = ota_protocol::encode(request)
@@ -204,25 +210,68 @@ pub fn query_status_with_options(
         Ok(StatusQuery { status, timings })
     })
 }
-/// Read one retained log batch over the same gRPC management endpoint.
-pub fn read_logs(
+/// Read retained logs on one stream, optionally waiting for new entries.
+pub fn stream_logs(
     address: SocketAddr,
     timeout: Duration,
-    cursor: ota_protocol::ReadLogsRequest,
-) -> io::Result<ota_protocol::ReadLogsResponse> {
+    follow: bool,
+    cursor: &mut ota_protocol::ReadLogsRequest,
+    mut on_batch: impl FnMut(&ota_protocol::ReadLogsResponse),
+) -> io::Result<()> {
     let end = deadline(Instant::now(), timeout)?;
     runtime()?.block_on(async {
-        let response = query(
-            address,
-            end,
-            &cursor,
-            device_grpc::READ_LOGS_PATH,
-            &mut QueryTimings::default(),
-        )
-        .await?;
-        let logs = ota_protocol::decode(&response).map_err(|_| invalid("invalid log response"))?;
-        validate_logs(&cursor, &logs)?;
-        Ok(logs)
+        let mut client = connect(address, end, &mut QueryTimings::default(), follow).await?;
+        let mut stream = tokio::time::timeout_at(end, async {
+            client
+                .ready()
+                .await
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            let bytes = ota_protocol::encode(cursor).map_err(|_| invalid("encode log cursor"))?;
+            client
+                .server_streaming(
+                    tonic::Request::new(bytes.to_vec()),
+                    device_grpc::LOGS_PATH
+                        .parse()
+                        .map_err(|_| invalid("invalid logs RPC path"))?,
+                    RawCodec,
+                )
+                .await
+                .map(|response| response.into_inner())
+                .map_err(rpc)
+        })
+        .await
+        .map_err(|_| timed_out())??;
+        let mut started = false;
+        loop {
+            let message = if follow && started {
+                stream.message().await
+            } else {
+                tokio::time::timeout_at(end, stream.message())
+                    .await
+                    .map_err(|_| timed_out())?
+            }
+            .map_err(rpc)?;
+            let Some(bytes) = message else {
+                return if follow && started {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "log stream ended before the read completed",
+                    ))
+                };
+            };
+            let batch: ota_protocol::ReadLogsResponse =
+                ota_protocol::decode(&bytes).map_err(|_| invalid("invalid log batch"))?;
+            validate_logs(cursor, &batch)?;
+            cursor.boot_id = batch.boot_id;
+            cursor.after_sequence = batch.next_sequence;
+            on_batch(&batch);
+            if !follow && !batch.more {
+                return Ok(());
+            }
+            started = true;
+        }
     })
 }
 pub(crate) fn validate_logs(

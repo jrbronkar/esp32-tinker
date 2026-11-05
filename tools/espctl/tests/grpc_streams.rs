@@ -33,9 +33,6 @@ impl device_grpc::Environment for Env {
     fn status(&self) -> ota_protocol::StatusResponse {
         ota_protocol::status("mock", "device-demo", "v1", 0).unwrap()
     }
-    fn read_logs(&self, cursor: &ReadLogsRequest) -> ota_protocol::ReadLogsResponse {
-        self.0.borrow().logs.read(cursor)
-    }
     fn logs(
         &self,
         cursor: &ReadLogsRequest,
@@ -393,22 +390,19 @@ async fn live_log_traffic_cannot_keep_an_abandoned_upload_holding_flash() {
         .await;
 }
 #[tokio::test]
-async fn unary_log_snapshot_does_not_replace_stream_wakeup() {
+async fn cancelled_snapshot_does_not_interrupt_another_log_stream() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let (mut client, server, _, env) = fixture().await;
             let mut stream = logs(&mut client, Default::default()).await.unwrap();
             stream.message().await.unwrap().unwrap();
             client.ready().await.unwrap();
-            let snapshot = client
-                .unary(
-                    tonic::Request::new(proto(&ota_protocol::ReadLogsRequest::default())),
-                    device_grpc::READ_LOGS_PATH.parse().unwrap(),
-                    RawCodec,
-                )
-                .await
-                .unwrap();
-            assert_ne!(log_response(&snapshot.into_inner()).boot_id, 0);
+            let mut snapshot = logs(&mut client, Default::default()).await.unwrap();
+            assert_ne!(
+                log_response(&snapshot.message().await.unwrap().unwrap()).boot_id,
+                0
+            );
+            drop(snapshot);
             env.log("after snapshot");
             let bytes = tokio::time::timeout(Duration::from_secs(1), stream.message())
                 .await

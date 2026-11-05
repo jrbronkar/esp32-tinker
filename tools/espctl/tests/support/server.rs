@@ -58,13 +58,10 @@ pub fn run<M: ota_protocol::MessageDecode + Default>(
                     .await
                     .unwrap()
                     .unwrap();
-                let mut handler = protolink::grpc::FnHandler(|path: &str, body: &[u8]| {
-                    if path != device_grpc::STATUS_PATH && path != device_grpc::READ_LOGS_PATH {
-                        return Some(Err(protolink::Status::unimplemented("unknown path")));
-                    }
-                    let request = ota_protocol::decode(body).unwrap();
-                    Some(action(request))
-                });
+                let mut handler = TestHandler {
+                    reply: |body: &[u8]| action(ota_protocol::decode(body).unwrap()),
+                    pending: None,
+                };
                 let io = FragmentIo {
                     stream,
                     fragment,
@@ -82,6 +79,46 @@ pub fn run<M: ota_protocol::MessageDecode + Default>(
             }
         });
 }
+struct TestHandler<F> {
+    reply: F,
+    pending: Option<Vec<u8>>,
+}
+impl<F: FnMut(&[u8]) -> Result<Vec<u8>, protolink::Status>> protolink::Handler for TestHandler<F> {
+    fn route(&self, path: &str) -> Option<protolink::Route> {
+        let kind = match path {
+            device_grpc::STATUS_PATH => protolink::MethodKind::Unary,
+            device_grpc::LOGS_PATH => protolink::MethodKind::ServerStreaming,
+            _ => return None,
+        };
+        Some(protolink::Route::new(kind, 0))
+    }
+    fn call(
+        &mut self,
+        _: &mut protolink::CallContext<'_>,
+        request: &[u8],
+    ) -> Result<Vec<u8>, protolink::Status> {
+        (self.reply)(request)
+    }
+    fn on_message(
+        &mut self,
+        _: &mut protolink::CallContext<'_>,
+        request: &[u8],
+    ) -> Result<(), protolink::Status> {
+        self.pending = Some((self.reply)(request)?);
+        Ok(())
+    }
+    fn poll_response(
+        &mut self,
+        _: &mut protolink::CallContext<'_>,
+        _: &mut Context<'_>,
+    ) -> Poll<protolink::Next<Vec<u8>>> {
+        Poll::Ready(match self.pending.take() {
+            Some(bytes) => protolink::Next::Message(bytes),
+            None => protolink::Next::Done(Ok(())),
+        })
+    }
+}
+
 struct FragmentIo {
     stream: tokio::net::TcpStream,
     fragment: usize,

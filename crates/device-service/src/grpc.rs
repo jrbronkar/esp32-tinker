@@ -129,9 +129,6 @@ impl Environment for DeviceEnvironment<'_> {
     ) -> ota_protocol::ReadLogsResponse {
         self.runtime.logs.read_and_subscribe(cursor, cx)
     }
-    fn read_logs(&self, cursor: &ota_protocol::ReadLogsRequest) -> ota_protocol::ReadLogsResponse {
-        self.runtime.logs.read(cursor)
-    }
     fn now_us(&self) -> u64 {
         Instant::now().as_micros()
     }

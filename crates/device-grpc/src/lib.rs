@@ -2,6 +2,7 @@
 extern crate alloc;
 pub mod logs;
 pub mod watchdog;
+pub use ota_protocol::{LOGS_PATH, STATUS_PATH, UPLOAD_PATH};
 pub use protolink;
 
 use alloc::vec::Vec;
@@ -15,10 +16,6 @@ use ota_protocol::{
 use protolink::{CallContext, CallId, Handler, MethodKind, Next, Route, ServerConfig, Status};
 
 pub const PORT: u16 = ota_protocol::PORT;
-pub const STATUS_PATH: &str = "/esp.experimental.Management/Status";
-pub const READ_LOGS_PATH: &str = "/esp.experimental.Management/ReadLogs";
-pub const LOGS_PATH: &str = "/esp.experimental.Management/Logs";
-pub const UPLOAD_PATH: &str = "/esp.experimental.Management/Upload";
 
 // Prototype resource limits; these do not establish a worst-case heap bound.
 const MAX_CONCURRENT_STREAMS: u32 = 2;
@@ -105,7 +102,6 @@ impl core::fmt::Display for UploadEvent {
 pub trait Environment {
     fn status(&self) -> StatusResponse;
     fn logs(&self, cursor: &ReadLogsRequest, cx: &mut Context<'_>) -> ReadLogsResponse;
-    fn read_logs(&self, cursor: &ReadLogsRequest) -> ReadLogsResponse;
     fn now_us(&self) -> u64 {
         0
     }
@@ -302,18 +298,12 @@ impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T,
     fn route(&self, path: &str) -> Option<Route> {
         match path {
             STATUS_PATH => Some(Route::new(MethodKind::Unary, 0)),
-            READ_LOGS_PATH => Some(Route::new(MethodKind::Unary, 3)),
             LOGS_PATH => Some(Route::new(MethodKind::ServerStreaming, 1)),
             UPLOAD_PATH => Some(Route::new(MethodKind::BidiStreaming, 2)),
             _ => None,
         }
     }
-    fn call(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
-        if ctx.route.method == 3 {
-            let cursor = ota_protocol::decode(request)
-                .map_err(|_| Status::invalid_argument("invalid log cursor"))?;
-            return encode(&self.env.read_logs(&cursor));
-        }
+    fn call(&mut self, _: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
         status_response(request, || self.env.status(), || self.env.now_us())
     }
     fn on_message(&mut self, ctx: &mut CallContext<'_>, message: &[u8]) -> Result<(), Status> {

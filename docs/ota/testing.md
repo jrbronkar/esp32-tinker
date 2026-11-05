@@ -7,7 +7,7 @@ cargo test
 cargo check -p espctl --all-targets
 ```
 
-The 68 tests cover typed/empty Protobuf requests, bounded decoding, independent
+Host tests cover typed/empty Protobuf requests, bounded decoding, independent
 Tonic/h2 interoperability, image/metadata/digest/order validation, explicit
 Commit, uncertain outcomes and no replay, TCP loss, competing clients,
 cancellation, deadlines, independent watchdogs, log wakeups and flow control.

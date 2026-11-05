@@ -4,6 +4,7 @@
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/ota.rs"));
 }
+pub use generated::esp_::experimental_::{LOGS_PATH, STATUS_PATH, UPLOAD_PATH};
 pub use generated::ota_::{
     AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, FinishUpdate, FirmwareChunk,
     LogEntry, LogEntry_::Severity as LogSeverity, PartitionInfo, ReadLogsRequest, ReadLogsResponse,

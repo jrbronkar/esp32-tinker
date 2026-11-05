@@ -3,6 +3,14 @@ use std::{process::Command, thread, time::Duration};
 #[path = "support/server.rs"]
 mod server;
 
+fn read_logs(
+    address: std::net::SocketAddr,
+    timeout: Duration,
+    mut cursor: ReadLogsRequest,
+) -> std::io::Result<()> {
+    espctl::stream_logs(address, timeout, false, &mut cursor, |_| {})
+}
+
 #[test]
 fn log_transport_preserves_cursor_and_rejects_invalid_batches() {
     for variant in 0..6 {
@@ -38,7 +46,7 @@ fn log_transport_preserves_cursor_and_rejects_invalid_batches() {
             }
             Ok(ota_protocol::encode(&logs).unwrap().to_vec())
         });
-        let result = espctl::read_logs(
+        let result = read_logs(
             address,
             Duration::from_secs(2),
             ReadLogsRequest {
@@ -87,9 +95,7 @@ fn adversarial_server(
 fn logs_reject_hostile_framing_and_truncated_protobuf() {
     for bytes in [vec![], vec![0; 513], vec![8], vec![255]] {
         let (address, handle) = adversarial_server(bytes, false);
-        assert!(
-            espctl::read_logs(address, Duration::from_secs(2), ReadLogsRequest::default()).is_err()
-        );
+        assert!(read_logs(address, Duration::from_secs(2), ReadLogsRequest::default()).is_err());
         handle.join().unwrap();
     }
 }
@@ -98,7 +104,7 @@ fn logs_reject_hostile_framing_and_truncated_protobuf() {
 fn logs_total_deadline_bounds_a_trickling_peer() {
     let (address, handle) = adversarial_server(vec![0, 0, 0, 100, 8, 1, 16, 1, 98, 90], true);
     let start = std::time::Instant::now();
-    assert!(espctl::read_logs(
+    assert!(read_logs(
         address,
         Duration::from_millis(150),
         ReadLogsRequest::default()
@@ -146,5 +152,44 @@ fn cli_escapes_remote_terminal_control_sequences() {
     assert!(!text.contains('\r'));
     assert_eq!(text.lines().count(), 1);
     assert!(text.contains("\\r\\nforged line"));
+    handle.join().unwrap();
+}
+
+#[test]
+fn follow_resumes_with_the_last_delivered_cursor() {
+    let mut sequence = 0;
+    let (address, handle) = server::spawn_logs(2, usize::MAX, Duration::ZERO, move |request| {
+        assert_eq!(request.after_sequence, sequence);
+        assert_eq!(request.boot_id, if sequence == 0 { 0 } else { 7 });
+        sequence += 1;
+        let mut batch = ReadLogsResponse {
+            boot_id: 7,
+            next_sequence: sequence,
+            ..Default::default()
+        };
+        batch
+            .entries
+            .push(ota_protocol::LogEntry {
+                sequence,
+                ..Default::default()
+            })
+            .unwrap();
+        Ok(server::bytes(&batch))
+    });
+    let mut cursor = ReadLogsRequest::default();
+    let mut received = Vec::new();
+    for _ in 0..2 {
+        espctl::stream_logs(
+            address,
+            Duration::from_secs(2),
+            true,
+            &mut cursor,
+            |batch| {
+                received.push(batch.entries[0].sequence);
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(received, [1, 2]);
     handle.join().unwrap();
 }

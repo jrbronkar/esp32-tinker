@@ -2,12 +2,13 @@
 
 `device-demo` exposes one `esp.experimental.Management` service on TCP 7779.
 Protolink is pinned in `Cargo.toml`; `Cargo.lock` pins its HTTP/2 dependencies.
-Handlers use bounded micropb messages. See the [protocol contract](../ota/protocol.md).
+Handlers use bounded micropb messages. The build generates RPC paths from
+`management.proto` and checks the signatures against the Rust handlers.
+See the [protocol contract](../ota/protocol.md).
 
 | RPC | Shape | Request → response |
 | --- | --- | --- |
 | Status | Unary | `StatusRequest` → `StatusResponse` |
-| ReadLogs | Unary | `ReadLogsRequest` → `ReadLogsResponse` |
 | Logs | Server streaming | `ReadLogsRequest` → stream of `ReadLogsResponse` |
 | Upload | Bidirectional streaming | stream of `UploadRequest` → stream of `UploadAck` |
 
@@ -28,7 +29,7 @@ Connections share one flash lease and have separate upload watchdogs and reboot
 ownership. A second client can query status during an upload.
 
 `LogStore` combines retained storage with Embassy bounded multi-waker
-registration. Snapshot polling preserves streaming notifications; cursors carry
+registration. Snapshots and follow mode use the same stream; cursors carry
 boot identity and overwritten-history information. Typed lifecycle events control
 watchdog, state and reboot behavior; log text is presentation.
 

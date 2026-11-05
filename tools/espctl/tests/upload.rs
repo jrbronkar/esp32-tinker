@@ -124,9 +124,6 @@ impl device_grpc::Environment for Env {
         status.set_boot(boot);
         status
     }
-    fn read_logs(&self, cursor: &ota_protocol::ReadLogsRequest) -> ota_protocol::ReadLogsResponse {
-        self.0.logs.borrow().0.read(cursor)
-    }
     fn logs(
         &self,
         cursor: &ota_protocol::ReadLogsRequest,
