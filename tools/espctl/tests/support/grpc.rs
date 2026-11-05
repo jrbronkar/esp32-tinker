@@ -45,7 +45,7 @@ pub fn body(payload: ota_protocol::UploadOperation, id: u32) -> Vec<u8> {
     .unwrap()
     .to_vec()
 }
-pub fn response(bytes: &[u8]) -> ota_protocol::UploadResponse {
+pub fn response(bytes: &[u8]) -> ota_protocol::UploadAck {
     ota_protocol::decode(bytes).unwrap()
 }
 pub async fn logs(
@@ -105,10 +105,7 @@ pub async fn op(
     if response.request_id != id {
         return Err(tonic::Status::internal("wrong ack request id"));
     }
-    match response.payload {
-        Some(ota_protocol::UploadReply::Upload(ack)) => Ok(ack),
-        _ => Err(tonic::Status::internal("expected upload ack")),
-    }
+    Ok(response)
 }
 pub fn begin(image: &[u8], version: &str) -> ota_protocol::UploadOperation {
     ota_protocol::UploadOperation::Begin(ota_protocol::BeginUpdate {

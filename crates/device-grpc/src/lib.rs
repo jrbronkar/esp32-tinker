@@ -5,7 +5,7 @@ pub mod watchdog;
 pub use protolink;
 
 use alloc::vec::Vec;
-use ota_protocol::{StatusResponse, UploadOperation, UploadReply, UploadResponse};
+use ota_protocol::{StatusResponse, UploadOperation};
 use protolink::{CallContext, Handler, MethodKind, Route, ServerConfig, Status};
 
 pub const PORT: u16 = ota_protocol::PORT;
@@ -57,7 +57,6 @@ fn status_response(
     }
     if options.include_timings {
         current.set_timings(ota_protocol::DeviceTimings {
-            request_read_us: 0,
             decode_us: decoded.saturating_sub(started),
             prepare_us: now().saturating_sub(decoded),
         });
@@ -271,13 +270,11 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             self.env.event(UploadEvent::Receiving);
             (UploadPhase::Receiving, 0)
         };
-        let response = UploadResponse {
+        let response = UploadAck {
             request_id: request.request_id,
-            payload: Some(UploadReply::Upload(UploadAck {
-                phase,
-                next_offset: offset,
-                target_offset: self.target_offset,
-            })),
+            phase,
+            next_offset: offset,
+            target_offset: self.target_offset,
         };
         let pending = encode(&response)?;
         let upload = self
@@ -421,7 +418,6 @@ mod status_tests {
             assert_eq!(status.boot().is_some(), include);
             assert_eq!(status.timings().is_some(), include);
             if let Some(t) = status.timings() {
-                assert_eq!(t.request_read_us, 0);
                 assert_eq!(t.decode_us, 5);
                 assert_eq!(t.prepare_us, 5);
             }

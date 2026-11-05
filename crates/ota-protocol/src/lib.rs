@@ -8,8 +8,7 @@ pub use generated::ota_::{
     AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, FinishUpdate, FirmwareChunk,
     LogEntry, LogEntry_::Severity as LogSeverity, PartitionInfo, ReadLogsRequest, ReadLogsResponse,
     StatusRequest, StatusResponse, UploadAck, UploadAck_::Phase as UploadPhase, UploadRequest,
-    UploadRequest_::Payload as UploadOperation, UploadResponse,
-    UploadResponse_::Payload as UploadReply,
+    UploadRequest_::Payload as UploadOperation,
 };
 use micropb::PbEncoder;
 pub use micropb::{MessageDecode, MessageEncode};
@@ -121,7 +120,6 @@ mod tests {
         let mut current = status(text, text, text, u64::MAX).unwrap();
         current.management_state = "abcdefghijklmnop".try_into().unwrap();
         current.set_timings(DeviceTimings {
-            request_read_us: u64::MAX,
             decode_us: u64::MAX,
             prepare_us: u64::MAX,
         });
@@ -162,7 +160,7 @@ mod tests {
         );
         assert_eq!(frame_length(512u32.to_be_bytes()), Ok(512));
         assert!(decode::<UploadRequest>(&[0x08, 0x80]).is_err());
-        assert!(decode::<UploadResponse>(&[0xff]).is_err());
+        assert!(decode::<UploadAck>(&[0xff]).is_err());
     }
 
     #[test]
@@ -238,6 +236,15 @@ mod upload_tests {
         };
         let bytes = encode(&request).unwrap();
         assert_eq!(decode::<UploadRequest>(&bytes).unwrap(), request);
+        assert_eq!(&bytes[..3], &[8, 7, 18]);
+        let ack = UploadAck {
+            request_id: 7,
+            phase: UploadPhase::Receiving,
+            ..Default::default()
+        };
+        let bytes = encode(&ack).unwrap();
+        assert_eq!(bytes.as_slice(), &[8, 7, 16, 1]);
+        assert_eq!(decode::<UploadAck>(&bytes).unwrap(), ack);
     }
 
     #[test]

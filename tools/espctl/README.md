@@ -117,8 +117,7 @@ decode/validation. Retry wait is already included in connect.
 Defaults: 30 samples, 100 ms interval. Max samples: 1000.
 
 Optional device diagnostics report decode and response preparation microseconds.
-Request read time is unavailable at the gRPC handler boundary, so its reserved
-field is zero. Device durations include task preemption and overlap host phases.
+Device durations include task preemption and overlap host phases.
 CSV columns are `sample,total_ms,connect_ms,retry_wait_ms,encode_ms,rpc_ms,decode_validate_ms,refused_connects,device_decode_us,device_prepare_us`.
 
 ## Provision the first board

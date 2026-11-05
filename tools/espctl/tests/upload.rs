@@ -1,4 +1,4 @@
-use ota_protocol::{UploadOperation as Op, UploadPhase, UploadReply};
+use ota_protocol::{UploadOperation as Op, UploadPhase};
 use protolink::{CallContext, Handler, Next, Route, Status};
 use std::{
     cell::{Cell, RefCell},
@@ -199,7 +199,7 @@ impl Handler for Faulty<'_> {
             return result;
         }
         if let Poll::Ready(Next::Message(ref bytes)) = result {
-            let mut response: ota_protocol::UploadResponse = ota_protocol::decode(bytes).unwrap();
+            let mut response: ota_protocol::UploadAck = ota_protocol::decode(bytes).unwrap();
             if self.commit_id == Some(ctx.id) && self.state.fault == "lost-commit" {
                 return Poll::Ready(Next::Done(Err(Status::unavailable("commit ACK lost"))));
             }
@@ -216,13 +216,12 @@ impl Handler for Faulty<'_> {
                         return Poll::Ready(Next::Done(Err(Status::unavailable("connection lost"))))
                     }
                     fault => {
-                        if let Some(UploadReply::Upload(ref mut ack)) = response.payload {
-                            match fault {
-                                "phase" => ack.phase = UploadPhase::Verified,
-                                "offset" => ack.next_offset += 1,
-                                "target" => ack.target_offset = 0x9000,
-                                _ => panic!(),
-                            }
+                        let ack = &mut response;
+                        match fault {
+                            "phase" => ack.phase = UploadPhase::Verified,
+                            "offset" => ack.next_offset += 1,
+                            "target" => ack.target_offset = 0x9000,
+                            _ => panic!(),
                         }
                     }
                 }

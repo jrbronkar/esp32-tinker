@@ -300,7 +300,6 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     }
     if args.timings {
         if let Some(device) = status.timings() {
-            println!("Device read: unavailable at the gRPC handler boundary");
             println!("Device decode: {} us", device.decode_us);
             println!("Device prepare: {} us", device.prepare_us);
         } else {

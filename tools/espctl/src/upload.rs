@@ -1,8 +1,6 @@
 //! gRPC development uploads. No operation is replayed after transmission.
 use crate::grpc_codec::RawCodec;
-use ota_protocol::{
-    UploadAck, UploadOperation as Op, UploadPhase, UploadReply, UploadRequest, UploadResponse,
-};
+use ota_protocol::{UploadAck, UploadOperation as Op, UploadPhase, UploadRequest};
 use std::{fs, io, net::SocketAddr, path::Path, time::Duration};
 use tokio::sync::mpsc;
 use tonic::{client::Grpc, transport::Endpoint};
@@ -322,8 +320,8 @@ fn encode(payload: Op, id: u32) -> io::Result<Vec<u8>> {
     .map(|b| b.to_vec())
     .map_err(|e| invalid(format!("encode upload: {e:?}")))
 }
-fn decode(bytes: &[u8], id: u32) -> io::Result<UploadResponse> {
-    let response: UploadResponse =
+fn decode(bytes: &[u8], id: u32) -> io::Result<UploadAck> {
+    let response: UploadAck =
         ota_protocol::decode(bytes).map_err(|_| invalid("invalid upload response"))?;
     if response.request_id != id {
         return Err(invalid("upload request ID mismatch"));
@@ -356,10 +354,7 @@ async fn exchange(
             .map_err(rpc)?
             .ok_or_else(|| invalid("missing upload acknowledgement"))?;
         let response = decode(&bytes, id)?;
-        match response.payload {
-            Some(UploadReply::Upload(ack)) => Ok(ack),
-            _ => Err(invalid("missing upload acknowledgement")),
-        }
+        Ok(response)
     })
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC upload operation timed out"))?

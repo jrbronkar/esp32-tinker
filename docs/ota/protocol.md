@@ -4,7 +4,7 @@ All management operations use standard HTTP/2 and gRPC on TCP **7779**, implemen
 pinned Protolink. The schema is [`management.proto`](../../protocol/management.proto),
 using the fixed-capacity messages in [`ota.proto`](../../protocol/ota.proto).
 See [implementation, limits and validation](../device-management/protolink.md).
-The `esp.experimental` service name is retained for client compatibility.
+The service is `esp.experimental.Management`.
 
 ## RPCs
 
@@ -16,8 +16,8 @@ The `esp.experimental` service name is retained for client compatibility.
 | Management/Upload | Bidirectional streaming | Ordered Begin/Chunk/Finish/Commit or Abort operations and ACKs |
 
 Each RPC uses its declared request/response message directly. Only the Upload
-stream uses `UploadRequest` operation envelopes and `UploadResponse`
-acknowledgments with request IDs. Errors use gRPC status trailers. gRPC owns framing,
+stream uses `UploadRequest` operation envelopes and direct `UploadAck`
+messages with request IDs. Errors use gRPC status trailers. gRPC owns framing,
 HTTP/2 routing, stream flow control and status trailers; no legacy four-byte
 length prefix is placed inside a gRPC body. Messages are bounded to 4608 bytes,
 and responses to 512. Firmware streams 4096-byte sectors into the inactive slot;
@@ -74,16 +74,10 @@ Image layout/bounds and boot selection are unchanged by the transport migration.
 Unsigned development updates remain unauthenticated and unencrypted. TLS,
 signatures, automatic rollback and dependable power-loss recovery are unverified.
 
-## Schema compatibility
+## Client and firmware
 
-UploadRequest and UploadResponse field 1 (`protocol_version`) is reserved and
-never reused. Their former status/log payload tags are also reserved.
-There is no per-message version handshake. Protobuf unknown fields allow additive
-schema changes; preserve existing tags and meanings. gRPC provides transport
-interoperability, not compatibility for changed OTA semantics. Breaking API or
-behavior changes require a new versioned service/package. Firmware version,
-chip/application checks and image validation remain required.
-
-Firmware with an incompatible experimental schema needs its matching client for
-one migration upload, or a USB update. The current client does not negotiate
-old envelopes or retry using another schema.
+This experimental gRPC API changes in place. Build the client and firmware from
+the same schema. Provision matching firmware over USB when the running device
+cannot be managed by the current client. There is no version handshake or schema
+fallback. Firmware version, chip/application checks and image validation remain
+part of upload admission and verification.

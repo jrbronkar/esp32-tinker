@@ -8,9 +8,8 @@ see [discovery](discovery.md).
 
 Protolink is pinned to `62cc2c87a687ba65fc6885e7c9691cefacf2d064`.
 `Cargo.lock` pins zerodds HTTP/2 and HPACK to 1.0.0-rc.7. The handler uses
-fixed-capacity micropb messages. Schema compatibility uses additive Protobuf
-changes with preserved field numbers and meanings; breaking API or behavior
-changes require a new service/package. Upload envelope field 1 is reserved.
+fixed-capacity micropb messages. This experimental API changes in place;
+client and firmware are built together from the same schema.
 
 ## API and resource limits
 
@@ -21,10 +20,10 @@ The [service schema](../../protocol/management.proto) defines four RPCs:
 | Status | Unary | `StatusRequest` → `StatusResponse` |
 | ReadLogs | Unary | `ReadLogsRequest` → `ReadLogsResponse` |
 | Logs | Server streaming | `ReadLogsRequest` → stream of `ReadLogsResponse` |
-| Upload | Bidirectional streaming | stream of `UploadRequest` → stream of `UploadResponse` |
+| Upload | Bidirectional streaming | stream of `UploadRequest` → stream of `UploadAck` |
 
 Status and log messages are direct RPC payloads. Only Upload carries an operation
-oneof and request IDs, to correlate ordered operations with acknowledgments on
+oneof and request IDs, to correlate ordered operations with direct acknowledgments on
 its persistent bidirectional stream. RPC failures use gRPC status trailers.
 
 See the [protocol contract](../ota/protocol.md) for message and lifecycle details.
@@ -101,10 +100,10 @@ TCP peer producing logs during an abandoned upload.
 The ESP32-S3 release build and all `espctl` targets pass. Current hardware
 validation on one 16 MiB ESP32-S3 with two 3 MiB application slots confirms:
 
-- A 625088-byte image uploaded with concurrent logs, committed and booted in
+- A 624832-byte image uploaded with concurrent logs, committed and booted in
   ota_0; status reports idle and OTA available.
-- A full verify-only upload received all 153 matching chunk logs before sending
-  their next chunks.
+- The matching client completed a self-update with direct acknowledgments and
+  all 153 chunk log records received during transfer.
 - A full upload verified with log consumption stalled behind a 1024-byte window;
   resuming consumption reported overwritten history.
 - Four cancellation/resubscription cycles released upload ownership, and a fresh
@@ -139,5 +138,5 @@ The three probes do not activate images. The live concurrent probe requires
 uniquely identified chunk logs before sending the next chunk; retained records
 cannot count as current progress. The stalled variant requires an
 overwritten-history indication on resumption. See [provisioning and
-recovery](../ota/provisioning.md), [schema compatibility](../ota/protocol.md#schema-compatibility)
+recovery](../ota/provisioning.md), [client and firmware](../ota/protocol.md#client-and-firmware)
 and [test limits](../ota/testing.md).

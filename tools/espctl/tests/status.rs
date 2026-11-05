@@ -212,7 +212,6 @@ fn optional_device_timings_are_requested_and_preserved() {
         {
             let s = &mut response;
             s.set_timings(ota_protocol::DeviceTimings {
-                request_read_us: 0,
                 decode_us: 12,
                 prepare_us: 4,
             });

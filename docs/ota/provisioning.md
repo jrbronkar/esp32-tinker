@@ -66,10 +66,8 @@ on that same connection. Add `--logs` for concurrent server-push logs. `--port`
 overrides the gRPC endpoint. The separate status/profiling commands still use
 7779 through the same gRPC Management service. The legacy OTA writer and CLI fallback are removed;
 there is no automatic protocol fallback or replay after an operation fails.
-Firmware with an incompatible experimental schema requires its matching older
-CLI for one migration upload; see [schema compatibility](protocol.md#schema-compatibility).
-Boards without working gRPC Commit require a normal USB update (or an older
-release's migration client) before the current CLI can update them. Preserve
+Build the client and firmware from the same schema. If the running device cannot
+be managed by the current client, provision matching firmware over USB. Preserve
 OTA metadata for ordinary USB recovery; do not repeat initial provisioning.
 
 ```sh
