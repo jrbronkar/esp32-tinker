@@ -122,7 +122,9 @@ async fn run(
         remaining(deadline, timeout)?,
         client.unary(
             tonic::Request::new(bytes),
-            device_grpc::STATUS_PATH.parse().unwrap(),
+            device_grpc::STATUS_PATH
+                .parse()
+                .map_err(|_| invalid("invalid status RPC path"))?,
             RawCodec,
         ),
     )
@@ -156,7 +158,13 @@ async fn run(
             let request = tonic::Request::new(encode(Op::ReadLogs(cursor.clone()), 77)?);
             let response = tokio::time::timeout(
                 remaining(deadline, timeout)?,
-                client.server_streaming(request, device_grpc::LOGS_PATH.parse().unwrap(), RawCodec),
+                client.server_streaming(
+                    request,
+                    device_grpc::LOGS_PATH
+                        .parse()
+                        .map_err(|_| invalid("invalid logs RPC path"))?,
+                    RawCodec,
+                ),
             )
             .await
             .map_err(|_| invalid("log subscription timed out"))?
@@ -176,20 +184,33 @@ async fn run(
         request.set_timeout(remaining(deadline, Duration::from_secs(180))?);
         let response = tokio::time::timeout(
             remaining(deadline, timeout)?,
-            client.streaming(request, device_grpc::UPLOAD_PATH.parse().unwrap(), RawCodec),
+            client.streaming(
+                request,
+                device_grpc::UPLOAD_PATH
+                    .parse()
+                    .map_err(|_| invalid("invalid upload RPC path"))?,
+                RawCodec,
+            ),
         )
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gRPC upload start timed out"))?
         .map_err(rpc)?;
         let mut replies = response.into_inner();
         let begin = ota_protocol::BeginUpdate {
-            application: ota_core::APP.try_into().unwrap(),
-            chip: "esp32s3".try_into().unwrap(),
+            application: ota_core::APP
+                .try_into()
+                .map_err(|_| invalid("application name exceeds protocol capacity"))?,
+            chip: "esp32s3"
+                .try_into()
+                .map_err(|_| invalid("chip name exceeds protocol capacity"))?,
             version: version
                 .try_into()
                 .map_err(|_| invalid("version too long"))?,
             image_size: image.len() as u32,
-            sha256: ota_core::hash(image).as_slice().try_into().unwrap(),
+            sha256: ota_core::hash(image)
+                .as_slice()
+                .try_into()
+                .map_err(|_| invalid("digest exceeds protocol capacity"))?,
         };
         let mut id = 1;
         let ack = exchange(&tx, &mut replies, id, Op::Begin(begin), deadline, timeout).await?;
@@ -203,7 +224,9 @@ async fn run(
                 id,
                 Op::Chunk(ota_protocol::FirmwareChunk {
                     offset,
-                    data: bytes.try_into().unwrap(),
+                    data: bytes
+                        .try_into()
+                        .map_err(|_| invalid("chunk exceeds protocol capacity"))?,
                 }),
                 deadline,
                 timeout,

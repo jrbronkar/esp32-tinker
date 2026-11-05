@@ -265,7 +265,12 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
                 target_offset: self.target_offset,
             })),
         };
-        self.upload.as_mut().unwrap().pending = Some(encode(&response)?);
+        let pending = encode(&response)?;
+        let upload = self
+            .upload
+            .as_mut()
+            .ok_or_else(|| Status::internal("missing upload state"))?;
+        upload.pending = Some(pending);
         Ok(())
     }
 }
