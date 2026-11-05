@@ -11,9 +11,11 @@ use core::{
     task::{Context, Poll},
 };
 use ota_protocol::{
-    ReadLogsRequest, ReadLogsResponse, StatusResponse, UploadAck, UploadOperation, UploadPhase,
+    ReadLogsRequest, ReadLogsResponse, StatusRequest, StatusResponse, UploadAck, UploadOperation,
+    UploadPhase, UploadRequest,
+    management::{Management as ManagementRpc, ManagementDispatch},
 };
-use protolink::{CallContext, CallId, Handler, MethodKind, Next, Route, ServerConfig, Status};
+use protolink::{CallContext, CallId, Handler, Next, Route, ServerConfig, Status};
 
 pub const PORT: u16 = ota_protocol::PORT;
 
@@ -39,37 +41,92 @@ pub fn config() -> ServerConfig {
 
 /// Unary gRPC status handler backed by a status provider.
 pub struct Management<F>(pub F);
-impl<F: FnMut() -> StatusResponse> Handler for Management<F> {
-    fn route(&self, path: &str) -> Option<Route> {
-        (path == STATUS_PATH).then_some(Route::new(MethodKind::Unary, 0))
-    }
-    fn call(&mut self, _: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
-        status_response(request, || (self.0)(), || 0)
+impl<F: FnMut() -> StatusResponse> ManagementRpc for Management<F> {
+    fn status(
+        &mut self,
+        _: &mut CallContext<'_>,
+        request: StatusRequest,
+    ) -> Result<StatusResponse, Status> {
+        Ok(status_response(request, || (self.0)(), || 0))
     }
 }
 
 fn status_response(
-    request: &[u8],
+    options: StatusRequest,
     status: impl FnOnce() -> StatusResponse,
     now: impl Fn() -> u64,
-) -> Result<Vec<u8>, Status> {
+) -> StatusResponse {
     let started = now();
-    let options: ota_protocol::StatusRequest = ota_protocol::decode(request)
-        .map_err(|_| Status::invalid_argument("invalid status request"))?;
-    let decoded = now();
     let mut current = status();
     if !options.include_boot {
         current.clear_boot();
     }
     if options.include_timings {
         current.set_timings(ota_protocol::DeviceTimings {
-            decode_us: decoded.saturating_sub(started),
-            prepare_us: now().saturating_sub(decoded),
+            // Protobuf decoding completes before the typed handler runs.
+            decode_us: 0,
+            prepare_us: now().saturating_sub(started),
         });
     } else {
         current.clear_timings();
     }
-    encode(&current)
+    current
+}
+
+/// Apply device request bounds and release streaming state on dispatch errors.
+pub struct ManagementServer<S>(ManagementDispatch<S>);
+
+impl<S: ManagementRpc> ManagementServer<S> {
+    pub fn new(service: S) -> Self {
+        Self(ManagementDispatch::new(service))
+    }
+}
+
+impl<S: ManagementRpc> Handler for ManagementServer<S> {
+    fn route(&self, path: &str) -> Option<Route> {
+        self.0.route(path)
+    }
+
+    fn call(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
+        if request.len() > ota_protocol::MAX_FRAME {
+            return Err(Status::invalid_argument(
+                "status request exceeds message limit",
+            ));
+        }
+        self.0.call(ctx, request)
+    }
+
+    fn on_message(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<(), Status> {
+        let result = if ctx.path == LOGS_PATH && request.len() > ota_protocol::MAX_FRAME {
+            Err(Status::invalid_argument(
+                "log request exceeds message limit",
+            ))
+        } else {
+            self.0.on_message(ctx, request)
+        };
+        if result.is_err() {
+            // Protolink finishes calls whose dispatch returns an error without
+            // invoking on_cancel. Decode failures also need to release flash.
+            self.0.on_cancel(ctx);
+        }
+        result
+    }
+
+    fn on_half_close(&mut self, ctx: &mut CallContext<'_>) -> Result<(), Status> {
+        self.0.on_half_close(ctx)
+    }
+
+    fn poll_response(
+        &mut self,
+        ctx: &mut CallContext<'_>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Next<Vec<u8>>> {
+        self.0.poll_response(ctx, cx)
+    }
+
+    fn on_cancel(&mut self, ctx: &mut CallContext<'_>) {
+        self.0.on_cancel(ctx);
+    }
 }
 
 /// Typed lifecycle notifications; log text is presentation, never control flow.
@@ -120,7 +177,7 @@ struct Upload<'a, T> {
     last_id: u32,
     target: RefMut<'a, T>,
     update: ota_core::Update,
-    pending: Option<Vec<u8>>,
+    pending: Option<UploadAck>,
     ended: bool,
     verified: bool,
 }
@@ -151,24 +208,11 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             self.env.event(UploadEvent::Released);
         }
     }
-    fn message(&mut self, ctx: &CallContext<'_>, bytes: &[u8]) -> Result<(), Status> {
-        if ctx.route.method == 1 {
-            let cursor = ota_protocol::decode(bytes)
-                .map_err(|_| Status::invalid_argument("invalid log cursor"))?;
-            let slot = self
-                .subscriptions
-                .iter_mut()
-                .find(|s| s.is_none())
-                .ok_or_else(|| Status::resource_exhausted("too many subscriptions"))?;
-            *slot = Some(Subscription {
-                id: ctx.id,
-                cursor,
-                first: true,
-            });
-            return Ok(());
-        }
-        let request = ota_protocol::decode_upload(bytes)
-            .map_err(|_| Status::invalid_argument("invalid upload request"))?;
+    fn process_upload(
+        &mut self,
+        ctx: &mut CallContext<'_>,
+        request: UploadRequest,
+    ) -> Result<(), Status> {
         if self.activation_pending || self.env.activation_pending() {
             return Err(Status::failed_precondition(
                 "activation pending; reconnect after reboot",
@@ -271,12 +315,11 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             next_offset: offset,
             target_offset: self.target_offset,
         };
-        let pending = encode(&response)?;
         let upload = self
             .upload
             .as_mut()
             .ok_or_else(|| Status::internal("missing upload state"))?;
-        upload.pending = Some(pending);
+        upload.pending = Some(response);
         Ok(())
     }
 }
@@ -289,86 +332,102 @@ fn upload_error(error: ota_core::Error) -> Status {
         _ => Status::failed_precondition("invalid upload metadata, state, bounds or order"),
     }
 }
-fn encode(response: &impl ota_protocol::MessageEncode) -> Result<Vec<u8>, Status> {
-    ota_protocol::encode(response)
-        .map(|b| b.to_vec())
-        .map_err(|_| Status::internal("response encoding failed"))
-}
-impl<T: ota_core::Target, E: Environment> Handler for StreamingManagement<'_, T, E> {
-    fn route(&self, path: &str) -> Option<Route> {
-        match path {
-            STATUS_PATH => Some(Route::new(MethodKind::Unary, 0)),
-            LOGS_PATH => Some(Route::new(MethodKind::ServerStreaming, 1)),
-            UPLOAD_PATH => Some(Route::new(MethodKind::BidiStreaming, 2)),
-            _ => None,
-        }
+impl<T: ota_core::Target, E: Environment> ManagementRpc for StreamingManagement<'_, T, E> {
+    fn status(
+        &mut self,
+        _: &mut CallContext<'_>,
+        request: StatusRequest,
+    ) -> Result<StatusResponse, Status> {
+        Ok(status_response(
+            request,
+            || self.env.status(),
+            || self.env.now_us(),
+        ))
     }
-    fn call(&mut self, _: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
-        status_response(request, || self.env.status(), || self.env.now_us())
-    }
-    fn on_message(&mut self, ctx: &mut CallContext<'_>, message: &[u8]) -> Result<(), Status> {
-        let result = self.message(ctx, message);
-        if result.is_err() {
-            self.on_cancel(ctx);
-        }
-        result
-    }
-    fn on_half_close(&mut self, ctx: &mut CallContext<'_>) -> Result<(), Status> {
-        if ctx.route.method == 2 {
-            let upload = self
-                .upload
-                .as_mut()
-                .filter(|u| u.id == ctx.id)
-                .ok_or_else(|| Status::failed_precondition("missing Begin"))?;
-            upload.ended = true;
-        }
+
+    fn logs(&mut self, ctx: &mut CallContext<'_>, cursor: ReadLogsRequest) -> Result<(), Status> {
+        let slot = self
+            .subscriptions
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or_else(|| Status::resource_exhausted("too many subscriptions"))?;
+        *slot = Some(Subscription {
+            id: ctx.id,
+            cursor,
+            first: true,
+        });
         Ok(())
     }
-    fn poll_response(
+
+    fn poll_logs(
         &mut self,
         ctx: &mut CallContext<'_>,
         cx: &mut Context<'_>,
-    ) -> Poll<Next<Vec<u8>>> {
-        if ctx.route.method == 1 {
-            let Some(sub) = self
-                .subscriptions
-                .iter_mut()
-                .flatten()
-                .find(|s| s.id == ctx.id)
-            else {
-                return Poll::Ready(Next::Done(Err(Status::internal("missing subscription"))));
-            };
-            let batch = self.env.logs(&sub.cursor, cx);
-            if sub.first || batch.reset || batch.dropped || !batch.entries.is_empty() {
-                sub.first = false;
-                sub.cursor.boot_id = batch.boot_id;
-                sub.cursor.after_sequence = batch.next_sequence;
-                return Poll::Ready(match encode(&batch) {
-                    Ok(bytes) => Next::Message(bytes),
-                    Err(e) => Next::Done(Err(e)),
-                });
-            }
-            return Poll::Pending;
+    ) -> Poll<Next<ReadLogsResponse>> {
+        let Some(sub) = self
+            .subscriptions
+            .iter_mut()
+            .flatten()
+            .find(|sub| sub.id == ctx.id)
+        else {
+            return Poll::Ready(Next::Done(Err(Status::internal("missing subscription"))));
+        };
+        let batch = self.env.logs(&sub.cursor, cx);
+        if sub.first || batch.reset || batch.dropped || !batch.entries.is_empty() {
+            sub.first = false;
+            sub.cursor.boot_id = batch.boot_id;
+            sub.cursor.after_sequence = batch.next_sequence;
+            Poll::Ready(Next::Message(batch))
+        } else {
+            Poll::Pending
         }
-        if let Some(upload) = self.upload.as_mut().filter(|u| u.id == ctx.id) {
-            if let Some(bytes) = upload.pending.take() {
-                return Poll::Ready(Next::Message(bytes));
-            }
-            if !upload.ended {
-                return Poll::Pending;
-            }
-            self.release();
-            return Poll::Ready(Next::Done(Ok(())));
-        }
-        Poll::Pending
     }
-    fn on_cancel(&mut self, ctx: &mut CallContext<'_>) {
+
+    fn cancel_logs(&mut self, ctx: &mut CallContext<'_>) {
         for slot in &mut self.subscriptions {
-            if slot.as_ref().is_some_and(|s| s.id == ctx.id) {
+            if slot.as_ref().is_some_and(|sub| sub.id == ctx.id) {
                 *slot = None;
             }
         }
-        if self.upload.as_ref().is_some_and(|u| u.id == ctx.id) {
+    }
+
+    fn upload(&mut self, ctx: &mut CallContext<'_>, request: UploadRequest) -> Result<(), Status> {
+        self.process_upload(ctx, request)
+    }
+
+    fn end_upload(&mut self, ctx: &mut CallContext<'_>) -> Result<(), Status> {
+        let upload = self
+            .upload
+            .as_mut()
+            .filter(|upload| upload.id == ctx.id)
+            .ok_or_else(|| Status::failed_precondition("missing Begin"))?;
+        upload.ended = true;
+        Ok(())
+    }
+
+    fn poll_upload(
+        &mut self,
+        ctx: &mut CallContext<'_>,
+        _: &mut Context<'_>,
+    ) -> Poll<Next<UploadAck>> {
+        if let Some(upload) = self.upload.as_mut().filter(|upload| upload.id == ctx.id) {
+            if let Some(ack) = upload.pending.take() {
+                return Poll::Ready(Next::Message(ack));
+            }
+            if upload.ended {
+                self.release();
+                return Poll::Ready(Next::Done(Ok(())));
+            }
+        }
+        Poll::Pending
+    }
+
+    fn cancel_upload(&mut self, ctx: &mut CallContext<'_>) {
+        if self
+            .upload
+            .as_ref()
+            .is_some_and(|upload| upload.id == ctx.id)
+        {
             self.release();
         }
     }
@@ -396,18 +455,15 @@ mod status_tests {
                 include_timings: include,
             };
             let clock = Cell::new(0u64);
-            let response =
-                status_response(&ota_protocol::encode(&request).unwrap(), current, || {
-                    let n = clock.get();
-                    clock.set(n + 5);
-                    n
-                })
-                .unwrap();
-            let status: StatusResponse = ota_protocol::decode(&response).unwrap();
+            let status = status_response(request, current, || {
+                let n = clock.get();
+                clock.set(n + 5);
+                n
+            });
             assert_eq!(status.boot().is_some(), include);
             assert_eq!(status.timings().is_some(), include);
             if let Some(t) = status.timings() {
-                assert_eq!(t.decode_us, 5);
+                assert_eq!(t.decode_us, 0);
                 assert_eq!(t.prepare_us, 5);
             }
         }

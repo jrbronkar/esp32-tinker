@@ -36,7 +36,9 @@ These are management logs, not a capture of all serial output.
 `status --timings` reports TCP connect/retry, encode, RPC response and decode/check
 durations. Each profile sample opens a fresh connection. Retry wait is included
 in connect; RPC response includes HTTP/2 setup and server/body/trailer time.
-Device decode/prepare diagnostics overlap host phases and include preemption.
+Device preparation timing overlaps host phases and includes preemption. The
+generated dispatcher decodes before the handler, so device decode is blank when
+unavailable.
 `profile --csv` emits:
 
 ```text

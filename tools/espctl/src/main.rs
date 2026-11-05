@@ -141,10 +141,10 @@ fn run(command: Commands) -> Result<(), String> {
                             }
                             for entry in batch.entries {
                                 eprintln!(
-                                    "{} {:>10} {:?} {}",
+                                    "{} {:>10} {} {}",
                                     entry.sequence,
                                     entry.uptime_ms,
-                                    entry.severity,
+                                    log_severity(entry.severity),
                                     entry.message.escape_debug()
                                 );
                             }
@@ -300,7 +300,9 @@ fn run_status(args: StatusArgs) -> Result<(), String> {
     }
     if args.timings {
         if let Some(device) = status.timings() {
-            println!("Device decode: {} us", device.decode_us);
+            if device.decode_us != 0 {
+                println!("Device decode: {} us", device.decode_us);
+            }
             println!("Device prepare: {} us", device.prepare_us);
         } else {
             println!("Device timings unavailable; flash the instrumented device-demo");
@@ -351,6 +353,7 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                         query
                             .status
                             .timings()
+                            .filter(|d| d.decode_us != 0)
                             .map(|d| d.decode_us.to_string())
                             .unwrap_or_default(),
                         query
@@ -425,6 +428,7 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                     device_timings
                         .iter()
                         .map(|d| d.decode_us)
+                        .filter(|&value| value != 0)
                         .collect::<Vec<_>>(),
                 ),
                 (
@@ -432,6 +436,9 @@ fn run_profile(args: ProfileArgs) -> Result<(), String> {
                     device_timings.iter().map(|d| d.prepare_us).collect(),
                 ),
             ] {
+                if values.is_empty() {
+                    continue;
+                }
                 values.sort_unstable();
                 let median =
                     (values[(values.len() - 1) / 2] as f64 + values[values.len() / 2] as f64) / 2.0;
@@ -459,6 +466,15 @@ fn main() -> ExitCode {
     }
 }
 
+fn log_severity(severity: ota_protocol::LogSeverity) -> &'static str {
+    match severity {
+        ota_protocol::LogSeverity::Info => "Info",
+        ota_protocol::LogSeverity::Warn => "Warn",
+        ota_protocol::LogSeverity::Error => "Error",
+        _ => "Unknown",
+    }
+}
+
 fn run_logs(args: LogsArgs) -> Result<(), String> {
     if args.follow {
         eprintln!("Following management logs; reconnecting after device resets or network loss.");
@@ -479,10 +495,10 @@ fn run_logs(args: LogsArgs) -> Result<(), String> {
                 }
                 for entry in &logs.entries {
                     println!(
-                        "{} {:>10} {:?} {}",
+                        "{} {:>10} {} {}",
                         entry.sequence,
                         entry.uptime_ms,
-                        entry.severity,
+                        log_severity(entry.severity),
                         entry.message.escape_debug()
                     );
                 }

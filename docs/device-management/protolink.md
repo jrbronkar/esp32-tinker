@@ -2,8 +2,8 @@
 
 `device-demo` exposes one `esp.experimental.Management` service on TCP 7779.
 Protolink is pinned in `Cargo.toml`; `Cargo.lock` pins its HTTP/2 dependencies.
-Handlers use bounded micropb messages. The build generates RPC paths from
-`management.proto` and checks the signatures against the Rust handlers.
+The build generates the Management trait and dispatcher from `management.proto`.
+The server implements typed methods using bounded micropb 0.6 messages.
 See the [protocol contract](../ota/protocol.md).
 
 | RPC | Shape | Request → response |

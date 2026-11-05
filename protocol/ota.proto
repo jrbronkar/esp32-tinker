@@ -33,7 +33,7 @@ message StatusResponse {
 }
 // Device monotonic elapsed wall time, including executor preemption.
 message DeviceTimings {
-  uint64 decode_us = 1;
+  uint64 decode_us = 1; // Zero when decoding is not instrumented.
   uint64 prepare_us = 2;
 }
 // Read-only inventory. This does not assert OTA bootloader or rollback support.

@@ -106,7 +106,9 @@ async fn fixture() -> (
         let (stream, _) = listener.accept().await.unwrap();
         let watchdog = events.0.borrow().watchdog.clone();
         let timer = events.0.borrow().timer;
-        let mut handler = device_grpc::StreamingManagement::new(&target, 0x10000, events);
+        let mut handler = device_grpc::ManagementServer::new(
+            device_grpc::StreamingManagement::new(&target, 0x10000, events),
+        );
         let connection = protolink::tokio::server(stream)
             .with_config(device_grpc::config())
             .build()
@@ -219,6 +221,19 @@ async fn cancellation_errors_and_disconnect_release_flash() {
                     tonic::Code::FailedPrecondition
                 );
                 assert!(memory.try_borrow_mut().is_ok());
+                drop(tx);
+                drop(replies);
+                // A decode error happens before the generated service method runs.
+                let (tx, mut replies) = upload(&mut client).await.unwrap();
+                op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                tx.send(vec![0xff]).await.unwrap();
+                assert_eq!(
+                    replies.message().await.unwrap_err().code(),
+                    tonic::Code::InvalidArgument
+                );
+                assert!(memory.try_borrow_mut().is_ok());
+                drop(tx);
+                drop(replies);
                 // New subscriptions wake after an external log producer, and cancel cleanly.
                 for _ in 0..4 {
                     let mut cursor = ReadLogsRequest::default();
@@ -437,8 +452,9 @@ async fn two_connections_share_exclusive_flash_without_sharing_idle_timeouts() {
                             watchdog: watchdog.clone(),
                             timer,
                         })));
-                        let mut handler =
-                            device_grpc::StreamingManagement::new(&flash, 0x10000, env);
+                        let mut handler = device_grpc::ManagementServer::new(
+                            device_grpc::StreamingManagement::new(&flash, 0x10000, env),
+                        );
                         let connection = protolink::tokio::server(stream)
                             .with_config(device_grpc::config())
                             .build()

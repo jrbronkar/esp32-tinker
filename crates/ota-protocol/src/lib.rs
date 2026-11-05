@@ -3,13 +3,17 @@
 #[allow(nonstandard_style, unused, irrefutable_let_patterns, clippy::all)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/ota.rs"));
+    include!(concat!(env!("OUT_DIR"), "/management.rs"));
 }
-pub use generated::esp_::experimental_::{LOGS_PATH, STATUS_PATH, UPLOAD_PATH};
+pub use generated::management;
 pub use generated::ota_::{
     AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, FinishUpdate, FirmwareChunk,
     LogEntry, LogEntry_::Severity as LogSeverity, PartitionInfo, ReadLogsRequest, ReadLogsResponse,
     StatusRequest, StatusResponse, UploadAck, UploadAck_::Phase as UploadPhase, UploadRequest,
     UploadRequest_::Payload as UploadOperation,
+};
+pub use management::{
+    METHOD_LOGS as LOGS_PATH, METHOD_STATUS as STATUS_PATH, METHOD_UPLOAD as UPLOAD_PATH,
 };
 use micropb::PbEncoder;
 pub use micropb::{MessageDecode, MessageEncode};

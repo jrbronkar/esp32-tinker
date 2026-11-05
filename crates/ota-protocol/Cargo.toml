@@ -5,9 +5,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
-micropb = { version = "=0.7.0", default-features = false, features = ["container-heapless-0-8", "encode", "decode", "enable-64bit", "nesting-limit"] }
+micropb = { version = "=0.6.0", default-features = false, features = ["container-heapless-0-8", "encode", "decode", "enable-64bit"] }
 heapless = "0.8.0"
+protolink-grpc = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false, features = ["micropb"] }
 
 [build-dependencies]
-micropb-gen = "=0.7.0"
-proc-macro2 = "1"
+micropb-gen = "=0.6.0"
+protolink-grpc-gen = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false }

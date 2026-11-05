@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     loop {
         let (stream, _) = listener.accept().await?;
-        let mut handler = device_grpc::Management(|| {
+        let mut handler = device_grpc::ManagementServer::new(device_grpc::Management(|| {
             ota_protocol::status(
                 "mock-esp32s3",
                 "device-demo",
@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 started.elapsed().as_millis() as u64,
             )
             .unwrap_or_default()
-        });
+        }));
         let _ = device_grpc::protolink::tokio::server(stream)
             .with_config(device_grpc::config())
             .build()

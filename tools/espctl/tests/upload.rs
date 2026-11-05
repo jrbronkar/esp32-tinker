@@ -153,7 +153,7 @@ impl device_grpc::Environment for Env {
     }
 }
 struct Faulty<'a> {
-    inner: device_grpc::StreamingManagement<'a, Memory, Env>,
+    inner: device_grpc::ManagementServer<device_grpc::StreamingManagement<'a, Memory, Env>>,
     state: State,
     commit_id: Option<protolink::CallId>,
 }
@@ -165,7 +165,7 @@ impl Handler for Faulty<'_> {
         self.inner.call(ctx, request)
     }
     fn on_message(&mut self, ctx: &mut CallContext<'_>, bytes: &[u8]) -> Result<(), Status> {
-        if ctx.route.method == 1 {
+        if ctx.path == device_grpc::LOGS_PATH {
             return self.inner.on_message(ctx, bytes);
         }
         let request = ota_protocol::decode_upload(bytes).unwrap();
@@ -192,7 +192,7 @@ impl Handler for Faulty<'_> {
         cx: &mut Context<'_>,
     ) -> Poll<Next<Vec<u8>>> {
         let result = self.inner.poll_response(ctx, cx);
-        if ctx.route.method == 1 {
+        if ctx.path == device_grpc::LOGS_PATH {
             return result;
         }
         if let Poll::Ready(Next::Message(ref bytes)) = result {
@@ -255,11 +255,11 @@ async fn fixture(
         // Exactly one TCP accept, carrying both status and upload RPCs.
         let (stream, _) = listener.accept().await.unwrap();
         let mut handler = Faulty {
-            inner: device_grpc::StreamingManagement::new(
+            inner: device_grpc::ManagementServer::new(device_grpc::StreamingManagement::new(
                 &target,
                 0x310000,
                 Env(server_state.clone()),
-            ),
+            )),
             state: server_state.clone(),
             commit_id: None,
         };

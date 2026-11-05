@@ -57,7 +57,7 @@ async fn serve_connection(
                 reboot: Default::default(),
                 activation_started: core::cell::Cell::new(false),
             };
-            let mut handler = StreamingManagement::new(
+            let mut handler = device_grpc::ManagementServer::new(StreamingManagement::new(
                 target,
                 target_offset,
                 DeviceEnvironment {
@@ -65,7 +65,7 @@ async fn serve_connection(
                     runtime,
                     connection: &connection_state,
                 },
-            );
+            ));
             {
                 let (reader, writer) = socket.split();
                 let connection = with_timeout(

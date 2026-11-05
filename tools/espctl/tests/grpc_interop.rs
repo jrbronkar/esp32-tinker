@@ -9,9 +9,9 @@ async fn tonic_status_repeated_calls_and_error_trailers() {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut handler = device_grpc::Management(|| {
+            let mut handler = device_grpc::ManagementServer::new(device_grpc::Management(|| {
                 ota_protocol::status("test-board", "host-test", "v1", 42).unwrap()
-            });
+            }));
             protolink::tokio::server(stream)
                 .with_config(device_grpc::config())
                 .build()
