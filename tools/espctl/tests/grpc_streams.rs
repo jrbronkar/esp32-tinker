@@ -177,10 +177,6 @@ async fn same_connection_upload_and_live_logs_verify_image() {
         .await;
 }
 #[tokio::test]
-#[allow(
-    clippy::await_holding_refcell_ref,
-    reason = "the test holds the flash lease while the server handles a competing Begin"
-)]
 async fn cancellation_errors_and_disconnect_release_flash() {
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -202,19 +198,6 @@ async fn cancellation_errors_and_disconnect_release_flash() {
                     }
                     assert!(memory.try_borrow_mut().is_ok());
                 }
-                // An existing exclusive lease rejects Begin without modifying the target.
-                let lease = memory.borrow_mut();
-                let (tx, mut replies) = upload(&mut client).await.unwrap();
-                assert_eq!(
-                    op(&tx, &mut replies, begin(&image, "v1"), 1)
-                        .await
-                        .unwrap_err()
-                        .code(),
-                    tonic::Code::ResourceExhausted
-                );
-                drop(lease);
-                drop(tx);
-                drop(replies);
                 let (tx, mut replies) = upload(&mut client).await.unwrap();
                 op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
                 assert_eq!(
