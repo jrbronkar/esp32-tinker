@@ -10,15 +10,22 @@ use protolink::{CallContext, Handler, MethodKind, Route, ServerConfig, Status};
 pub const PORT: u16 = ota_protocol::PORT;
 pub const STATUS_PATH: &str = "/esp.experimental.Management/Status";
 
-/// Small prototype limits, not a measured peak heap guarantee.
+// Prototype resource limits; these do not establish a worst-case heap bound.
+const MAX_CONCURRENT_STREAMS: u32 = 2;
+const STREAM_WINDOW_BYTES: u32 = 8192;
+// HTTP/2 cannot reduce the initial connection window below 65535.
+const CONNECTION_WINDOW_BYTES: u32 = 65_535;
+const MAX_HEADER_LIST_BYTES: u32 = 1024;
+const MAX_PENDING_OUTPUT_BYTES: usize = 8192;
+
+/// Apply the management service's bounded HTTP/2 and message limits.
 pub fn config() -> ServerConfig {
     let mut config = ServerConfig::default();
-    config.http2.max_concurrent_streams = 2;
-    config.http2.initial_window_size = 8192;
-    // HTTP/2 cannot reduce the initial connection window below 65535.
-    config.http2.connection_window_size = 65_535;
-    config.http2.max_header_list_size = 1024;
-    config.http2.max_pending_output_bytes = 8192;
+    config.http2.max_concurrent_streams = MAX_CONCURRENT_STREAMS;
+    config.http2.initial_window_size = STREAM_WINDOW_BYTES;
+    config.http2.connection_window_size = CONNECTION_WINDOW_BYTES;
+    config.http2.max_header_list_size = MAX_HEADER_LIST_BYTES;
+    config.http2.max_pending_output_bytes = MAX_PENDING_OUTPUT_BYTES;
     config.max_message_size = ota_protocol::UPLOAD_FRAME;
     config
 }
