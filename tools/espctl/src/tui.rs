@@ -1,4 +1,5 @@
-//! Read-only terminal dashboard for the gRPC management service.
+//! Terminal dashboard for the gRPC management service.
+mod update;
 use std::{
     collections::VecDeque,
     io::{self, IsTerminal, Stdout},
@@ -47,6 +48,7 @@ pub fn run(
     direct: Option<SocketAddr>,
     interface: Option<Ipv4Addr>,
     timeout: Duration,
+    firmware: Option<(std::path::PathBuf, String)>,
 ) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
@@ -60,7 +62,7 @@ pub fn run(
     screen.hide_cursor()?;
     // A LAN scan may still be finishing when the user exits.
     let runtime = crate::runtime()?;
-    let result = runtime.block_on(dashboard(&mut screen, direct, interface, timeout));
+    let result = runtime.block_on(dashboard(&mut screen, direct, interface, timeout, firmware));
     runtime.shutdown_background();
     result
 }
@@ -219,10 +221,12 @@ struct Dashboard {
     filter: Filter,
     scroll: usize,
     page: usize,
+    workflow: update::Workflow,
 }
 
 impl Dashboard {
     fn select(&mut self, index: usize, timeout: Duration) {
+        self.workflow.clear();
         self.selected = index;
         self.session = self
             .targets
@@ -284,9 +288,10 @@ impl Dashboard {
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>, direct: bool) {
-        let [header, body, footer] = Layout::vertical([
+        let [header, body, update, footer] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(0),
+            Constraint::Length(if self.workflow.enabled() { 5 } else { 0 }),
             Constraint::Length(2),
         ])
         .areas(frame.area());
@@ -386,13 +391,35 @@ impl Dashboard {
             ),
             logs,
         );
-        let controls = if direct {
+        if self.workflow.enabled() {
+            let color = if self.workflow.confirming() {
+                Color::Yellow
+            } else {
+                Color::Cyan
+            };
+            frame.render_widget(
+                Paragraph::new(self.workflow.text())
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .block(
+                        Block::bordered()
+                            .title(" Firmware update ")
+                            .border_style(Style::default().fg(color)),
+                    ),
+                update,
+            );
+        }
+        let controls = if self.workflow.busy() || direct {
             "↑/↓ Scroll   PgUp/PgDn Page   End Live"
         } else {
             "←/→ Board   R Scan   ↑/↓ Scroll   PgUp/PgDn Page   End Live"
         };
+        let actions = if self.workflow.busy() {
+            "F Severity   Board selection and quit resume after update"
+        } else {
+            "F Severity   Q Quit"
+        };
         frame.render_widget(
-            Paragraph::new(vec![Line::raw(controls), Line::raw("F Severity   Q Quit")]),
+            Paragraph::new(vec![Line::raw(controls), Line::raw(actions)]),
             footer,
         );
     }
@@ -409,8 +436,12 @@ async fn dashboard(
     direct: Option<SocketAddr>,
     interface: Option<Ipv4Addr>,
     timeout: Duration,
+    firmware: Option<(std::path::PathBuf, String)>,
 ) -> io::Result<()> {
-    let mut app = Dashboard::default();
+    let mut app = Dashboard {
+        workflow: update::Workflow::new(firmware),
+        ..Dashboard::default()
+    };
     let mut scanning = if let Some(address) = direct {
         app.discovery = "Direct connection".into();
         app.targets.push(Target {
@@ -425,6 +456,7 @@ async fn dashboard(
     };
     let mut redraw = true;
     loop {
+        redraw |= app.workflow.poll().await;
         if scanning.as_ref().is_some_and(JoinHandle::is_finished) {
             if let Some(task) = scanning.take() {
                 redraw = true;
@@ -483,16 +515,53 @@ async fn dashboard(
             redraw = true;
             if let Event::Key(key) = event {
                 if key.kind != KeyEventKind::Release {
+                    if app.workflow.confirming() {
+                        match key.code {
+                            KeyCode::Char('y')
+                                if key.kind == KeyEventKind::Press && key.modifiers.is_empty() =>
+                            {
+                                app.workflow.activate(timeout)
+                            }
+                            KeyCode::Esc | KeyCode::Char('n') => app.workflow.cancel_confirmation(),
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    let busy = app.workflow.busy();
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        KeyCode::Char('q') | KeyCode::Esc if !busy => return Ok(()),
+                        KeyCode::Char('c')
+                            if !busy && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
                             return Ok(())
                         }
-                        KeyCode::Left if app.selected > 0 => app.select(app.selected - 1, timeout),
-                        KeyCode::Right if app.selected + 1 < app.targets.len() => {
+                        KeyCode::Char('u')
+                            if !busy
+                                && scanning.is_none()
+                                && key.kind == KeyEventKind::Press
+                                && key.modifiers.is_empty() =>
+                        {
+                            app.workflow.verify(
+                                app.targets.get(app.selected).map(|target| target.address),
+                                app.status.as_ref(),
+                                timeout,
+                            );
+                        }
+                        KeyCode::Char('a')
+                            if !busy
+                                && scanning.is_none()
+                                && key.kind == KeyEventKind::Press
+                                && key.modifiers.is_empty() =>
+                        {
+                            app.workflow.ask_activation()
+                        }
+                        KeyCode::Left if !busy && app.selected > 0 => {
+                            app.select(app.selected - 1, timeout)
+                        }
+                        KeyCode::Right if !busy && app.selected + 1 < app.targets.len() => {
                             app.select(app.selected + 1, timeout)
                         }
-                        KeyCode::Char('r') if direct.is_none() && scanning.is_none() => {
+                        KeyCode::Char('r') if !busy && direct.is_none() && scanning.is_none() => {
                             app.discovery = "Scanning the local network…".into();
                             scanning = Some(scan(interface));
                         }

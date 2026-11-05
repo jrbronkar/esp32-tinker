@@ -1,7 +1,13 @@
 //! gRPC development uploads. No operation is replayed after transmission.
 use crate::grpc_codec::RawCodec;
 use ota_protocol::{UploadAck, UploadOperation as Op, UploadPhase, UploadRequest};
-use std::{fs, io, net::SocketAddr, path::Path, time::Duration};
+use std::{
+    fs,
+    io::{self, Read},
+    net::SocketAddr,
+    path::Path,
+    time::Duration,
+};
 use tokio::sync::mpsc;
 use tonic::{client::Grpc, transport::Endpoint};
 
@@ -56,31 +62,105 @@ fn upload_impl(
     commit: bool,
     on_log: Option<&mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>)>,
 ) -> io::Result<UploadResult> {
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() || metadata.len() > ota_core::SLOT_SIZE as u64 {
-        return Err(invalid(
-            "image must be an application binary smaller than 3 MiB",
-        ));
-    }
-    let image = fs::read(path)?;
-    ota_core::validate_image(
-        &mut ota_core::SliceImage(&image),
-        image.len() as u32,
-        version,
+    let image = PreparedImage::read(path, version)?;
+    transfer(
+        address,
+        timeout,
+        &image,
+        TransferPolicy {
+            commit,
+            ..Default::default()
+        },
+        on_log,
     )
-    .map_err(|e| {
-        invalid(format!(
-            "image validation: {e:?}; build device-demo and export an application-only image"
-        ))
-    })?;
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            // Each exchange applies the remaining absolute budget. Do not wrap this
-            // whole future in a timeout that could erase commit-uncertainty context.
-            run(address, timeout, &image, version, commit, on_log).await
+}
+
+pub(crate) struct PreparedImage {
+    bytes: Vec<u8>,
+    version: String,
+}
+
+impl PreparedImage {
+    pub(crate) fn read(path: &Path, version: &str) -> io::Result<Self> {
+        if !fs::metadata(path)?.is_file() {
+            return Err(invalid("image must be a regular application binary"));
+        }
+        let file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        let limit = u64::from(ota_core::SLOT_SIZE);
+        if !metadata.is_file() || metadata.len() > limit {
+            return Err(invalid(
+                "image must be an application binary no larger than 3 MiB",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(limit + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(invalid("image exceeds the OTA slot size"));
+        }
+        let size = bytes.len() as u32;
+        ota_core::validate_image(&mut ota_core::SliceImage(&bytes), size, version).map_err(
+            |e| {
+                invalid(format!(
+                "image validation: {e:?}; build device-demo and export an application-only image"
+            ))
+            },
+        )?;
+        Ok(Self {
+            bytes,
+            version: version.into(),
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Progress {
+    Writing { written: u32, total: u32 },
+    Verifying,
+    Committing,
+    CheckingBoot,
+}
+
+#[derive(Default)]
+struct TransferPolicy<'a> {
+    commit: bool,
+    device_id: Option<&'a str>,
+    target_offset: Option<u32>,
+    progress: Option<&'a mut dyn FnMut(Progress)>,
+}
+
+pub(crate) fn update_board(
+    address: SocketAddr,
+    timeout: Duration,
+    image: &PreparedImage,
+    device_id: &str,
+    activate: Option<u32>,
+    progress: &mut dyn FnMut(Progress),
+) -> io::Result<UploadResult> {
+    transfer(
+        address,
+        timeout,
+        image,
+        TransferPolicy {
+            commit: activate.is_some(),
+            device_id: Some(device_id),
+            target_offset: activate,
+            progress: Some(progress),
+        },
+        None,
+    )
+}
+
+fn transfer(
+    address: SocketAddr,
+    timeout: Duration,
+    image: &PreparedImage,
+    policy: TransferPolicy<'_>,
+    on_log: Option<&mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>)>,
+) -> io::Result<UploadResult> {
+    // Each exchange applies the remaining absolute budget, preserving
+    // commit-uncertainty context if the connection fails during activation.
+    crate::runtime()?.block_on(run(address, timeout, image, policy, on_log))
 }
 fn remaining(deadline: tokio::time::Instant, timeout: Duration) -> io::Result<Duration> {
     deadline
@@ -92,11 +172,18 @@ fn remaining(deadline: tokio::time::Instant, timeout: Duration) -> io::Result<Du
 async fn run(
     address: SocketAddr,
     timeout: Duration,
-    image: &[u8],
-    version: &str,
-    commit: bool,
+    image: &PreparedImage,
+    mut policy: TransferPolicy<'_>,
     mut on_log: Option<&mut dyn FnMut(Result<ota_protocol::ReadLogsResponse, String>)>,
 ) -> io::Result<UploadResult> {
+    let version = image.version.as_str();
+    let image = image.bytes.as_slice();
+    let commit = policy.commit;
+    let mut progress = |event| {
+        if let Some(callback) = policy.progress.as_mut() {
+            callback(event);
+        }
+    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let endpoint = Endpoint::from_shared(format!("http://{address}"))
         .map_err(|e| invalid(e.to_string()))?
@@ -135,6 +222,14 @@ async fn run(
             "device is not a provisioned development OTA target",
         ));
     }
+    if policy
+        .device_id
+        .is_some_and(|id| device.device_id.as_str() != id)
+    {
+        return Err(invalid(
+            "the board at this address no longer matches the selected device",
+        ));
+    }
     let running = device
         .boot()
         .and_then(|b| b.running())
@@ -145,6 +240,12 @@ async fn run(
         0x310000 => 0x10000,
         _ => return Err(invalid("unexpected running slot")),
     };
+    if policy
+        .target_offset
+        .is_some_and(|offset| expected_target != offset)
+    {
+        return Err(invalid("the board changed boot slots since verification"));
+    }
     let mut log_stream = None;
     let mut cursor = ota_protocol::ReadLogsRequest::default();
     if let Some(callback) = on_log.as_mut() {
@@ -214,6 +315,8 @@ async fn run(
         let mut id = 1;
         let ack = exchange(&tx, &mut replies, id, Op::Begin(begin), deadline, timeout).await?;
         expect(&ack, UploadPhase::Receiving, 0, expected_target)?;
+        let total = image.len() as u32;
+        progress(Progress::Writing { written: 0, total });
         for (i, bytes) in image.chunks(ota_protocol::CHUNK_SIZE).enumerate() {
             id += 1;
             let offset = (i * ota_protocol::CHUNK_SIZE) as u32;
@@ -237,7 +340,12 @@ async fn run(
                 offset + bytes.len() as u32,
                 expected_target,
             )?;
+            progress(Progress::Writing {
+                written: offset + bytes.len() as u32,
+                total,
+            });
         }
+        progress(Progress::Verifying);
         id += 1;
         let ack = exchange(
             &tx,
@@ -256,6 +364,7 @@ async fn run(
         )?;
         id += 1;
         let final_op = if commit {
+            progress(Progress::Committing);
             Op::Commit(Default::default())
         } else {
             Op::Abort(Default::default())

@@ -32,12 +32,32 @@ and Q to quit. Status refreshes every two seconds alongside the live log
 stream on the same HTTP/2 connection. After a disconnect, the dashboard
 reconnects and resumes from its last cursor, marking device resets and
 overwritten history. The stream contains firmware management logs. Use the
-existing `upload` command for firmware updates.
+existing `upload` command for scripted firmware updates.
 
 If discovery returns an empty list, press R to rescan or connect with
 `--host BOARD_IP`. On a Mac with several active network interfaces, use
 `--interface LOCAL_IPV4` to select the interface for discovery. A direct
 connection accepts `--port` if the board uses a custom gRPC port.
+
+### Update firmware from the dashboard
+
+Launch with an application-only binary exported by espflash and its embedded
+`FIRMWARE_VERSION`.
+
+```sh
+cargo run -p espctl -- tui --host BOARD_IP \
+  --image IMAGE.bin --firmware-version VERSION
+```
+
+Select the board and press **U** to write and verify the inactive slot. The
+running firmware continues serving status and logs. After verification, press
+**A** to review the board, version, and reboot prompt, then **Y** to activate or
+**Esc** to dismiss the prompt. The dashboard releases the first upload session
+after verification. Activation resends and verifies the same in-memory image
+before committing it. The dashboard checks the running version and slot after
+reboot and reports an unknown outcome if it loses the activation response and
+cannot confirm the new image. Check the board's status before retrying an
+unconfirmed activation.
 
 ## Uploads and logs
 
