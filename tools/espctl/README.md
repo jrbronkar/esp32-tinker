@@ -123,6 +123,18 @@ a successful or lost activation reply.
 
 ### Exercising the terminal UI
 
+CI runs a Python smoke test against the dashboard and a loopback board. From
+the repository root, run the same check with:
+
+```sh
+nix develop --command cargo build --locked -p espctl --bin espctl --example tui-update-smoke
+python3 tools/espctl/tests/tui_smoke.py target/debug/espctl target/debug/examples/tui-update-smoke
+```
+
+The test uses Python's standard library on Unix. It drives navigation,
+firmware selection, cancellation, activation, and terminal restoration at
+80×24 and 224×27. The wide run simulates a lost commit reply.
+
 Build the executable with `cargo build --locked -p espctl`. On Unix, launch
 `target/debug/espctl tui --host 127.0.0.1` with Python's `pty.openpty()`. Attach
 stdin, stdout, and stderr to the slave and drive the master with `os.write`.

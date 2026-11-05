@@ -188,7 +188,8 @@ async fn run(
             callback(event);
         }
     };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS);
     let end = crate::deadline(std::time::Instant::now(), remaining(deadline, timeout)?)?;
     let mut client = crate::connect(
         address,
@@ -239,8 +240,8 @@ async fn run(
         .ok_or_else(|| invalid("missing running partition"))?
         .offset;
     let expected_target = match running {
-        0x10000 => 0x310000,
-        0x310000 => 0x10000,
+        ota_core::OTA_0_OFFSET => ota_core::OTA_1_OFFSET,
+        ota_core::OTA_1_OFFSET => ota_core::OTA_0_OFFSET,
         _ => return Err(invalid("unexpected running slot")),
     };
     let mut log_stream = None;
@@ -278,7 +279,10 @@ async fn run(
         client.ready().await.map_err(|e| invalid(e.to_string()))?;
         let (tx, rx) = mpsc::channel(1);
         let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
-        request.set_timeout(remaining(deadline, Duration::from_secs(180))?);
+        request.set_timeout(remaining(
+            deadline,
+            Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS),
+        )?);
         let response = tokio::time::timeout(
             remaining(deadline, timeout)?,
             client.streaming(

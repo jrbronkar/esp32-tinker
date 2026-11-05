@@ -8,7 +8,14 @@ use esp_bootloader_esp_idf::{
     },
 };
 use esp_storage::FlashStorage;
-use ota_core::{Error, Reader, Target, SLOT_SIZE};
+use ota_core::{Error, Reader, Target, OTA_0_OFFSET, OTA_1_OFFSET, SLOT_SIZE};
+
+const NVS_OFFSET: u32 = 0x9000;
+const NVS_SIZE: u32 = 0x6000;
+const PHY_OFFSET: u32 = NVS_OFFSET + NVS_SIZE;
+const PHY_SIZE: u32 = 0x1000;
+const OTA_DATA_OFFSET: u32 = OTA_1_OFFSET + SLOT_SIZE;
+const OTA_DATA_SIZE: u32 = 0x2000;
 
 pub struct FlashTarget {
     storage: FlashStorage<'static>,
@@ -24,14 +31,14 @@ impl FlashTarget {
         let mut slot = App::Ota0;
         if let Ok(table) = read_partition_table(&mut storage, &mut buffer) {
             let expected = [
-                (Kind::Data(Data::Nvs), 0x9000, 0x6000),
-                (Kind::Data(Data::Phy), 0xf000, 0x1000),
-                (Kind::App(App::Ota0), 0x10000, SLOT_SIZE),
-                (Kind::App(App::Ota1), 0x310000, SLOT_SIZE),
-                (Kind::Data(Data::Ota), 0x610000, 0x2000),
+                (Kind::Data(Data::Nvs), NVS_OFFSET, NVS_SIZE),
+                (Kind::Data(Data::Phy), PHY_OFFSET, PHY_SIZE),
+                (Kind::App(App::Ota0), OTA_0_OFFSET, SLOT_SIZE),
+                (Kind::App(App::Ota1), OTA_1_OFFSET, SLOT_SIZE),
+                (Kind::Data(Data::Ota), OTA_DATA_OFFSET, OTA_DATA_SIZE),
             ];
             let layout = table.len() == expected.len()
-                && storage.capacity() >= 0x612000
+                && storage.capacity() >= (OTA_DATA_OFFSET + OTA_DATA_SIZE) as usize
                 && expected.iter().all(|(kind, start, size)| {
                     table
                         .iter()
@@ -48,12 +55,12 @@ impl FlashTarget {
                 if let Ok(Some(running)) = table.booted_partition() {
                     match running.partition_type() {
                         Kind::App(App::Ota0) => {
-                            offset = 0x310000;
+                            offset = OTA_1_OFFSET;
                             slot = App::Ota1;
                             available = true;
                         }
                         Kind::App(App::Ota1) => {
-                            offset = 0x10000;
+                            offset = OTA_0_OFFSET;
                             slot = App::Ota0;
                             available = true;
                         }

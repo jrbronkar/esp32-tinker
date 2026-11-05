@@ -69,7 +69,7 @@ async fn serve_connection(
             {
                 let (reader, writer) = socket.split();
                 let connection = with_timeout(
-                    Duration::from_secs(180),
+                    Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS),
                     protolink::server_split(reader, writer)
                         .with_config(device_grpc::config())
                         .with_deadline_timer(EmbassyClock)

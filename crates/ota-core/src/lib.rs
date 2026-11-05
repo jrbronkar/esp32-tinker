@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 pub const APP: &str = "device-demo";
 pub const MARKER: &str = "rust-dev-ota-v1";
 pub const SLOT_SIZE: u32 = 0x300000;
+pub const OTA_0_OFFSET: u32 = 0x10000;
+pub const OTA_1_OFFSET: u32 = OTA_0_OFFSET + SLOT_SIZE;
 pub const CHUNK: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,20 +48,43 @@ fn cstr(bytes: &[u8]) -> &[u8] {
     &bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())]
 }
 
-pub const IMAGE_HEADER_SIZE: usize = 176;
+// ESP32-S3 image and application descriptor fields.
+const IMAGE_MAGIC: u8 = 0xe9;
+const ESP32_S3_CHIP_ID: u16 = 9;
+const APP_DESCRIPTOR_MAGIC: u32 = 0xabcd5432;
+const SEGMENT_COUNT_OFFSET: usize = 1;
+const CHIP_ID_FIELD: core::ops::Range<usize> = 12..14;
+const HASH_APPENDED_OFFSET: usize = 23;
+const IMAGE_HEADER_LEN: u32 = 24;
+const SEGMENT_HEADER_LEN: usize = 8;
+const SEGMENT_LENGTH_FIELD: core::ops::RangeFrom<usize> = 4..;
+const APP_DESCRIPTOR_LEN: u32 = 256;
+const APP_MAGIC_FIELD: core::ops::Range<usize> = 32..36;
+const VERSION_FIELD: core::ops::Range<usize> = 48..80;
+const PROJECT_NAME_FIELD: core::ops::Range<usize> = 80..112;
+const OTA_MARKER_FIELD: core::ops::Range<usize> = 144..176;
+pub const IMAGE_HEADER_SIZE: usize = OTA_MARKER_FIELD.end;
+
+const MIN_IMAGE_LEN: u32 = IMAGE_HEADER_LEN + SEGMENT_HEADER_LEN as u32 + APP_DESCRIPTOR_LEN;
+const MAX_SEGMENTS: u8 = 16;
+const CHECKSUM_SEED: u8 = 0xef;
+const CHECKSUM_ALIGNMENT: u32 = 16;
+const SHA256_LEN: usize = 32;
+const VERSION_FIELD_LEN: usize = VERSION_FIELD.end - VERSION_FIELD.start;
+const MAX_VERSION_LEN: usize = VERSION_FIELD_LEN - 1;
 
 fn check_image_header(head: &[u8; IMAGE_HEADER_SIZE]) -> Result<&[u8], Error> {
-    if head[0] != 0xe9
-        || !(1..=16).contains(&head[1])
-        || head[12..14] != [9, 0]
-        || head[23] != 1
-        || head[32..36] != 0xabcd5432u32.to_le_bytes()
-        || cstr(&head[80..112]) != APP.as_bytes()
-        || cstr(&head[144..176]) != MARKER.as_bytes()
+    if head[0] != IMAGE_MAGIC
+        || !(1..=MAX_SEGMENTS).contains(&head[SEGMENT_COUNT_OFFSET])
+        || head[CHIP_ID_FIELD] != ESP32_S3_CHIP_ID.to_le_bytes()
+        || head[HASH_APPENDED_OFFSET] != 1
+        || head[APP_MAGIC_FIELD] != APP_DESCRIPTOR_MAGIC.to_le_bytes()
+        || cstr(&head[PROJECT_NAME_FIELD]) != APP.as_bytes()
+        || cstr(&head[OTA_MARKER_FIELD]) != MARKER.as_bytes()
     {
         return Err(Error::Image);
     }
-    Ok(cstr(&head[48..80]))
+    Ok(cstr(&head[VERSION_FIELD]))
 }
 
 /// Read the version from a compatible application header. Validate the complete
@@ -69,7 +94,7 @@ pub fn image_version(bytes: &[u8]) -> Result<&str, Error> {
         .first_chunk::<IMAGE_HEADER_SIZE>()
         .ok_or(Error::Bounds)?;
     let version = check_image_header(head)?;
-    if !(1..=31).contains(&version.len()) {
+    if !(1..=MAX_VERSION_LEN).contains(&version.len()) {
         return Err(Error::Metadata);
     }
     core::str::from_utf8(version).map_err(|_| Error::Metadata)
@@ -79,7 +104,7 @@ pub fn image_version(bytes: &[u8]) -> Result<&str, Error> {
 /// segment checksum, and mandatory ESP image SHA-256 footer. Never accepts ELF
 /// or merged bootloader images. Does not replace bootloader load-address checks.
 pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> Result<(), Error> {
-    if !(288..=SLOT_SIZE).contains(&length) {
+    if !(MIN_IMAGE_LEN..=SLOT_SIZE).contains(&length) {
         return Err(Error::Bounds);
     }
     let mut head = [0u8; IMAGE_HEADER_SIZE];
@@ -87,15 +112,17 @@ pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> R
     if check_image_header(&head)? != version.as_bytes() {
         return Err(Error::Image);
     }
-    let mut cursor = 24u32;
-    let mut checksum = 0xefu8;
+    let mut cursor = IMAGE_HEADER_LEN;
+    let mut checksum = CHECKSUM_SEED;
     let mut buffer = [0u8; 512];
-    for index in 0..head[1] {
-        let mut segment = [0u8; 8];
+    for index in 0..head[SEGMENT_COUNT_OFFSET] {
+        let mut segment = [0u8; SEGMENT_HEADER_LEN];
         reader.read(cursor, &mut segment)?;
-        let size = u32::from_le_bytes(segment[4..].try_into().unwrap());
-        cursor = cursor.checked_add(8).ok_or(Error::Bounds)?;
-        if index == 0 && size < 256 {
+        let size = u32::from_le_bytes(segment[SEGMENT_LENGTH_FIELD].try_into().unwrap());
+        cursor = cursor
+            .checked_add(SEGMENT_HEADER_LEN as u32)
+            .ok_or(Error::Bounds)?;
+        if index == 0 && size < APP_DESCRIPTOR_LEN {
             return Err(Error::Image);
         }
         let end = cursor.checked_add(size).ok_or(Error::Bounds)?;
@@ -111,8 +138,11 @@ pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> R
             cursor += n as u32;
         }
     }
-    let checksum_offset = cursor.checked_add(16).ok_or(Error::Bounds)? & !15;
-    if checksum_offset.checked_add(32) != Some(length) {
+    let checksum_offset = cursor
+        .checked_add(CHECKSUM_ALIGNMENT)
+        .ok_or(Error::Bounds)?
+        & !(CHECKSUM_ALIGNMENT - 1);
+    if checksum_offset.checked_add(SHA256_LEN as u32) != Some(length) {
         return Err(Error::Image);
     }
     let mut stored_checksum = [0u8; 1];
@@ -128,9 +158,9 @@ pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> R
         digest.update(&buffer[..n]);
         cursor += n as u32;
     }
-    let mut footer = [0u8; 32];
+    let mut footer = [0u8; SHA256_LEN];
     reader.read(checksum_offset, &mut footer)?;
-    if <[u8; 32]>::from(digest.finalize()) != footer {
+    if <[u8; SHA256_LEN]>::from(digest.finalize()) != footer {
         return Err(Error::Hash);
     }
     Ok(())
@@ -138,8 +168,8 @@ pub fn validate_image(reader: &mut impl Reader, length: u32, version: &str) -> R
 
 pub struct Update {
     size: u32,
-    expected: [u8; 32],
-    version: [u8; 32],
+    expected: [u8; SHA256_LEN],
+    version: [u8; VERSION_FIELD_LEN],
     version_len: usize,
     received: u32,
     verified: bool,
@@ -156,19 +186,19 @@ impl Update {
         if application != APP
             || chip != "esp32s3"
             || version.is_empty()
-            || version.len() > 31
+            || version.len() > MAX_VERSION_LEN
             || version.as_bytes().contains(&0)
-            || digest.len() != 32
+            || digest.len() != SHA256_LEN
         {
             return Err(Error::Metadata);
         }
-        if size < 288 || size > target.capacity() || size > SLOT_SIZE {
+        if size < MIN_IMAGE_LEN || size > target.capacity() || size > SLOT_SIZE {
             return Err(Error::Bounds);
         }
         let mut value = Self {
             size,
             expected: digest.try_into().unwrap(),
-            version: [0; 32],
+            version: [0; VERSION_FIELD_LEN],
             version_len: version.len(),
             received: 0,
             verified: false,
@@ -197,13 +227,13 @@ impl Update {
         }
         // The complete first header/descriptor arrives before the first flash write.
         if offset == 0
-            && (bytes.len() < 176
-                || bytes[0] != 0xe9
-                || bytes[12..14] != [9, 0]
-                || bytes[32..36] != 0xabcd5432u32.to_le_bytes()
-                || cstr(&bytes[80..112]) != APP.as_bytes()
-                || cstr(&bytes[144..176]) != MARKER.as_bytes()
-                || cstr(&bytes[48..80]) != &self.version[..self.version_len])
+            && (bytes.len() < IMAGE_HEADER_SIZE
+                || bytes[0] != IMAGE_MAGIC
+                || bytes[CHIP_ID_FIELD] != ESP32_S3_CHIP_ID.to_le_bytes()
+                || bytes[APP_MAGIC_FIELD] != APP_DESCRIPTOR_MAGIC.to_le_bytes()
+                || cstr(&bytes[PROJECT_NAME_FIELD]) != APP.as_bytes()
+                || cstr(&bytes[OTA_MARKER_FIELD]) != MARKER.as_bytes()
+                || cstr(&bytes[VERSION_FIELD]) != &self.version[..self.version_len])
         {
             return Err(Error::Image);
         }
@@ -224,7 +254,7 @@ impl Update {
             digest.update(&buffer[..n]);
             offset += n as u32;
         }
-        if <[u8; 32]>::from(digest.finalize()) != self.expected {
+        if <[u8; SHA256_LEN]>::from(digest.finalize()) != self.expected {
             return Err(Error::Hash);
         }
         let version =

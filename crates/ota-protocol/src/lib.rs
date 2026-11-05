@@ -33,6 +33,7 @@ pub mod txt {
 
 pub const MAX_FRAME: usize = 512;
 pub const SESSION_TIMEOUT_SECS: u64 = 5;
+pub const MAX_UPLOAD_DURATION_SECS: u64 = 180;
 pub type Frame = heapless::Vec<u8, MAX_FRAME>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
