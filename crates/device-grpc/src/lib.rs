@@ -30,8 +30,7 @@ pub fn config() -> ServerConfig {
     config
 }
 
-/// Raw protobuf handler keeps the existing micropb 0.7 messages independent of
-/// Protolink's optional micropb 0.6 codec. No legacy length prefix is sent.
+/// Unary gRPC status handler backed by a status provider.
 pub struct Management<F>(pub F);
 impl<F: FnMut() -> StatusResponse> Handler for Management<F> {
     fn route(&self, path: &str) -> Option<Route> {
