@@ -17,6 +17,28 @@ Targets use an IP literal, `--port 7779` and `--timeout-ms 5000` by default.
 Discovery supports `--watch`, `--interface LOCAL_IPV4` and `--timeout-ms`;
 see [DNS-SD details](../../docs/device-management/discovery.md).
 
+## Terminal dashboard
+
+```sh
+cargo run -p espctl -- tui
+cargo run -p espctl -- tui --host BOARD_IP
+```
+
+Run the dashboard in an interactive terminal with a board running the gRPC
+management firmware. The dashboard scans the local network on launch. Use Left/Right to switch
+boards and R to rescan. Use Up/Down or Page Up/Page Down to scroll the
+last 1,000 rows, End to return to live output, F to cycle severity filters,
+and Q to quit. Status refreshes every two seconds alongside the live log
+stream on the same HTTP/2 connection. After a disconnect, the dashboard
+reconnects and resumes from its last cursor, marking device resets and
+overwritten history. The stream contains firmware management logs. Use the
+existing `upload` command for firmware updates.
+
+If discovery returns an empty list, press R to rescan or connect with
+`--host BOARD_IP`. On a Mac with several active network interfaces, use
+`--interface LOCAL_IPV4` to select the interface for discovery. A direct
+connection accepts `--port` if the board uses a custom gRPC port.
+
 ## Uploads and logs
 
 Upload accepts an exported application-only `device-demo` binary with the matching

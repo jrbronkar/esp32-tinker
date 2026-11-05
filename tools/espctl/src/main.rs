@@ -19,6 +19,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Monitor board status and live logs in an interactive terminal
+    Tui(TuiArgs),
     /// Query one board's identity, firmware version, and uptime
     Status(StatusArgs),
     /// Read recent device management logs
@@ -29,6 +31,25 @@ enum Commands {
     Profile(ProfileArgs),
     /// Upload unsigned development firmware; activation requires --commit
     Upload(UploadArgs),
+}
+
+#[derive(Args)]
+struct TuiArgs {
+    /// Connect directly to a board instead of browsing the LAN
+    #[arg(long, value_name = "IP")]
+    host: Option<IpAddr>,
+
+    /// gRPC management port for a direct connection
+    #[arg(long, requires = "host", value_parser = clap::value_parser!(u16).range(1..))]
+    port: Option<u16>,
+
+    /// Restrict discovery to the interface with this local IPv4 address
+    #[arg(long, conflicts_with = "host")]
+    interface: Option<std::net::Ipv4Addr>,
+
+    /// Connection and status query deadline in milliseconds
+    #[arg(long, default_value_t = ota_protocol::SESSION_TIMEOUT_SECS * 1000, value_parser = clap::value_parser!(u64).range(1..=60000))]
+    timeout_ms: u64,
 }
 
 #[derive(Args)]
@@ -117,6 +138,13 @@ struct TargetArgs {
 
 fn run(command: Commands) -> Result<(), String> {
     match command {
+        Commands::Tui(args) => espctl::tui::run(
+            args.host
+                .map(|host| SocketAddr::new(host, args.port.unwrap_or(ota_protocol::PORT))),
+            args.interface,
+            Duration::from_millis(args.timeout_ms),
+        )
+        .map_err(|error| error.to_string()),
         Commands::Status(args) => run_status(args),
         Commands::Logs(args) => run_logs(args),
         Commands::Discover(args) => run_discover(args),

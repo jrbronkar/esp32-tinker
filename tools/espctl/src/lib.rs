@@ -1,6 +1,7 @@
 //! Blocking gRPC host client shared by CLI presentation and future GUI callers.
 pub mod discovery;
 mod grpc_codec;
+pub mod tui;
 pub mod upload;
 use grpc_codec::RawCodec;
 use ota_protocol::StatusResponse;
@@ -129,14 +130,16 @@ async fn connect(
         .max_encoding_message_size(ota_protocol::MAX_FRAME))
 }
 async fn query(
-    address: SocketAddr,
+    client: &mut Grpc<Channel>,
     end: tokio::time::Instant,
     request: &impl ota_protocol::MessageEncode,
     path: &'static str,
     timings: &mut QueryTimings,
 ) -> io::Result<Vec<u8>> {
-    let mut client = connect(address, end, timings, false).await?;
-    client.ready().await.map_err(|e| invalid(e.to_string()))?;
+    tokio::time::timeout_at(end, client.ready())
+        .await
+        .map_err(|_| timed_out())?
+        .map_err(|e| invalid(e.to_string()))?;
     let started = Instant::now();
     let bytes = ota_protocol::encode(request)
         .map_err(|e| invalid(format!("encode query: {e:?}")))?
@@ -187,8 +190,9 @@ pub fn query_status_with_options(
             include_timings: device_timings,
             include_boot,
         };
+        let mut client = connect(address, end, &mut timings, false).await?;
         let response = query(
-            address,
+            &mut client,
             end,
             &request,
             device_grpc::STATUS_PATH,
@@ -196,20 +200,64 @@ pub fn query_status_with_options(
         )
         .await?;
         let validated = Instant::now();
-        let status: StatusResponse =
-            ota_protocol::decode(&response).map_err(|_| invalid("invalid status response"))?;
-        if status.device_id.is_empty()
-            || status.application.is_empty()
-            || status.firmware_version.is_empty()
-            || status.chip.is_empty()
-        {
-            return Err(invalid("status response is missing identity fields"));
-        }
+        let status = decode_status(&response)?;
         timings.decode_validate += validated.elapsed();
         timings.total = started.elapsed();
         Ok(StatusQuery { status, timings })
     })
 }
+fn decode_status(response: &[u8]) -> io::Result<StatusResponse> {
+    let status: StatusResponse =
+        ota_protocol::decode(response).map_err(|_| invalid("invalid status response"))?;
+    if status.device_id.is_empty()
+        || status.application.is_empty()
+        || status.firmware_version.is_empty()
+        || status.chip.is_empty()
+    {
+        return Err(invalid("status response is missing identity fields"));
+    }
+    Ok(status)
+}
+
+async fn open_logs(
+    client: &mut Grpc<Channel>,
+    end: tokio::time::Instant,
+    cursor: &ota_protocol::ReadLogsRequest,
+) -> io::Result<tonic::Streaming<Vec<u8>>> {
+    tokio::time::timeout_at(end, async {
+        client
+            .ready()
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let bytes = ota_protocol::encode(cursor).map_err(|_| invalid("encode log cursor"))?;
+        client
+            .server_streaming(
+                tonic::Request::new(bytes.to_vec()),
+                device_grpc::LOGS_PATH
+                    .parse()
+                    .map_err(|_| invalid("invalid logs RPC path"))?,
+                RawCodec,
+            )
+            .await
+            .map(|response| response.into_inner())
+            .map_err(rpc)
+    })
+    .await
+    .map_err(|_| timed_out())?
+}
+
+fn decode_logs(
+    cursor: &mut ota_protocol::ReadLogsRequest,
+    bytes: &[u8],
+) -> io::Result<ota_protocol::ReadLogsResponse> {
+    let batch: ota_protocol::ReadLogsResponse =
+        ota_protocol::decode(bytes).map_err(|_| invalid("invalid log batch"))?;
+    validate_logs(cursor, &batch)?;
+    cursor.boot_id = batch.boot_id;
+    cursor.after_sequence = batch.next_sequence;
+    Ok(batch)
+}
+
 /// Read retained logs on one stream, optionally waiting for new entries.
 pub fn stream_logs(
     address: SocketAddr,
@@ -221,26 +269,7 @@ pub fn stream_logs(
     let end = deadline(Instant::now(), timeout)?;
     runtime()?.block_on(async {
         let mut client = connect(address, end, &mut QueryTimings::default(), follow).await?;
-        let mut stream = tokio::time::timeout_at(end, async {
-            client
-                .ready()
-                .await
-                .map_err(|e| io::Error::other(e.to_string()))?;
-            let bytes = ota_protocol::encode(cursor).map_err(|_| invalid("encode log cursor"))?;
-            client
-                .server_streaming(
-                    tonic::Request::new(bytes.to_vec()),
-                    device_grpc::LOGS_PATH
-                        .parse()
-                        .map_err(|_| invalid("invalid logs RPC path"))?,
-                    RawCodec,
-                )
-                .await
-                .map(|response| response.into_inner())
-                .map_err(rpc)
-        })
-        .await
-        .map_err(|_| timed_out())??;
+        let mut stream = open_logs(&mut client, end, cursor).await?;
         let mut started = false;
         loop {
             let message = if follow && started {
@@ -261,11 +290,7 @@ pub fn stream_logs(
                     ))
                 };
             };
-            let batch: ota_protocol::ReadLogsResponse =
-                ota_protocol::decode(&bytes).map_err(|_| invalid("invalid log batch"))?;
-            validate_logs(cursor, &batch)?;
-            cursor.boot_id = batch.boot_id;
-            cursor.after_sequence = batch.next_sequence;
+            let batch = decode_logs(cursor, &bytes)?;
             on_batch(&batch);
             if !follow && !batch.more {
                 return Ok(());
