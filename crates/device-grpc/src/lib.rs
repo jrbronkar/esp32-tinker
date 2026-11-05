@@ -5,11 +5,20 @@ pub mod watchdog;
 pub use protolink;
 
 use alloc::vec::Vec;
-use ota_protocol::{StatusResponse, UploadOperation};
-use protolink::{CallContext, Handler, MethodKind, Route, ServerConfig, Status};
+use core::{
+    cell::{RefCell, RefMut},
+    task::{Context, Poll},
+};
+use ota_protocol::{
+    ReadLogsRequest, ReadLogsResponse, StatusResponse, UploadAck, UploadOperation, UploadPhase,
+};
+use protolink::{CallContext, CallId, Handler, MethodKind, Next, Route, ServerConfig, Status};
 
 pub const PORT: u16 = ota_protocol::PORT;
 pub const STATUS_PATH: &str = "/esp.experimental.Management/Status";
+pub const READ_LOGS_PATH: &str = "/esp.experimental.Management/ReadLogs";
+pub const LOGS_PATH: &str = "/esp.experimental.Management/Logs";
+pub const UPLOAD_PATH: &str = "/esp.experimental.Management/Upload";
 
 // Prototype resource limits; these do not establish a worst-case heap bound.
 const MAX_CONCURRENT_STREAMS: u32 = 2;
@@ -65,16 +74,6 @@ fn status_response(
     }
     encode(&current)
 }
-
-use core::{
-    cell::{RefCell, RefMut},
-    task::{Context, Poll},
-};
-use ota_protocol::{ReadLogsRequest, ReadLogsResponse, UploadAck, UploadPhase};
-use protolink::{CallId, Next};
-pub const READ_LOGS_PATH: &str = "/esp.experimental.Management/ReadLogs";
-pub const LOGS_PATH: &str = "/esp.experimental.Management/Logs";
-pub const UPLOAD_PATH: &str = "/esp.experimental.Management/Upload";
 
 /// Typed lifecycle notifications; log text is presentation, never control flow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
