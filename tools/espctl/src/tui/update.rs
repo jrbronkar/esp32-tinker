@@ -222,11 +222,7 @@ impl Workflow {
         self.clear();
         match PreparedImage::read(&path, version.as_deref()) {
             Ok(image) => {
-                // A device-demo migration build can explicitly accept imu-demo.
-                if image.application() != status.application.as_str()
-                    && !(status.application.as_str() == ota_core::APP
-                        && image.application() == "imu-demo")
-                {
+                if image.application() != status.application.as_str() {
                     self.notice = format!(
                         "Image is for {} · board runs {}",
                         image.application(),

@@ -6,7 +6,6 @@ publish = false
 
 [features]
 imu = ["dep:imu-demo", "dep:onboard-rgb", "dep:wifi-telemetry", "dep:embassy-net", "dep:heapless"]
-imu-migration = ["imu", "device-service/imu-migration"]
 
 [dependencies]
 imu-demo = { path = "../imu-demo", optional = true }

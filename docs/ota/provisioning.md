@@ -53,17 +53,19 @@ After commit, allow Wi-Fi/DHCP to reconnect and check firmware and running slot.
 A missing commit ACK leaves the outcome uncertain; inspect before retrying.
 See [protocol semantics](protocol.md) and [CLI options](../../tools/espctl/README.md).
 
-## Migrate a provisioned board to IMU firmware
+## Build IMU firmware
 
-Build `device-demo` with `--features imu-migration` for the first update. This
-image keeps the `device-demo` identity and allows an update to `imu-demo`.
-After verifying that it booted, build with `--features imu` for the second
-update. The second image reports `imu-demo` and requires that identity for
-subsequent OTA updates. Set a distinct `FIRMWARE_VERSION` for each build and
-export each with `espflash save-image --chip esp32s3 --flash-size 16mb` before
-building the next one.
+For a board already running `imu-demo`, export an application-only OTA image:
 
-Both builds expect an MPU6050 on SDA GPIO8 and SCL GPIO9. Management stays
+```sh
+nix run .#ota-image -- --imu
+```
+
+For a board running `device-demo`, provision the IMU firmware over USB using
+the provisioning steps above and add `--features imu` to the firmware build.
+OTA requires the image application to match the running application.
+
+The IMU build expects an MPU6050 on SDA GPIO8 and SCL GPIO9. Management stays
 available if the sensor is missing. Set `IMU_UDP_HOST` at build time to send
 samples to the visualizer on UDP port 7778.
 

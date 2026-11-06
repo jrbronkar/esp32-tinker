@@ -16,7 +16,7 @@ mod heartbeat;
 #[cfg(feature = "imu")]
 mod imu;
 
-const APPLICATION: &str = if cfg!(all(feature = "imu", not(feature = "imu-migration"))) {
+const APPLICATION: &str = if cfg!(feature = "imu") {
     "imu-demo"
 } else {
     "device-demo"

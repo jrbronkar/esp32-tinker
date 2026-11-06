@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[features]
-imu-migration = []
-
 [dependencies]
 device-grpc = { path = "../device-grpc" }
 ota-protocol = { path = "../ota-protocol" }

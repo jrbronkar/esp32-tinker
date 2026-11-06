@@ -124,9 +124,6 @@ impl Environment for DeviceEnvironment<'_> {
     }
     fn accepts_application(&self, application: &str) -> bool {
         self.identity.application.as_str() == application
-            || (cfg!(feature = "imu-migration")
-                && self.identity.application.as_str() == ota_core::APP
-                && application == "imu-demo")
     }
     fn logs(
         &self,
