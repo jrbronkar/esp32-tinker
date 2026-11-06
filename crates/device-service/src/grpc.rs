@@ -69,7 +69,7 @@ async fn serve_connection(
             {
                 let (reader, writer) = socket.split();
                 let connection = with_timeout(
-                    Duration::from_secs(180),
+                    Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS),
                     protolink::server_split(reader, writer)
                         .with_config(device_grpc::config())
                         .with_deadline_timer(EmbassyClock)
@@ -122,12 +122,15 @@ impl Environment for DeviceEnvironment<'_> {
         status.management_state = self.runtime.state().try_into().unwrap_or_default();
         status
     }
+    fn accepts_application(&self, application: &str) -> bool {
+        self.identity.application.as_str() == application
+    }
     fn logs(
         &self,
         cursor: &ota_protocol::ReadLogsRequest,
         cx: &mut core::task::Context<'_>,
     ) -> ota_protocol::ReadLogsResponse {
-        self.runtime.logs.read_and_subscribe(cursor, cx)
+        self.runtime.logs.store.read_and_subscribe(cursor, cx)
     }
     fn now_us(&self) -> u64 {
         Instant::now().as_micros()

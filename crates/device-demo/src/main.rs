@@ -1,18 +1,33 @@
 #![no_std]
 #![no_main]
 
+use device_service::{DeviceLogs, LogSeverity};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{clock::CpuClock, ram};
 use esp_println::println;
+use static_cell::StaticCell;
+
+static LOGS: StaticCell<DeviceLogs> = StaticCell::new();
+
+#[cfg(feature = "imu")]
+mod heartbeat;
+#[cfg(feature = "imu")]
+mod imu;
+
+const APPLICATION: &str = if cfg!(feature = "imu") {
+    "imu-demo"
+} else {
+    "device-demo"
+};
 
 esp_bootloader_esp_idf::esp_app_desc!(
     match option_env!("FIRMWARE_VERSION") {
         Some(version) => version,
         None => env!("CARGO_PKG_VERSION"),
     },
-    "device-demo",
+    APPLICATION,
     esp_bootloader_esp_idf::BUILD_TIME,
     esp_bootloader_esp_idf::BUILD_DATE,
     "rust-dev-ota-v1",
@@ -47,18 +62,37 @@ async fn main(spawner: Spawner) -> ! {
             restart_initialization().await
         }
     };
+    let logs = LOGS.init(DeviceLogs::new());
     if let Err(error) = device_service::start_status(
         spawner,
         stack,
-        "device-demo",
+        APPLICATION,
         option_env!("FIRMWARE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
         boot,
         flash,
+        logs,
     ) {
         println!("Device service initialization failed: {error}");
         restart_initialization().await;
     }
+    logs.log(LogSeverity::Info, "Application ready");
     println!("device-demo ready: UNSIGNED DEVELOPMENT OTA; requires provisioned layout");
+    #[cfg(feature = "imu")]
+    {
+        match heartbeat::pulse(peripherals.RMT, peripherals.GPIO48, logs) {
+            Ok(task) => spawner.spawn(task),
+            Err(_) => logs.log(LogSeverity::Warn, "RGB LED task unavailable"),
+        };
+        imu::run(
+            stack,
+            peripherals.I2C0,
+            peripherals.GPIO8,
+            peripherals.GPIO9,
+            logs,
+        )
+        .await;
+    }
+    #[cfg(not(feature = "imu"))]
     loop {
         Timer::after(Duration::from_secs(10)).await;
         println!("device-demo alive");

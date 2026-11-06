@@ -47,6 +47,14 @@ struct TuiArgs {
     #[arg(long, conflicts_with = "host")]
     interface: Option<std::net::Ipv4Addr>,
 
+    /// Application-only binary to make available in the dashboard's update controls
+    #[arg(long)]
+    image: Option<std::path::PathBuf>,
+
+    /// Check the image against this version instead of inferring it
+    #[arg(long, requires = "image")]
+    firmware_version: Option<String>,
+
     /// Connection and status query deadline in milliseconds
     #[arg(long, default_value_t = ota_protocol::SESSION_TIMEOUT_SECS * 1000, value_parser = clap::value_parser!(u64).range(1..=60000))]
     timeout_ms: u64,
@@ -143,6 +151,7 @@ fn run(command: Commands) -> Result<(), String> {
                 .map(|host| SocketAddr::new(host, args.port.unwrap_or(ota_protocol::PORT))),
             args.interface,
             Duration::from_millis(args.timeout_ms),
+            args.image.map(|path| (path, args.firmware_version)),
         )
         .map_err(|error| error.to_string()),
         Commands::Status(args) => run_status(args),

@@ -85,6 +85,70 @@
         pkgs.pkg-config
       ];
 
+      otaImage = pkgs.writeShellApplication {
+        name = "ota-image";
+        runtimeInputs = firmwareTools ++ [pkgs.coreutils pkgs.gitMinimal];
+        text = ''
+          application=device-demo
+          features=()
+          if [[ ''${1-} == --imu ]]; then
+            application=imu-demo
+            features=(--features imu)
+            shift
+          fi
+          if [[ $# -gt 1 || ($# -eq 1 && ! $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,30}$) ]]; then
+            echo "Usage: nix run .#ota-image [-- [--imu] [VERSION]] (1–31 letters, digits, dots, underscores or hyphens)" >&2
+            exit 2
+          fi
+          if [[ ! -f flake.nix || ! -d crates/device-demo ]]; then
+            echo "Run from the ESP32 repository root." >&2
+            exit 2
+          fi
+          : "''${WIFI_SSID:?Export WIFI_SSID before building}"
+          : "''${WIFI_PASSWORD?Export WIFI_PASSWORD before building}"
+          if [[ $# -eq 1 ]]; then
+            version=$1
+          else
+            version=$(git rev-parse --short=12 HEAD)
+            if ! git diff --quiet HEAD --; then
+              changes=$(git diff --no-ext-diff --no-textconv --binary HEAD -- | git hash-object --stdin)
+              version="$version-''${changes:0:12}"
+            fi
+          fi
+          export FIRMWARE_VERSION="$version"
+          cargo build --locked --target-dir target --target xtensa-esp32s3-none-elf \
+            -Zbuild-std=core,alloc --release -p device-demo "''${features[@]}"
+          mkdir -p target/ota
+          temp=$(mktemp target/ota/.image.XXXXXXXX)
+          trap 'rm -f "$temp"' EXIT
+          espflash save-image --chip esp32s3 --flash-size 16mb \
+            target/xtensa-esp32s3-none-elf/release/device-demo "$temp"
+          output="target/ota/$version.bin"
+          if [[ $application == imu-demo ]]; then
+            output="target/ota/$application-$version.bin"
+          fi
+          mv -f "$temp" "$output"
+          printf 'OTA image: %s\n' "$output"
+        '';
+      };
+
+      espctl = pkgs.rustPlatform.buildRustPackage {
+        pname = "espctl";
+        version = "0.1.0";
+        src = ./.;
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          allowBuiltinFetchGit = true;
+        };
+        cargoBuildFlags = ["-p" "espctl" "--bin" "espctl"];
+        cargoTestFlags = ["-p" "espctl"];
+        env = {
+          CARGO_PROFILE_RELEASE_DEBUG = "0";
+          CARGO_PROFILE_RELEASE_LTO = "false";
+        };
+        meta.mainProgram = "espctl";
+      };
+
       soilVisualizer = pkgs.rustPlatform.buildRustPackage {
         pname = "soil-visualizer";
         version = "0.1.0";
@@ -102,6 +166,7 @@
       formatter = pkgs.alejandra;
 
       packages = {
+        inherit espctl;
         esp-rust = espRust;
         imu-visualizer = imuVisualizer;
         soil-visualizer = soilVisualizer;
@@ -109,6 +174,8 @@
       };
 
       apps = {
+        espctl = flake-utils.lib.mkApp {drv = espctl;};
+        ota-image = flake-utils.lib.mkApp {drv = otaImage;};
         imu-visualizer = flake-utils.lib.mkApp {drv = imuVisualizer;};
         soil-visualizer = flake-utils.lib.mkApp {drv = soilVisualizer;};
       };

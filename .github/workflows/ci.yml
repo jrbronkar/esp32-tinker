@@ -30,6 +30,10 @@ jobs:
             cargo build --locked
             cargo test --locked
           '
+      - name: Exercise the dashboard in a pseudo-terminal
+        run: |
+          nix develop --command cargo build --locked -p espctl --bin espctl --example tui-update-smoke
+          python3 tools/espctl/tests/tui_smoke.py target/debug/espctl target/debug/examples/tui-update-smoke
       - name: Lint and build ESP32-S3 firmware
         env:
           WIFI_SSID: build-check

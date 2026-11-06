@@ -31,10 +31,17 @@ espflash flash --port "$SERIAL_PORT" --flash-size 16mb \
 ## Build and upload
 
 ```sh
-FIRMWARE_VERSION=ota-next cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
-mkdir -p target/ota
-espflash save-image --chip esp32s3 --flash-size 16mb \
-  target/xtensa-esp32s3-none-elf/release/device-demo target/ota/ota-next.bin
+nix run .#ota-image
+nix run .#espctl -- tui
+```
+
+Press **U** to select an exported image. The TUI reads its embedded version
+and asks for confirmation before uploading and applying the update. The image
+version defaults to a Git hash. For a scripted update with a fixed version,
+pass an override when exporting:
+
+```sh
+nix run .#ota-image -- ota-next
 cargo run -p espctl -- upload --host BOARD_IP \
   --image target/ota/ota-next.bin --firmware-version ota-next --logs --commit
 cargo run -p espctl -- status --host BOARD_IP --boot
@@ -45,6 +52,22 @@ must match `--firmware-version`. Omit `--commit` to verify without activation.
 After commit, allow Wi-Fi/DHCP to reconnect and check firmware and running slot.
 A missing commit ACK leaves the outcome uncertain; inspect before retrying.
 See [protocol semantics](protocol.md) and [CLI options](../../tools/espctl/README.md).
+
+## Build IMU firmware
+
+For a board already running `imu-demo`, export an application-only OTA image:
+
+```sh
+nix run .#ota-image -- --imu
+```
+
+For a board running `device-demo`, provision the IMU firmware over USB using
+the provisioning steps above and add `--features imu` to the firmware build.
+OTA requires the image application to match the running application.
+
+The IMU build expects an MPU6050 on SDA GPIO8 and SCL GPIO9. Management stays
+available if the sensor is missing. Set `IMU_UDP_HOST` at build time to send
+samples to the visualizer on UDP port 7778.
 
 ## Recovery
 

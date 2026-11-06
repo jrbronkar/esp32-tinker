@@ -158,6 +158,9 @@ impl core::fmt::Display for UploadEvent {
 /// External log producers must wake the registered task when records arrive.
 pub trait Environment {
     fn status(&self) -> StatusResponse;
+    fn accepts_application(&self, application: &str) -> bool {
+        self.status().application.as_str() == application
+    }
     fn logs(&self, cursor: &ReadLogsRequest, cx: &mut Context<'_>) -> ReadLogsResponse;
     fn now_us(&self) -> u64 {
         0
@@ -284,6 +287,11 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             let UploadOperation::Begin(begin) = op else {
                 return Err(Status::failed_precondition("upload requires Begin"));
             };
+            if !self.env.accepts_application(&begin.application) {
+                return Err(Status::failed_precondition(
+                    "image application does not match this board",
+                ));
+            }
             let target = self
                 .target
                 .try_borrow_mut()
