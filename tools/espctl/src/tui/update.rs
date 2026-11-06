@@ -37,11 +37,13 @@ struct Job {
 
 type ImageSource = (PathBuf, Option<String>);
 
+pub(super) type LocalImage = (PathBuf, String, String);
+
 const IMAGE_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 struct Picker {
-    images: Vec<(PathBuf, String, String)>,
+    images: Vec<LocalImage>,
     selected: usize,
     last_scan: Option<Instant>,
 }
@@ -106,7 +108,7 @@ impl Workflow {
         self.picker.is_some()
     }
 
-    pub(super) fn images(&self) -> Option<(&[(PathBuf, String, String)], usize)> {
+    pub(super) fn images(&self) -> Option<(&[LocalImage], usize)> {
         self.picker
             .as_ref()
             .map(|picker| (picker.images.as_slice(), picker.selected))
