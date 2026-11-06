@@ -37,9 +37,13 @@ struct Job {
 
 type ImageSource = (PathBuf, Option<String>);
 
+const IMAGE_SCAN_INTERVAL: Duration = Duration::from_secs(2);
+
+#[derive(Default)]
 struct Picker {
-    images: Vec<(PathBuf, String)>,
+    images: Vec<(PathBuf, String, String)>,
     selected: usize,
+    last_scan: Option<Instant>,
 }
 
 fn local_images(directory: &Path) -> io::Result<Picker> {
@@ -57,15 +61,19 @@ fn local_images(directory: &Path) -> io::Result<Picker> {
             continue;
         };
         if file.read_exact(&mut header).is_ok() {
-            if let Ok(version) = ota_core::image_version(&header) {
-                images.push((path, version.to_owned()));
+            if let (Ok(version), Ok(application)) = (
+                ota_core::image_version(&header),
+                ota_core::image_application(&header),
+            ) {
+                images.push((path, version.to_owned(), application.to_owned()));
             }
         }
     }
     images.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     Ok(Picker {
         images,
-        selected: 0,
+        last_scan: Some(Instant::now()),
+        ..Picker::default()
     })
 }
 
@@ -98,7 +106,7 @@ impl Workflow {
         self.picker.is_some()
     }
 
-    pub(super) fn images(&self) -> Option<(&[(PathBuf, String)], usize)> {
+    pub(super) fn images(&self) -> Option<(&[(PathBuf, String, String)], usize)> {
         self.picker
             .as_ref()
             .map(|picker| (picker.images.as_slice(), picker.selected))
@@ -119,7 +127,7 @@ impl Workflow {
 
     pub(super) fn next_image(&mut self) {
         if let Some(picker) = &mut self.picker {
-            picker.selected = (picker.selected + 1).min(picker.images.len() - 1);
+            picker.selected = (picker.selected + 1).min(picker.images.len().saturating_sub(1));
         }
     }
 
@@ -151,16 +159,34 @@ impl Workflow {
             return;
         }
         self.notice.clear();
-        match local_images(Path::new("target/ota")) {
-            Ok(picker) if !picker.images.is_empty() => self.picker = Some(picker),
-            Ok(_) => {
-                self.notice = "No compatible images in target/ota. Run nix run .#ota-image.".into()
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.notice = "No target/ota directory. Run nix run .#ota-image.".into();
-            }
-            Err(error) => self.notice = format!("Could not scan target/ota: {error}"),
+        self.picker = Some(Picker::default());
+        self.refresh_images();
+    }
+
+    fn refresh_images(&mut self) -> bool {
+        let Some(picker) = &mut self.picker else {
+            return false;
+        };
+        if picker
+            .last_scan
+            .is_some_and(|scan| scan.elapsed() < IMAGE_SCAN_INTERVAL)
+        {
+            return false;
         }
+        picker.last_scan = Some(Instant::now());
+        let images = local_images(Path::new("target/ota"))
+            .map(|scan| scan.images)
+            .unwrap_or_default();
+        if images == picker.images {
+            return false;
+        }
+        picker.selected = picker
+            .images
+            .get(picker.selected)
+            .and_then(|(selected, _, _)| images.iter().position(|(path, _, _)| path == selected))
+            .unwrap_or(0);
+        picker.images = images;
+        true
     }
 
     pub(super) fn choose_selected(
@@ -168,8 +194,15 @@ impl Workflow {
         address: Option<SocketAddr>,
         status: Option<&StatusResponse>,
     ) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.images.is_empty())
+        {
+            return;
+        }
         if let Some(picker) = self.picker.take() {
-            if let Some((path, version)) = picker.images.into_iter().nth(picker.selected) {
+            if let Some((path, version, _)) = picker.images.into_iter().nth(picker.selected) {
                 self.prepare((path, Some(version)), address, status);
             }
         }
@@ -189,6 +222,18 @@ impl Workflow {
         self.clear();
         match PreparedImage::read(&path, version.as_deref()) {
             Ok(image) => {
+                // A device-demo migration build can explicitly accept imu-demo.
+                if image.application() != status.application.as_str()
+                    && !(status.application.as_str() == ota_core::APP
+                        && image.application() == "imu-demo")
+                {
+                    self.notice = format!(
+                        "Image is for {} · board runs {}",
+                        image.application(),
+                        status.application
+                    );
+                    return;
+                }
                 let board = Board {
                     address,
                     id,
@@ -252,6 +297,7 @@ impl Workflow {
     }
 
     pub(super) async fn poll(&mut self) -> bool {
+        let images_changed = self.refresh_images();
         if self
             .job
             .as_ref()
@@ -272,7 +318,7 @@ impl Workflow {
                 return true;
             }
         }
-        false
+        images_changed
     }
 
     pub(super) fn text(&self) -> String {
@@ -382,7 +428,10 @@ mod tests {
         fs::write(directory.join("not-an-export"), mock_board::image()).unwrap();
         let picker = local_images(&directory).unwrap();
         fs::remove_dir_all(directory).unwrap();
-        assert_eq!(picker.images, [(expected, "v1".into())]);
+        assert_eq!(
+            picker.images,
+            [(expected, "v1".into(), ota_core::APP.into())]
+        );
     }
 
     async fn finish(workflow: &mut Workflow) {

@@ -89,8 +89,15 @@
         name = "ota-image";
         runtimeInputs = firmwareTools ++ [pkgs.coreutils pkgs.gitMinimal];
         text = ''
+          application=device-demo
+          features=()
+          if [[ ''${1-} == --imu ]]; then
+            application=imu-demo
+            features=(--features imu)
+            shift
+          fi
           if [[ $# -gt 1 || ($# -eq 1 && ! $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,30}$) ]]; then
-            echo "Usage: nix run .#ota-image [-- VERSION] (1–31 letters, digits, dots, underscores or hyphens)" >&2
+            echo "Usage: nix run .#ota-image [-- [--imu] [VERSION]] (1–31 letters, digits, dots, underscores or hyphens)" >&2
             exit 2
           fi
           if [[ ! -f flake.nix || ! -d crates/device-demo ]]; then
@@ -110,24 +117,36 @@
           fi
           export FIRMWARE_VERSION="$version"
           cargo build --locked --target-dir target --target xtensa-esp32s3-none-elf \
-            -Zbuild-std=core,alloc --release -p device-demo
+            -Zbuild-std=core,alloc --release -p device-demo "''${features[@]}"
           mkdir -p target/ota
           temp=$(mktemp target/ota/.image.XXXXXXXX)
           trap 'rm -f "$temp"' EXIT
           espflash save-image --chip esp32s3 --flash-size 16mb \
             target/xtensa-esp32s3-none-elf/release/device-demo "$temp"
           output="target/ota/$version.bin"
+          if [[ $application == imu-demo ]]; then
+            output="target/ota/$application-$version.bin"
+          fi
           mv -f "$temp" "$output"
           printf 'OTA image: %s\n' "$output"
         '';
       };
 
-      espctl = pkgs.writeShellApplication {
-        name = "espctl";
-        runtimeInputs = [espRust pkgs.pkg-config];
-        text = ''
-          exec cargo run --locked --quiet -p espctl -- "$@"
-        '';
+      espctl = pkgs.rustPlatform.buildRustPackage {
+        pname = "espctl";
+        version = "0.1.0";
+        src = ./.;
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          allowBuiltinFetchGit = true;
+        };
+        cargoBuildFlags = ["-p" "espctl" "--bin" "espctl"];
+        cargoTestFlags = ["-p" "espctl"];
+        env = {
+          CARGO_PROFILE_RELEASE_DEBUG = "0";
+          CARGO_PROFILE_RELEASE_LTO = "false";
+        };
+        meta.mainProgram = "espctl";
       };
 
       soilVisualizer = pkgs.rustPlatform.buildRustPackage {
@@ -147,6 +166,7 @@
       formatter = pkgs.alejandra;
 
       packages = {
+        inherit espctl;
         esp-rust = espRust;
         imu-visualizer = imuVisualizer;
         soil-visualizer = soilVisualizer;

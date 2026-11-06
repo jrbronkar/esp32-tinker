@@ -376,20 +376,26 @@ impl Dashboard {
             return;
         }
         if let Some((images, selected)) = self.workflow.images() {
-            let shell = panel(
-                format!(" Firmware library · {}/{} ", selected + 1, images.len()),
-                true,
-            );
+            let title = if images.is_empty() {
+                " Firmware library · 0 images ".into()
+            } else {
+                format!(" Firmware library · {}/{} ", selected + 1, images.len())
+            };
+            let shell = panel(title, true);
             let [list, hint] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
                 .areas(shell.inner(area));
             frame.render_widget(shell, area);
-            let rows = images.iter().map(|(path, version)| {
+            let rows = images.iter().map(|(path, version, application)| {
                 let name = path
                     .file_name()
                     .unwrap_or(path.as_os_str())
                     .to_string_lossy();
                 Line::from(vec![
-                    Span::raw(version.escape_debug().to_string()),
+                    Span::raw(format!(
+                        "{} · {}",
+                        application.escape_debug(),
+                        version.escape_debug()
+                    )),
                     Span::raw(format!("  ·  {}", name.escape_debug())),
                 ])
             });
@@ -403,7 +409,11 @@ impl Dashboard {
             );
             frame.render_widget(
                 Line::styled(
-                    "↑↓ Choose   Enter Review update   ← / Esc Back",
+                    if images.is_empty() {
+                        "Waiting for OTA images · ← / Esc Back"
+                    } else {
+                        "↑↓ Choose   Enter Review update   ← / Esc Back"
+                    },
                     Style::new().fg(MUTED),
                 ),
                 hint,
