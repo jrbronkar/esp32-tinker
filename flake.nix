@@ -132,6 +132,12 @@
         '';
       };
 
+      coverage = pkgs.writeShellApplication {
+        name = "coverage";
+        runtimeInputs = [espRust pkgs.coreutils pkgs.jq pkgs.llvmPackages_21.llvm];
+        text = builtins.readFile ./tools/coverage/run.sh;
+      };
+
       espctl = pkgs.rustPlatform.buildRustPackage {
         pname = "espctl";
         version = "0.1.0";
@@ -165,7 +171,7 @@
       formatter = pkgs.alejandra;
 
       packages = {
-        inherit espctl;
+        inherit coverage espctl;
         esp-rust = espRust;
         imu-visualizer = imuVisualizer;
         soil-visualizer = soilVisualizer;
@@ -173,6 +179,7 @@
       };
 
       apps = {
+        coverage = flake-utils.lib.mkApp {drv = coverage;};
         espctl = flake-utils.lib.mkApp {drv = espctl;};
         ota-image = flake-utils.lib.mkApp {drv = otaImage;};
         imu-visualizer = flake-utils.lib.mkApp {drv = imuVisualizer;};
