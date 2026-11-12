@@ -11,9 +11,6 @@ ota-core = { path = "../ota-core" }
 ota-protocol = { path = "../ota-protocol" }
 protolink = { path = "../../vendor/protolink/protolink", default-features = false, features = ["async", "micropb"] }
 
-[build-dependencies]
-protolink-grpc-gen = { path = "../../vendor/protolink/protolink-grpc-gen", default-features = false }
-
 [dev-dependencies]
 protolink = { path = "../../vendor/protolink/protolink", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }

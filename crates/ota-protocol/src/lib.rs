@@ -4,9 +4,6 @@
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/ota.rs"));
 }
-// Expose the package module for the generated server bindings.
-#[doc(hidden)]
-pub use generated::ota_;
 pub use generated::ota_::{
     AbortUpdate, BeginUpdate, BootInfo, CommitUpdate, DeviceTimings, FinishUpdate, FirmwareChunk,
     LogEntry, LogEntry_::Severity as LogSeverity, PartitionInfo, ReadLogsRequest, ReadLogsResponse,
