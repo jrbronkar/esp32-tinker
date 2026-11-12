@@ -54,6 +54,11 @@ directory. Host tests may require loopback access. In a PR, report the test
 suites, source scope, and metric, such as covered lines over total lines.
 List ESP32-S3 and board checks separately.
 
+## HTTP/2 conformance
+
+See the [host fixture and h2spec baseline](docs/device-management/embedded-http2.md#http2-conformance-baseline)
+for commands and known findings.
+
 ## ESP32-S3 checks
 
 Select the firmware package and target explicitly. For a build and lint check
