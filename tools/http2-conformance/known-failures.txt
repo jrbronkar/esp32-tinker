@@ -16,8 +16,7 @@ http2/7/1
 
 # Signal a protocol error for a HEADERS priority dependency on the same
 # stream. The server skips the legacy priority fields and processes the
-# headers. RFC 9113 deprecates the RFC 7540 dependency scheme. RFC 9113
-# §5.3.2
+# headers. The RFC 7540 dependency scheme is deprecated in RFC 9113 §5.3.2.
 http2/5.3.1/1
 
 # Signal a protocol error for a PRIORITY frame that depends on its own
@@ -27,8 +26,8 @@ http2/5.3.1/2
 
 # Accept a header block split across multiple CONTINUATION frames. Two
 # default 4,000-byte field values exceed the 4 KiB advertised header-list
-# limit. CI requires this exact probe to pass separately with `--max-header-
-# length 512`. RFC 9113 §6.10
+# limit. CI requires this probe to pass separately with
+# `--max-header-length 512`. RFC 9113 §6.10
 http2/6.10/1
 
 # Receive GOAWAY with `PROTOCOL_ERROR` for an extra CONTINUATION after
