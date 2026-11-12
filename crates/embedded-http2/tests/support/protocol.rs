@@ -90,14 +90,21 @@ async fn handshake_requires_the_preface_and_initial_settings() {
 }
 
 #[tokio::test]
-async fn rejects_invalid_connection_and_stream_frames() {
+async fn rejects_invalid_connection_and_stream_frames() -> Result<(), Box<dyn std::error::Error>> {
     let mut oversized = frame(FrameType::Data, 1, 0, &[]);
-    oversized[..3].copy_from_slice(&[0, 0x40, 1]);
-    let (mut server, _peer) = connection(&[oversized]).await;
+    let [_, length @ ..] = (DEFAULT_MAX_FRAME_SIZE + 1).to_be_bytes();
+    oversized[..length.len()].copy_from_slice(&length);
+    let (mut server, mut peer) = connection(&[oversized]).await;
     assert!(matches!(
         server.accept().await,
         Err(Error::Wire(Http2Error::FrameTooLarge { .. }))
     ));
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        goaway(CONNECTION, ErrorCode::FrameSizeError)
+    );
 
     for invalid in [
         frame(FrameType::Settings, 0, Flags::ACK, &[0; 6]),
@@ -133,6 +140,7 @@ async fn rejects_invalid_connection_and_stream_frames() {
     ])
     .await;
     assert!(matches!(server.accept().await, Err(Error::Protocol)));
+    Ok(())
 }
 
 #[tokio::test]
@@ -1219,5 +1227,70 @@ async fn invalid_padding_takes_precedence_over_receive_window_exhaustion()
         }
     }
     assert!(matches!(server.read_body(id).await, Err(Error::Protocol)));
+    Ok(())
+}
+
+fn goaway(last_stream: u32, code: ErrorCode) -> Vec<u8> {
+    let mut payload = last_stream.to_be_bytes().to_vec();
+    payload.extend_from_slice(&(code as u32).to_be_bytes());
+    frame(FrameType::GoAway, CONNECTION, NO_FLAGS, &payload)
+}
+
+#[tokio::test]
+async fn window_overflow_sends_an_error_in_the_right_scope()
+-> Result<(), Box<dyn std::error::Error>> {
+    // RFC 9113 §6.9.1 caps a window at 2^31−1. Both windows start nonzero.
+    const MAX_WINDOW_INCREMENT: usize = i32::MAX as usize;
+    let code = ErrorCode::FlowControlError;
+    for (target, expected) in [
+        (CONNECTION, goaway(FIRST_STREAM, code)),
+        (
+            FIRST_STREAM,
+            frame(
+                FrameType::RstStream,
+                FIRST_STREAM,
+                NO_FLAGS,
+                &(code as u32).to_be_bytes(),
+            ),
+        ),
+    ] {
+        let (mut server, mut peer) = connection(&[
+            frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+            window_update(target, MAX_WINDOW_INCREMENT),
+        ])
+        .await;
+        assert!(matches!(
+            server.accept().await,
+            Err(Error::Wire(Http2Error::Protocol(
+                ErrorCode::FlowControlError
+            )))
+        ));
+        let _settings = read_wire_frame(&mut peer).await?;
+        let _ack = read_wire_frame(&mut peer).await?;
+        assert_eq!(read_wire_frame(&mut peer).await?, expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stray_continuation_sends_connection_protocol_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut server, mut peer) = connection(&[frame(
+        FrameType::Continuation,
+        FIRST_STREAM,
+        END_HEADERS,
+        &[],
+    )])
+    .await;
+    assert!(matches!(
+        server.accept().await,
+        Err(Error::Wire(Http2Error::Protocol(ErrorCode::ProtocolError)))
+    ));
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        goaway(CONNECTION, ErrorCode::ProtocolError)
+    );
     Ok(())
 }
