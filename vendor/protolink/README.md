@@ -31,6 +31,28 @@ are omitted. Local manifest edits remove the omitted test dependencies
 and redirect two dependencies to the local copies described below. The
 Rust sources are unchanged.
 
+## ZeroDDS attribution
+
+[`protolink-http2/src/huffman.rs`](protolink-http2/src/huffman.rs)
+retains the upstream Apache-2.0 SPDX header and the ZeroDDS Contributors
+copyright notice. Its 257 Huffman table entries match the published
+[`zerodds-hpack 1.0.0-rc.6`](https://crates.io/crates/zerodds-hpack/1.0.0-rc.6)
+source. Apply the [Apache 2.0 license](LICENSE-APACHE) to this file even
+when using the MIT option for the rest of the dual-licensed code.
+The published ZeroDDS crate archive contains no separate NOTICE file.
+Include the Apache license and attribution when distributing firmware
+that contains this code.
+
+## Public removal records
+
+The [crates.io index](https://github.com/rust-lang/crates.io-index/commit/3b9d773372f813479eddf7145c775cc7f353f603)
+records the deletion without a reason. A November 11, 2026 search of the
+[RustSec advisory database](https://github.com/RustSec/advisory-db) found
+no entries mentioning the six crate names or the upstream account
+`thives`. A search of [GitHub's public DMCA notices](https://github.com/github/dmca)
+found no matching notice. These searches leave the reason for removal
+unknown.
+
 ## COBS and ARQ dependencies
 
 Protolink's async feature resolves `cobs-io-async` and `arq-io-async`.
