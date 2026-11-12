@@ -29,7 +29,15 @@ use zerodds_http2::{
 
 pub use zerodds_hpack::HeaderField;
 
+// The first server slice buffers complete bodies up to this local limit.
 const MAX_BODY: usize = 16 * 1024;
+
+// RFC 9113 section 4.1 defines a 31-bit stream identifier.
+const STREAM_ID_MASK: u32 = 0x7fff_ffff;
+const PRIORITY_FIELDS_LEN: usize = size_of::<u32>() + size_of::<u8>();
+const RESET_CODE_LEN: usize = size_of::<u32>();
+const PING_PAYLOAD_LEN: usize = 8;
+const GOAWAY_FIXED_FIELDS_LEN: usize = size_of::<StreamId>() + RESET_CODE_LEN;
 
 #[derive(Debug)]
 pub enum Error<E> {
@@ -123,6 +131,8 @@ impl<Io: Read + Write> Server<Io> {
         server
             .write_frame(FrameType::Settings, 0, 0, &settings)
             .await?;
+        // The client connection preface ends with its initial SETTINGS
+        // frame. A SETTINGS acknowledgement does not count (RFC 9113 §3.4).
         let first = server.read_frame().await?;
         if first.kind != FrameType::Settings as u8 || first.flags.has(Flags::ACK) {
             return Err(Error::Protocol);
@@ -175,6 +185,8 @@ impl<Io: Read + Write> Server<Io> {
             if request.body.len() + data.len() > MAX_BODY {
                 return Err(Error::BodyLimit);
             }
+            // Flow control charges the entire DATA payload, including the
+            // pad-length byte and padding (RFC 9113 §6.1).
             let credit = self.payload.len() as u32;
             self.connection_receive.consume(credit)?;
             stream.receive.consume(credit)?;
@@ -266,6 +278,8 @@ impl<Io: Read + Write> Server<Io> {
     async fn read_frame(&mut self) -> Result<Frame, Error<Io::Error>> {
         let mut header = [0; FRAME_HEADER_LEN];
         self.io.read_exact(&mut header).await.map_err(Error::Read)?;
+        // The first three bytes are a 24-bit payload length (RFC 9113 §4.1).
+        // Check it before allocating the payload buffer.
         let len = u32::from_be_bytes([0, header[0], header[1], header[2]]);
         if len > DEFAULT_MAX_FRAME_SIZE {
             return Err(Http2Error::FrameTooLarge {
@@ -288,7 +302,8 @@ impl<Io: Read + Write> Server<Io> {
             ),
             // An unknown extension frame still consumes its complete payload.
             Err(Http2Error::UnknownFrameType(kind)) => {
-                let id = u32::from_be_bytes([header[5] & 0x7f, header[6], header[7], header[8]]);
+                let id = u32::from_be_bytes([header[5], header[6], header[7], header[8]])
+                    & STREAM_ID_MASK;
                 (kind, Flags(header[4]), id)
             }
             Err(error) => return Err(error.into()),
@@ -326,13 +341,17 @@ impl<Io: Read + Write> Server<Io> {
     async fn read_headers(&mut self, first: &Frame) -> Result<Vec<HeaderField>, Error<Io::Error>> {
         let mut fragment = strip_padding(&self.payload, first.flags).ok_or(Error::Protocol)?;
         if first.flags.has(Flags::PRIORITY) {
-            fragment = fragment.get(5..).ok_or(Error::Protocol)?;
+            // The optional stream dependency and weight precede the
+            // header block fragment (RFC 9113 §6.2).
+            fragment = fragment.get(PRIORITY_FIELDS_LEN..).ok_or(Error::Protocol)?;
         }
         if fragment.len() > headers::MAX_BLOCK {
             return Err(Error::HeaderBlock);
         }
         let mut block = fragment.to_vec();
         let mut end = first.flags.has(Flags::END_HEADERS);
+        // Only CONTINUATION frames on the same stream may follow until
+        // END_HEADERS is set (RFC 9113 §6.10).
         while !end {
             let frame = self.read_frame().await?;
             if frame.kind != FrameType::Continuation as u8 || frame.stream_id != first.stream_id {
@@ -357,7 +376,7 @@ impl<Io: Read + Write> Server<Io> {
             }
         }
         // Announce the zero-sized encoder table before sending any fields.
-        let mut block = vec![0x20];
+        let mut block = vec![headers::ZERO_TABLE_SIZE_UPDATE];
         block.extend(self.encoder.encode(fields));
         if block.len() > headers::MAX_BLOCK {
             return Err(Error::HeaderBlock);
@@ -388,9 +407,11 @@ impl<Io: Read + Write> Server<Io> {
                 self.write_frame(FrameType::Settings, 0, Flags::ACK, &[])
                     .await
             }
-            Ok(FrameType::Ping) if frame.stream_id == 0 && self.payload.len() == 8 => {
+            Ok(FrameType::Ping)
+                if frame.stream_id == 0 && self.payload.len() == PING_PAYLOAD_LEN =>
+            {
                 if !frame.flags.has(Flags::ACK) {
-                    let mut ping = [0; 8];
+                    let mut ping = [0; PING_PAYLOAD_LEN];
                     ping.copy_from_slice(&self.payload);
                     self.write_frame(FrameType::Ping, 0, Flags::ACK, &ping)
                         .await?;
@@ -410,7 +431,9 @@ impl<Io: Read + Write> Server<Io> {
                 }
                 Ok(())
             }
-            Ok(FrameType::RstStream) if frame.stream_id != 0 && self.payload.len() == 4 => {
+            Ok(FrameType::RstStream)
+                if frame.stream_id != 0 && self.payload.len() == RESET_CODE_LEN =>
+            {
                 let code =
                     u32::from_be_bytes(self.payload[..].try_into().map_err(|_| Error::Protocol)?);
                 if self
@@ -429,10 +452,16 @@ impl<Io: Read + Write> Server<Io> {
                 }
                 Ok(())
             }
-            Ok(FrameType::GoAway) if frame.stream_id == 0 && self.payload.len() >= 8 => {
+            Ok(FrameType::GoAway)
+                if frame.stream_id == 0 && self.payload.len() >= GOAWAY_FIXED_FIELDS_LEN =>
+            {
                 Err(Error::Closed)
             }
-            Ok(FrameType::Priority) if frame.stream_id != 0 && self.payload.len() == 5 => Ok(()),
+            Ok(FrameType::Priority)
+                if frame.stream_id != 0 && self.payload.len() == PRIORITY_FIELDS_LEN =>
+            {
+                Ok(())
+            }
             Err(Http2Error::UnknownFrameType(_)) => Ok(()),
             _ => Err(Http2Error::Protocol(ErrorCode::ProtocolError).into()),
         }
