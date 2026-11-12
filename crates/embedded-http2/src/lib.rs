@@ -12,6 +12,7 @@
 extern crate alloc;
 
 mod headers;
+pub mod service;
 
 use alloc::{vec, vec::Vec};
 use core::cmp::min;
@@ -62,6 +63,7 @@ pub struct Request {
     pub stream_id: StreamId,
     pub headers: Vec<HeaderField>,
     pub body: Vec<u8>,
+    pub trailers: Vec<HeaderField>,
 }
 
 pub struct Response<'a> {
@@ -169,11 +171,23 @@ impl<Io: Read + Write> Server<Io> {
                 stream_id: frame.stream_id,
                 headers: fields,
                 body: Vec::new(),
+                trailers: Vec::new(),
             };
         };
 
         while self.stream.as_ref().is_some_and(|s| !s.remote_closed) {
             let frame = self.read_frame().await?;
+            if frame.kind == FrameType::Headers as u8 {
+                if frame.stream_id != request.stream_id || !frame.flags.has(Flags::END_STREAM) {
+                    return Err(Error::Protocol);
+                }
+                let trailers = self.read_headers(&frame).await?;
+                if trailers.iter().any(|field| field.name.starts_with(':')) {
+                    return Err(Error::Protocol);
+                }
+                request.trailers = trailers;
+                break;
+            }
             if frame.kind != FrameType::Data as u8 {
                 self.control(frame).await?;
                 continue;
@@ -206,6 +220,7 @@ impl<Io: Read + Write> Server<Io> {
                     .await?;
             }
         }
+        self.stream.as_mut().ok_or(Error::Protocol)?.remote_closed = true;
         Ok(request)
     }
 
