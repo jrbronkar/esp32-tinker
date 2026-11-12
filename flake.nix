@@ -138,7 +138,6 @@
         src = ./.;
         cargoLock = {
           lockFile = ./Cargo.lock;
-          allowBuiltinFetchGit = true;
         };
         cargoBuildFlags = ["-p" "espctl" "--bin" "espctl"];
         cargoTestFlags = ["-p" "espctl"];

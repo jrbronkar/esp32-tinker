@@ -1,5 +1,11 @@
 [workspace]
 resolver = "2"
+exclude = [
+    "vendor/protolink/protolink",
+    "vendor/protolink/protolink-grpc",
+    "vendor/protolink/protolink-grpc-gen",
+    "vendor/protolink/protolink-http2",
+]
 members = [
     "crates/hello-world",
     "crates/imu-demo",

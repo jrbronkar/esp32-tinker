@@ -20,5 +20,5 @@ ratatui = { version = "0.29", default-features = false, features = ["crossterm"]
 
 [dev-dependencies]
 embassy-futures = "0.1"
-protolink = { git = "https://github.com/thives/protolink.rs.git", rev = "62cc2c87a687ba65fc6885e7c9691cefacf2d064", default-features = false, features = ["tokio"] }
+protolink = { path = "../../vendor/protolink/protolink", default-features = false, features = ["tokio"] }
 edge-mdns = "0.8"
