@@ -195,7 +195,7 @@ pub fn query_status_with_options(
             &mut client,
             end,
             &request,
-            device_grpc::STATUS_PATH,
+            ota_protocol::STATUS_PATH,
             &mut timings,
         )
         .await?;
@@ -233,7 +233,7 @@ async fn open_logs(
         client
             .server_streaming(
                 tonic::Request::new(bytes.to_vec()),
-                device_grpc::LOGS_PATH
+                ota_protocol::LOGS_PATH
                     .parse()
                     .map_err(|_| invalid("invalid logs RPC path"))?,
                 RawCodec,
