@@ -1,11 +1,11 @@
 #![no_std]
 extern crate alloc;
 pub mod logs;
+mod management;
 pub mod watchdog;
 pub use ota_protocol::{LOGS_PATH, STATUS_PATH, UPLOAD_PATH};
 pub use protolink;
 
-use alloc::vec::Vec;
 use core::{
     cell::{RefCell, RefMut},
     task::{Context, Poll},
@@ -14,15 +14,10 @@ use ota_protocol::{
     ReadLogsRequest, ReadLogsResponse, StatusRequest, StatusResponse, UploadAck, UploadOperation,
     UploadPhase, UploadRequest,
 };
-use protolink::{CallContext, CallId, Handler, Next, Route, ServerConfig, Status};
+use protolink::{CallContext, CallId, Next, ServerConfig, Status};
 
-mod bindings {
-    use ota_protocol::ota_;
-
-    include!(concat!(env!("OUT_DIR"), "/management.rs"));
-}
-
-use bindings::management::{Management as ManagementRpc, ManagementDispatch};
+use management::ManagementRpc;
+pub use management::ManagementServer;
 
 pub const PORT: u16 = ota_protocol::PORT;
 
@@ -78,62 +73,6 @@ fn status_response(
         current.clear_timings();
     }
     current
-}
-
-/// Apply device request bounds and release streaming state on dispatch errors.
-pub struct ManagementServer<S>(ManagementDispatch<S>);
-
-impl<S: ManagementRpc> ManagementServer<S> {
-    pub fn new(service: S) -> Self {
-        Self(ManagementDispatch::new(service))
-    }
-}
-
-impl<S: ManagementRpc> Handler for ManagementServer<S> {
-    fn route(&self, path: &str) -> Option<Route> {
-        self.0.route(path)
-    }
-
-    fn call(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
-        if request.len() > ota_protocol::MAX_FRAME {
-            return Err(Status::invalid_argument(
-                "status request exceeds message limit",
-            ));
-        }
-        self.0.call(ctx, request)
-    }
-
-    fn on_message(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<(), Status> {
-        let result = if ctx.path == LOGS_PATH && request.len() > ota_protocol::MAX_FRAME {
-            Err(Status::invalid_argument(
-                "log request exceeds message limit",
-            ))
-        } else {
-            self.0.on_message(ctx, request)
-        };
-        if result.is_err() {
-            // Protolink finishes calls whose dispatch returns an error without
-            // invoking on_cancel. Decode failures also need to release flash.
-            self.0.on_cancel(ctx);
-        }
-        result
-    }
-
-    fn on_half_close(&mut self, ctx: &mut CallContext<'_>) -> Result<(), Status> {
-        self.0.on_half_close(ctx)
-    }
-
-    fn poll_response(
-        &mut self,
-        ctx: &mut CallContext<'_>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Next<Vec<u8>>> {
-        self.0.poll_response(ctx, cx)
-    }
-
-    fn on_cancel(&mut self, ctx: &mut CallContext<'_>) {
-        self.0.on_cancel(ctx);
-    }
 }
 
 /// Typed lifecycle notifications; log text is presentation, never control flow.

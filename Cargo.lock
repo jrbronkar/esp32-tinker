@@ -509,7 +509,6 @@ dependencies = [
  "ota-core",
  "ota-protocol",
  "protolink",
- "protolink-grpc-gen",
  "tokio",
 ]
 
@@ -2230,14 +2229,6 @@ version = "0.0.5"
 dependencies = [
  "micropb",
  "protolink-http2",
-]
-
-[[package]]
-name = "protolink-grpc-gen"
-version = "0.0.4"
-dependencies = [
- "protobuf",
- "protobuf-parse",
 ]
 
 [[package]]
