@@ -509,6 +509,7 @@ dependencies = [
  "ota-core",
  "ota-protocol",
  "protolink",
+ "protolink-grpc-gen",
  "tokio",
 ]
 
@@ -2047,8 +2048,8 @@ dependencies = [
  "heapless 0.8.0",
  "micropb",
  "micropb-gen",
- "protolink-grpc",
- "protolink-grpc-gen",
+ "protobuf",
+ "protobuf-parse",
 ]
 
 [[package]]

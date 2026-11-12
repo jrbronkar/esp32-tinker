@@ -7,8 +7,8 @@ publish = false
 [dependencies]
 micropb = { version = "=0.6.0", default-features = false, features = ["container-heapless-0-8", "encode", "decode", "enable-64bit"] }
 heapless = "0.8.0"
-protolink-grpc = { path = "../../vendor/protolink/protolink-grpc", default-features = false, features = ["micropb"] }
 
 [build-dependencies]
 micropb-gen = "=0.6.0"
-protolink-grpc-gen = { path = "../../vendor/protolink/protolink-grpc-gen", default-features = false }
+protobuf = "3.7"
+protobuf-parse = "3.7"

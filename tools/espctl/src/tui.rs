@@ -128,7 +128,7 @@ async fn monitor(
                 &mut client,
                 end,
                 &ota_protocol::StatusRequest::default(),
-                device_grpc::STATUS_PATH,
+                ota_protocol::STATUS_PATH,
                 &mut QueryTimings::default(),
             )
             .await?;

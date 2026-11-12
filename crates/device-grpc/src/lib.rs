@@ -13,9 +13,16 @@ use core::{
 use ota_protocol::{
     ReadLogsRequest, ReadLogsResponse, StatusRequest, StatusResponse, UploadAck, UploadOperation,
     UploadPhase, UploadRequest,
-    management::{Management as ManagementRpc, ManagementDispatch},
 };
 use protolink::{CallContext, CallId, Handler, Next, Route, ServerConfig, Status};
+
+mod bindings {
+    use ota_protocol::ota_;
+
+    include!(concat!(env!("OUT_DIR"), "/management.rs"));
+}
+
+use bindings::management::{Management as ManagementRpc, ManagementDispatch};
 
 pub const PORT: u16 = ota_protocol::PORT;
 

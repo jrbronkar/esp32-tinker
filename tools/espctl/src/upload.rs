@@ -223,7 +223,7 @@ async fn run(
         remaining(deadline, timeout)?,
         client.unary(
             tonic::Request::new(bytes),
-            device_grpc::STATUS_PATH
+            ota_protocol::STATUS_PATH
                 .parse()
                 .map_err(|_| invalid("invalid status RPC path"))?,
             RawCodec,
@@ -271,7 +271,7 @@ async fn run(
                 remaining(deadline, timeout)?,
                 client.server_streaming(
                     request,
-                    device_grpc::LOGS_PATH
+                    ota_protocol::LOGS_PATH
                         .parse()
                         .map_err(|_| invalid("invalid logs RPC path"))?,
                     RawCodec,
@@ -300,7 +300,7 @@ async fn run(
             remaining(deadline, timeout)?,
             client.streaming(
                 request,
-                device_grpc::UPLOAD_PATH
+                ota_protocol::UPLOAD_PATH
                     .parse()
                     .map_err(|_| invalid("invalid upload RPC path"))?,
                 RawCodec,
