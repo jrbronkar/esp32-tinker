@@ -1,3 +1,4 @@
+# See docs/device-management/embedded-http2.md#ci-exceptions-by-case for each case.
 # Shutdown and connection preface.
 generic/3.8/1
 http2/3.5/2
