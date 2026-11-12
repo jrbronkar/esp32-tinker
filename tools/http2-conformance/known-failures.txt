@@ -1,0 +1,36 @@
+# Shutdown and connection preface.
+generic/3.8/1
+http2/3.5/2
+http2/7/1
+
+# Legacy RFC 7540 priority expectations.
+http2/5.3.1/1
+http2/5.3.1/2
+
+# Default continuation probe exceeds the advertised header limit.
+# The runner also requires this case to pass with smaller headers.
+http2/6.10/1
+
+# Error signaling addressed by PR #20.
+http2/4.2/2
+http2/4.2/3
+http2/6.9.1/2
+http2/6.9.1/3
+http2/6.10/5
+
+# Malformed requests addressed by PR #19.
+http2/8.1.2/1
+http2/8.1.2.1/1
+http2/8.1.2.1/2
+http2/8.1.2.1/4
+http2/8.1.2.2/1
+http2/8.1.2.2/2
+http2/8.1.2.3/1
+http2/8.1.2.3/2
+http2/8.1.2.3/3
+http2/8.1.2.3/4
+http2/8.1.2.3/5
+http2/8.1.2.3/6
+http2/8.1.2.3/7
+http2/8.1.2.6/1
+http2/8.1.2.6/2

@@ -56,6 +56,14 @@ List ESP32-S3 and board checks separately.
 
 ## HTTP/2 conformance
 
+Run the same h2spec regression check as CI with `nix run .#http2-conformance`.
+The check fails for unexpected failures, skipped cases, or incomplete runs.
+Known failures are listed by case in
+[`known-failures.txt`](tools/http2-conformance/known-failures.txt). Remove a
+case from the baseline when its fix lands.
+The check also reruns the valid CONTINUATION probe within the fixture's
+advertised header limit and requires it to pass.
+
 See the [host fixture and h2spec baseline](docs/device-management/embedded-http2.md#http2-conformance-baseline)
 for commands and known findings.
 
