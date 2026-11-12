@@ -1,0 +1,15 @@
+# Shutdown and connection preface.
+generic/3.8/1
+http2/3.5/2
+http2/7/1
+
+# Legacy RFC 7540 priority expectations.
+http2/5.3.1/1
+http2/5.3.1/2
+
+# Default continuation probe exceeds the advertised header limit.
+# The runner also requires this case to pass with smaller headers.
+http2/6.10/1
+
+# The peer can still observe a TCP reset before the error frame.
+http2/6.10/5

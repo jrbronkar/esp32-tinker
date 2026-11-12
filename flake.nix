@@ -138,6 +138,14 @@
         text = builtins.readFile ./tools/coverage/run.sh;
       };
 
+      http2Conformance = pkgs.writeShellApplication {
+        name = "http2-conformance";
+        runtimeInputs = [espRust pkgs.h2spec pkgs.python3];
+        text = ''
+          exec python3 ${./tools/http2-conformance}/run.py
+        '';
+      };
+
       espctl = pkgs.rustPlatform.buildRustPackage {
         pname = "espctl";
         version = "0.1.0";
@@ -172,6 +180,7 @@
 
       packages = {
         inherit coverage espctl;
+        http2-conformance = http2Conformance;
         esp-rust = espRust;
         imu-visualizer = imuVisualizer;
         soil-visualizer = soilVisualizer;
@@ -180,6 +189,7 @@
 
       apps = {
         coverage = flake-utils.lib.mkApp {drv = coverage;};
+        http2-conformance = flake-utils.lib.mkApp {drv = http2Conformance;};
         espctl = flake-utils.lib.mkApp {drv = espctl;};
         ota-image = flake-utils.lib.mkApp {drv = otaImage;};
         imu-visualizer = flake-utils.lib.mkApp {drv = imuVisualizer;};

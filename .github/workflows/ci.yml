@@ -30,6 +30,8 @@ jobs:
             cargo build --locked
             cargo test --locked
           '
+      - name: Check HTTP/2 conformance regressions
+        run: nix run .#http2-conformance
       - name: Exercise the dashboard in a pseudo-terminal
         run: |
           nix develop --command cargo build --locked -p espctl --bin espctl --example tui-update-smoke
