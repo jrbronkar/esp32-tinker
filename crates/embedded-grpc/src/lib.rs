@@ -63,14 +63,22 @@ impl<S: Service> embedded_http2::service::Service for HttpService<'_, S> {
             Err(response) => return response,
         };
         match self.0.call(path, UnaryRequest(&request.body)).await {
-            Ok(response) => grpc_response(response.0, "0"),
+            Ok(response) => grpc_response(response.0, GRPC_OK),
             Err(status) => status.into_response(),
         }
     }
 }
 
 const CONTENT_TYPE: &str = "application/grpc";
-const ENVELOPE_LEN: usize = 1 + size_of::<u32>();
+const HTTP_OK: &str = "200";
+const HTTP_METHOD_NOT_ALLOWED: &str = "405";
+const HTTP_UNSUPPORTED_MEDIA_TYPE: &str = "415";
+const GRPC_OK: &str = "0";
+
+// A gRPC message starts with a compression byte and a big-endian u32 length.
+const UNCOMPRESSED: u8 = 0;
+const COMPRESSED: u8 = 1;
+const ENVELOPE_LEN: usize = size_of::<u8>() + size_of::<u32>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -111,10 +119,10 @@ fn rpc_path(request: &HttpRequest) -> Result<&str, HttpResponse> {
             suffix.is_empty() || suffix.starts_with("+") || suffix.starts_with(";")
         })
     }) {
-        return Err(http_error("415"));
+        return Err(http_error(HTTP_UNSUPPORTED_MEDIA_TYPE));
     }
     if header(":method") != Some("POST") {
-        let mut response = http_error("405");
+        let mut response = http_error(HTTP_METHOD_NOT_ALLOWED);
         response.headers.push(field("allow", "POST"));
         return Err(response);
     }
@@ -133,16 +141,17 @@ pub struct UnaryRequest<'a>(&'a [u8]);
 
 impl UnaryRequest<'_> {
     pub fn decode<M: MessageDecode + Default, const MAX: usize>(self) -> Result<M, Status> {
-        let (head, body) = self
+        let (header, body) = self
             .0
-            .split_at_checked(ENVELOPE_LEN)
+            .split_first_chunk::<ENVELOPE_LEN>()
             .ok_or(Status::InvalidArgument)?;
-        match head[0] {
-            0 => {}
-            1 => return Err(Status::Unimplemented),
+        let [compression, length @ ..] = *header;
+        match compression {
+            UNCOMPRESSED => {}
+            COMPRESSED => return Err(Status::Unimplemented),
             _ => return Err(Status::InvalidArgument),
         }
-        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+        let len = u32::from_be_bytes(length) as usize;
         if len > MAX {
             return Err(Status::ResourceExhausted);
         }
@@ -170,7 +179,7 @@ impl UnaryResponse {
         let bytes = &buffer[..written];
         let len = u32::try_from(written).map_err(|_| Status::Internal)?;
         let mut body = Vec::with_capacity(ENVELOPE_LEN + bytes.len());
-        body.push(0);
+        body.push(UNCOMPRESSED);
         body.extend_from_slice(&len.to_be_bytes());
         body.extend_from_slice(bytes);
         Ok(Self(body))
@@ -178,7 +187,7 @@ impl UnaryResponse {
 }
 
 fn grpc_response(body: Vec<u8>, code: &str) -> HttpResponse {
-    let mut response = http_error("200");
+    let mut response = http_error(HTTP_OK);
     response.headers.push(field("content-type", CONTENT_TYPE));
     response.body = body;
     response.trailers.push(field("grpc-status", code));
