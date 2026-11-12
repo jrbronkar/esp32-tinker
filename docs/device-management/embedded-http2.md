@@ -85,3 +85,7 @@ records the current implementation gaps.
 h2spec targets RFC 7540 and RFC 7541. Use RFC 9113 to assess its HTTP/2
 findings. [Upstream RFC 9113 tracking issue](https://github.com/summerwind/h2spec/issues/128). The Rust `h2` and Tonic tests cover the transport and RPC behavior
 specific to this project.
+
+CI checks the default suite against the documented exceptions in
+[the case list](../../tools/http2-conformance/known-failures.txt). It also
+requires the valid CONTINUATION probe to pass within the advertised limit.

@@ -1,15 +1,37 @@
-# Shutdown and connection preface.
+# Accept peer GOAWAY and observe a connection close or PING ACK. The fixture
+# drops the socket on GOAWAY. With unread data, the peer can observe a TCP
+# reset. Revisit during graceful shutdown work. RFC 9113 §6.8
 generic/3.8/1
+
+# Terminate the connection for an invalid preface. The probe accepts a
+# protocol-error GOAWAY or a clean close. The fixture closes and the peer
+# can see a TCP reset. The RFC permits omitting GOAWAY for an invalid
+# preface. RFC 9113 §3.4
 http2/3.5/2
+
+# Treat GOAWAY with an unknown error code like an ordinary GOAWAY. The same
+# socket teardown can produce a TCP reset. Revisit alongside the ordinary
+# GOAWAY case. RFC 9113 §6.8, §7
 http2/7/1
 
-# Legacy RFC 7540 priority expectations.
+# Signal a protocol error for a HEADERS priority dependency on the same
+# stream. The server skips the legacy priority fields and processes the
+# headers. The RFC 7540 dependency scheme is deprecated in RFC 9113 §5.3.2.
 http2/5.3.1/1
+
+# Signal a protocol error for a PRIORITY frame that depends on its own
+# stream. The server ignores legacy priority signals after checking frame
+# shape. RFC 9113 §5.3.2, §6.3
 http2/5.3.1/2
 
-# Default continuation probe exceeds the advertised header limit.
-# The runner also requires this case to pass with smaller headers.
+# Accept a header block split across multiple CONTINUATION frames. Two
+# default 4,000-byte field values exceed the 4 KiB advertised header-list
+# limit. CI requires this probe to pass separately with
+# `--max-header-length 512`. RFC 9113 §6.10
 http2/6.10/1
 
-# The peer can still observe a TCP reset before the error frame.
+# Receive GOAWAY with `PROTOCOL_ERROR` for an extra CONTINUATION after
+# `END_HEADERS`. The server sends GOAWAY, but the probe can see a TCP reset
+# before receiving it. Keep this exception until error delivery is reliable.
+# RFC 9113 §6.10
 http2/6.10/5
