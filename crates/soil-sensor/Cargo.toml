@@ -3,3 +3,10 @@ name = "soil-sensor"
 version = "0.1.0"
 edition = "2021"
 publish = false
+
+[features]
+esp32s3 = ["dep:esp-hal", "dep:nb"]
+
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+esp-hal = { version = "1.1.1", features = ["esp32s3", "unstable"], optional = true }
+nb = { version = "1.1.0", optional = true }

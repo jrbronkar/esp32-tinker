@@ -16,6 +16,17 @@ Mac visualization tools, and a development OTA update system over Wi-Fi.
 | Provision a board and update it over Wi-Fi | [OTA provisioning and upload guide](docs/ota/provisioning.md) |
 | Understand the update design and lifecycle | [OTA documentation](docs/ota/README.md) |
 
+## Reusing sensor libraries
+
+- [`mpu6050`](crates/mpu6050) reads acceleration, angular velocity, and temperature from an MPU6050 over any `embedded-hal` I²C bus. Both `imu-demo` and the optional `device-demo` IMU task use it.
+- [`soil-sensor`](crates/soil-sensor) filters ADC samples and converts them to relative moisture using probe-specific calibration. Its `esp32s3` feature exposes `esp32s3::SoilProbe` for the ADC1/GPIO4 wiring used by both `soil-demo` modes.
+
+Add the sensor crate as a Cargo path dependency and pass it the bus or peripherals it needs. Firmware selects sensors at build time and owns sampling intervals, telemetry, and error handling.
+
+```sh
+cargo test --locked -p mpu6050 -p soil-sensor
+```
+
 ## Inventory
 
 ### Hardware

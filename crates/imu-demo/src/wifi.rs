@@ -14,7 +14,7 @@ use esp_hal::{
 };
 use esp_println::println;
 use heapless::String;
-use imu_demo::{Mpu6050, ADDRESS_LOW};
+use mpu6050::{Mpu6050, ADDRESS_LOW};
 use onboard_rgb::breathing_green;
 use wifi_network::Settings;
 
@@ -75,9 +75,8 @@ async fn main(spawner: Spawner) -> ! {
 
     println!("MPU6050 confirmed and streaming over UDP port {IMU_UDP_PORT}");
     loop {
-        match sensor.read_raw() {
-            Ok(raw) => {
-                let reading = raw.into_reading();
+        match sensor.read() {
+            Ok(reading) => {
                 let mut record = String::<160>::new();
                 if write!(
                     record,
