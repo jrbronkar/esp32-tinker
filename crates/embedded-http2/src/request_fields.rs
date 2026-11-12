@@ -1,5 +1,22 @@
 use crate::HeaderField;
 
+const PSEUDO_PREFIX: char = ':';
+const METHOD: &str = ":method";
+const SCHEME: &str = ":scheme";
+const PATH: &str = ":path";
+const AUTHORITY: &str = ":authority";
+const CONNECT: &str = "CONNECT";
+const CONTENT_LENGTH: &str = "content-length";
+const TE: &str = "te";
+const TRAILERS: &str = "trailers";
+const CONNECTION_FIELDS: &[&str] = &[
+    "connection",
+    "proxy-connection",
+    "keep-alive",
+    "transfer-encoding",
+    "upgrade",
+];
+
 #[derive(Debug)]
 pub(super) struct MalformedRequest;
 
@@ -8,44 +25,18 @@ pub(super) struct RequestLength(Option<u64>);
 
 impl RequestLength {
     pub(super) fn parse(fields: &[HeaderField]) -> Result<Self, MalformedRequest> {
-        let mut method = None;
-        let mut scheme = None;
-        let mut path = None;
-        let mut authority = None;
+        let pseudo_count = fields
+            .iter()
+            .take_while(|field| field.name.starts_with(PSEUDO_PREFIX))
+            .count();
+        let (pseudo, regular) = fields.split_at(pseudo_count);
+        parse_pseudo_headers(pseudo)?;
+
         let mut length = None;
-        let mut regular_seen = false;
-
-        for field in fields {
-            let name = field.name.as_str();
-            let value = field.value.as_str();
-            if !field_value(value) {
-                return Err(MalformedRequest);
-            }
-            if name.starts_with(':') {
-                if regular_seen || value.is_empty() {
-                    return Err(MalformedRequest);
-                }
-                let slot = match name {
-                    ":method" if token(value) => &mut method,
-                    ":scheme" => &mut scheme,
-                    ":path" => &mut path,
-                    ":authority" => &mut authority,
-                    _ => return Err(MalformedRequest),
-                };
-                if slot.replace(value).is_some() {
-                    return Err(MalformedRequest);
-                }
-                continue;
-            }
-
-            regular_seen = true;
-            check_regular_field(name, value)?;
-            if name == "content-length" {
-                // RFC 9110 §8.6 defines the length as one or more decimal digits.
-                if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                    return Err(MalformedRequest);
-                }
-                let parsed = value.parse::<u64>().map_err(|_| MalformedRequest)?;
+        for field in regular {
+            check_regular_field(field)?;
+            if field.name == CONTENT_LENGTH {
+                let parsed = parse_content_length(&field.value)?;
                 if length
                     .replace(parsed)
                     .is_some_and(|previous| previous != parsed)
@@ -53,13 +44,6 @@ impl RequestLength {
                     return Err(MalformedRequest);
                 }
             }
-        }
-
-        // RFC 9113 §§8.3.1 and 8.5 define the request pseudo-header sets.
-        match method {
-            Some("CONNECT") if authority.is_some() && scheme.is_none() && path.is_none() => {}
-            Some(method) if method != "CONNECT" && scheme.is_some() && path.is_some() => {}
-            _ => return Err(MalformedRequest),
         }
         Ok(Self(length))
     }
@@ -81,28 +65,80 @@ impl RequestLength {
     }
 }
 
-pub(super) fn check_trailers(fields: &[HeaderField]) -> Result<(), MalformedRequest> {
+#[derive(Default)]
+struct PseudoHeaders<'a> {
+    method: Option<&'a str>,
+    scheme: Option<&'a str>,
+    path: Option<&'a str>,
+    authority: Option<&'a str>,
+}
+
+fn parse_pseudo_headers(fields: &[HeaderField]) -> Result<(), MalformedRequest> {
+    let mut headers = PseudoHeaders::default();
     for field in fields {
-        if field.name == "content-length" || !field_value(&field.value) {
+        let value = field.value.as_str();
+        if value.is_empty() || !field_value(value) {
             return Err(MalformedRequest);
         }
-        check_regular_field(&field.name, &field.value)?;
+        let slot = match field.name.as_str() {
+            METHOD if token(value) => &mut headers.method,
+            SCHEME => &mut headers.scheme,
+            PATH => &mut headers.path,
+            AUTHORITY => &mut headers.authority,
+            _ => return Err(MalformedRequest),
+        };
+        if slot.replace(value).is_some() {
+            return Err(MalformedRequest);
+        }
+    }
+
+    // RFC 9113 §§8.3.1 and 8.5 define the request pseudo-header sets.
+    match headers.method {
+        Some(CONNECT)
+            if headers.authority.is_some()
+                && headers.scheme.is_none()
+                && headers.path.is_none() =>
+        {
+            Ok(())
+        }
+        Some(method) if method != CONNECT && headers.scheme.is_some() && headers.path.is_some() => {
+            Ok(())
+        }
+        _ => Err(MalformedRequest),
+    }
+}
+
+fn parse_content_length(value: &str) -> Result<u64, MalformedRequest> {
+    // RFC 9110 §8.6 defines the length as one or more decimal digits.
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(MalformedRequest);
+    }
+    value.parse().map_err(|_| MalformedRequest)
+}
+
+pub(super) fn check_trailers(fields: &[HeaderField]) -> Result<(), MalformedRequest> {
+    for field in fields {
+        if field.name == CONTENT_LENGTH {
+            return Err(MalformedRequest);
+        }
+        check_regular_field(field)?;
     }
     Ok(())
 }
 
-// RFC 9113 §§8.2.1–8.2.2 constrain names, connection-specific fields, and TE.
-fn check_regular_field(name: &str, value: &str) -> Result<(), MalformedRequest> {
-    if !token(name) || name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+// RFC 9113 §§8.2.1–8.2.2 constrain names, values, and connection-specific fields.
+fn check_regular_field(field: &HeaderField) -> Result<(), MalformedRequest> {
+    let name = field.name.as_str();
+    let value = field.value.as_str();
+    if !token(name)
+        || name.bytes().any(|byte| byte.is_ascii_uppercase())
+        || !field_value(value)
+        || CONNECTION_FIELDS.contains(&name)
+        || (name == TE && !value.eq_ignore_ascii_case(TRAILERS))
+    {
         return Err(MalformedRequest);
     }
-    match name {
-        "connection" | "proxy-connection" | "keep-alive" | "transfer-encoding" | "upgrade" => {
-            Err(MalformedRequest)
-        }
-        "te" if !value.eq_ignore_ascii_case("trailers") => Err(MalformedRequest),
-        _ => Ok(()),
-    }
+    Ok(())
 }
 
 fn token(value: &str) -> bool {
@@ -116,7 +152,8 @@ fn token(value: &str) -> bool {
 
 fn field_value(value: &str) -> bool {
     const FIELD_WHITESPACE: [char; 2] = [' ', '\t'];
+    const FORBIDDEN_FIELD_CHARS: [char; 3] = ['\0', '\r', '\n'];
     !value.starts_with(FIELD_WHITESPACE)
         && !value.ends_with(FIELD_WHITESPACE)
-        && !value.contains(['\0', '\r', '\n'])
+        && !value.contains(FORBIDDEN_FIELD_CHARS)
 }
