@@ -12,11 +12,14 @@ pub(crate) fn decode(decoder: &mut Decoder, mut block: &[u8]) -> Option<Vec<Head
     let mut fields = Vec::new();
     let mut size = 0;
     while let Some(&first) = block.first() {
+        // The high bits select the HPACK representation. The remaining bits
+        // in this byte start its integer. See RFC 7541 sections 5.1 and 6.
+        // https://www.rfc-editor.org/rfc/rfc7541.html#section-6
         let prefix = match first {
-            0x80..=0xff => 7,
-            0x40..=0x7f => 6,
-            0x20..=0x3f => 5,
-            _ => 4,
+            0x80..=0xff => 7, // 1: indexed field
+            0x40..=0x7f => 6, // 01: literal with incremental indexing
+            0x20..=0x3f => 5, // 001: dynamic table size update
+            _ => 4,           // 0000 / 0001: literal without / never indexed
         };
         let (index, mut len) = decode_integer(block, prefix).ok()?;
         match prefix {
