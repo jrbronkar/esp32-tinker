@@ -9,6 +9,7 @@ exclude = [
 members = [
     "crates/hello-world",
     "crates/imu-demo",
+    "crates/embedded-http2",
     "crates/mpu6050",
     "crates/onboard-rgb",
     "crates/rgb-demo",
@@ -26,6 +27,7 @@ members = [
 # Plain Cargo commands build/test the host tools and shared portable crates.
 # Firmware packages are selected explicitly with -p and the Xtensa target.
 default-members = [
+    "crates/embedded-http2",
     "crates/mpu6050",
     "crates/soil-sensor",
     "crates/device-grpc",
