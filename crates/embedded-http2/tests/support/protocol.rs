@@ -54,9 +54,14 @@ async fn handshake_requires_the_preface_and_initial_settings() {
     ));
     assert!(matches!(open(&preface[..3]).await, Err(Error::Read(_))));
 
-    let mut input = CLIENT_PREFACE.to_vec();
-    input.extend(frame(FrameType::Settings, 0, Flags::ACK, &[]));
-    assert!(matches!(open(&input).await, Err(Error::Protocol)));
+    for invalid in [
+        frame(FrameType::Settings, 0, Flags::ACK, &[]),
+        frame(FrameType::Ping, 0, 0, &[0; 8]),
+    ] {
+        let mut input = CLIENT_PREFACE.to_vec();
+        input.extend(invalid);
+        assert!(matches!(open(&input).await, Err(Error::Protocol)));
+    }
 
     for invalid in [
         frame(FrameType::Settings, 0, 0, &[0]),
@@ -104,11 +109,23 @@ async fn rejects_invalid_connection_and_stream_frames() {
         assert!(matches!(server.accept().await, Err(Error::Protocol)));
     }
 
-    let (mut server, _peer) = connection(&[frame(FrameType::Ping, 1, 0, &[0; 8])]).await;
-    assert!(matches!(
-        server.accept().await,
-        Err(Error::Wire(Http2Error::Protocol(ErrorCode::ProtocolError)))
-    ));
+    for invalid in [
+        frame(FrameType::Settings, 1, 0, &[]),
+        frame(FrameType::Ping, 1, 0, &[0; 8]),
+        frame(FrameType::Ping, 0, 0, &[0; 7]),
+        frame(FrameType::RstStream, 0, 0, &[0; 4]),
+        frame(FrameType::RstStream, 1, 0, &[0; 3]),
+        frame(FrameType::GoAway, 1, 0, &[0; 8]),
+        frame(FrameType::GoAway, 0, 0, &[0; 7]),
+        frame(FrameType::Priority, 0, 0, &[0; 5]),
+        frame(FrameType::Priority, 1, 0, &[0; 4]),
+    ] {
+        let (mut server, _peer) = connection(&[invalid]).await;
+        assert!(matches!(
+            server.accept().await,
+            Err(Error::Wire(Http2Error::Protocol(ErrorCode::ProtocolError)))
+        ));
+    }
 
     let (mut server, _peer) = connection(&[
         frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
@@ -204,20 +221,23 @@ async fn assembles_continuations_and_skips_extension_frames() {
 
 #[tokio::test]
 async fn rejects_invalid_continuations_and_header_limits() {
-    let (mut server, _peer) = connection(&[
-        frame(FrameType::Headers, 1, 0, REQUEST),
+    for invalid in [
         frame(FrameType::Ping, 0, 0, &[0; 8]),
-    ])
-    .await;
-    assert!(matches!(server.accept().await, Err(Error::Protocol)));
+        frame(FrameType::Continuation, 3, END_HEADERS, REQUEST),
+    ] {
+        let (mut server, _peer) =
+            connection(&[frame(FrameType::Headers, 1, 0, REQUEST), invalid]).await;
+        assert!(matches!(server.accept().await, Err(Error::Protocol)));
+    }
 
     for block in [
-        vec![0x82; 4097],          // Encoded block limit.
-        vec![0x82; 150],           // Decoded header list limit.
-        vec![0x82, 0x20],          // HPACK table updates must precede fields.
-        vec![0xff],                // Truncated indexed field.
-        vec![0x80],                // Index zero is invalid.
-        vec![0, 1, b'x', 2, b'y'], // Truncated literal value.
+        vec![0x82; 4097],                             // Encoded block limit.
+        vec![0x82; 150],                              // Decoded header list limit.
+        zerodds_hpack::encode_integer(4097, 5, 0x20), // Dynamic table limit.
+        vec![0x82, 0x20],                             // HPACK table updates must precede fields.
+        vec![0xff],                                   // Truncated indexed field.
+        vec![0x80],                                   // Index zero is invalid.
+        vec![0, 1, b'x', 2, b'y'],                    // Truncated literal value.
     ] {
         let (mut server, _peer) = connection(&[frame(
             FrameType::Headers,
