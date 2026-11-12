@@ -948,3 +948,276 @@ async fn incremental_wait_surfaces_request_trailers_and_peer_reset()
     ));
     Ok(())
 }
+
+const REQUEST_FIELDS: &[(&str, &str)] = &[(":method", "POST"), (":scheme", "http"), (":path", "/")];
+
+fn header_block(fields: &[(&str, &str)]) -> Vec<u8> {
+    let fields: Vec<_> = fields
+        .iter()
+        .map(|&(name, value)| HeaderField {
+            name: name.into(),
+            value: value.into(),
+        })
+        .collect();
+    zerodds_hpack::Encoder::new().encode(&fields)
+}
+
+#[tokio::test]
+async fn rejects_malformed_request_fields_before_dispatch() {
+    for extra in [
+        (":status", "200"),
+        (":method", "POST"),
+        (":unknown", "value"),
+        ("Uppercase", "value"),
+        ("bad name", "value"),
+        ("x-name", " leading"),
+        ("x-name", "line\nbreak"),
+        ("connection", "close"),
+        ("te", "gzip"),
+        ("content-length", "+1"),
+        ("content-length", "18446744073709551616"),
+    ] {
+        let mut fields = REQUEST_FIELDS.to_vec();
+        fields.push(extra);
+        let (mut server, _peer) = connection(&[frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            &header_block(&fields),
+        )])
+        .await;
+        assert!(
+            matches!(server.accept_head().await, Err(Error::MalformedRequest)),
+            "{extra:?}"
+        );
+    }
+
+    for fields in [
+        &REQUEST_FIELDS[..2],
+        &[(":method", "GET"), (":scheme", "http"), (":path", "")],
+        &[
+            (":method", "GET"),
+            ("x-name", "value"),
+            (":scheme", "http"),
+            (":path", "/"),
+        ],
+        &[(":method", "CONNECT")],
+    ] {
+        let (mut server, _peer) = connection(&[frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            &header_block(fields),
+        )])
+        .await;
+        assert!(
+            matches!(server.accept_head().await, Err(Error::MalformedRequest)),
+            "{fields:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepts_ordinary_requests_and_connect() -> Result<(), Box<dyn std::error::Error>> {
+    for fields in [
+        &[(":method", "CONNECT"), (":authority", "localhost:443")][..],
+        &[
+            (":method", "POST"),
+            (":scheme", "http"),
+            (":path", "/"),
+            ("te", "Trailers"),
+            ("content-length", "0"),
+            ("content-length", "0"),
+        ],
+    ] {
+        let (mut server, _peer) = connection(&[frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            &header_block(fields),
+        )])
+        .await;
+        assert!(
+            server
+                .accept_head()
+                .await
+                .map_err(describe_transport_error)?
+                .end_stream
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_length_excludes_padding_and_checks_all_half_close_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fields = REQUEST_FIELDS.to_vec();
+    fields.push(("content-length", "2"));
+    let block = header_block(&fields);
+    let initial = frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, &block);
+    let (mut server, mut peer) = connection(&[frame(
+        FrameType::Headers,
+        FIRST_STREAM,
+        END_HEADERS | END_STREAM,
+        &block,
+    )])
+    .await;
+    assert!(matches!(
+        server.accept_head().await,
+        Err(Error::MalformedRequest)
+    ));
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        frame(
+            FrameType::RstStream,
+            FIRST_STREAM,
+            NO_FLAGS,
+            &(ErrorCode::ProtocolError as u32).to_be_bytes(),
+        )
+    );
+
+    for body_end in [
+        frame(FrameType::Data, FIRST_STREAM, END_STREAM, b"x"),
+        frame(FrameType::Data, FIRST_STREAM, END_STREAM, b"too long"),
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            &[],
+        ),
+    ] {
+        let (mut server, _peer) = connection(&[initial.clone(), body_end]).await;
+        assert!(matches!(
+            server.accept().await,
+            Err(Error::MalformedRequest)
+        ));
+    }
+
+    const PADDED_BYTE: &[u8] = &[1, b'a', 0]; // Pad Length, DATA, one padding octet.
+    let (mut server, _peer) = connection(&[
+        initial,
+        frame(FrameType::Data, FIRST_STREAM, Flags::PADDED, PADDED_BYTE),
+        frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, b"b"),
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            &[],
+        ),
+    ])
+    .await;
+    assert_eq!(
+        server
+            .accept()
+            .await
+            .map_err(describe_transport_error)?
+            .body,
+        b"ab"
+    );
+
+    fields.push(("content-length", "3"));
+    let (mut server, _peer) = connection(&[frame(
+        FrameType::Headers,
+        FIRST_STREAM,
+        END_HEADERS,
+        &header_block(&fields),
+    )])
+    .await;
+    assert!(matches!(
+        server.accept_head().await,
+        Err(Error::MalformedRequest)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejects_response_pseudo_trailers_before_writing_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut server, mut peer) = connection(&[frame(
+        FrameType::Headers,
+        FIRST_STREAM,
+        END_HEADERS | END_STREAM,
+        REQUEST,
+    )])
+    .await;
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+    let id = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?
+        .stream_id;
+    let head = [HeaderField {
+        name: ":status".into(),
+        value: http::StatusCode::OK.as_str().into(),
+    }];
+    server
+        .start_response(id, &head)
+        .await
+        .map_err(describe_transport_error)?;
+    let _head = read_wire_frame(&mut peer).await?;
+    assert!(matches!(
+        server.finish_response(id, &head).await,
+        Err(Error::Protocol)
+    ));
+    expect_no_output(&mut peer).await?;
+    server
+        .finish_response(id, &[])
+        .await
+        .map_err(describe_transport_error)?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        frame(FrameType::Data, id, END_STREAM, &[])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_padding_takes_precedence_over_receive_window_exhaustion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let window = INITIAL_WINDOW_SIZE as usize;
+    let payload = vec![0; window];
+    let mut frames = vec![frame(
+        FrameType::Headers,
+        FIRST_STREAM,
+        END_HEADERS,
+        REQUEST,
+    )];
+    frames.extend(
+        payload
+            .chunks(DEFAULT_MAX_FRAME_SIZE as usize)
+            .map(|chunk| frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, chunk)),
+    );
+    const PAD_LENGTH_WITHOUT_PADDING: &[u8] = &[1];
+    frames.push(frame(
+        FrameType::Data,
+        FIRST_STREAM,
+        Flags::PADDED,
+        PAD_LENGTH_WITHOUT_PADDING,
+    ));
+    let (mut server, _peer) = connection(&frames).await;
+    let id = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?
+        .stream_id;
+    let mut remaining = window;
+    while remaining > 0 {
+        match server
+            .read_body(id)
+            .await
+            .map_err(describe_transport_error)?
+        {
+            Some(BodyFrame::Data(bytes)) if !bytes.is_empty() => {
+                remaining = remaining
+                    .checked_sub(bytes.len())
+                    .ok_or("received more than the window")?;
+            }
+            other => return Err(format!("expected nonempty DATA, got {other:?}").into()),
+        }
+    }
+    assert!(matches!(server.read_body(id).await, Err(Error::Protocol)));
+    Ok(())
+}

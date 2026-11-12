@@ -13,6 +13,7 @@ extern crate alloc;
 
 mod headers;
 mod request;
+mod request_fields;
 mod response;
 pub mod service;
 
@@ -51,8 +52,13 @@ pub enum Error<E> {
     Wire(Http2Error),
     Protocol,
     HeaderBlock,
+    /// Invalid request fields or body length. The server sent a stream reset.
+    MalformedRequest,
     BodyLimit,
-    Reset { stream_id: StreamId, code: u32 },
+    Reset {
+        stream_id: StreamId,
+        code: u32,
+    },
     Closed,
 }
 
@@ -89,6 +95,7 @@ struct Stream {
     remote_closed: bool,
     response_started: bool,
     pending_receive_credit: u32,
+    request_length: request_fields::RequestLength,
 }
 
 pub struct Server<Io> {
