@@ -3,16 +3,19 @@
 
 //! A cleartext HTTP/2 server connection for embedded async I/O.
 //!
-//! This foundation buffers one bounded request at a time. It supports
-//! sequential streams, and sends complete responses with optional trailers.
-//! Multiplexed application streams and incremental bodies are future work.
+//! Supports one active stream per connection. Requests can be read
+//! incrementally or buffered within a fixed limit. Responses are buffered
+//! and may include trailers.
 //! Drop the connection on an error other than a reported stream reset, or
 //! if an I/O future is canceled partway through a frame.
 
 extern crate alloc;
 
 mod headers;
+mod request;
 pub mod service;
+
+pub use request::{BodyFrame, RequestHead};
 
 use alloc::{vec, vec::Vec};
 use core::cmp::min;
@@ -22,10 +25,9 @@ use zerodds_hpack::{Decoder, Encoder};
 use zerodds_http2::{
     CLIENT_PREFACE, ErrorCode, Flags, FrameHeader, FrameType, Http2Error, Settings, StreamId,
     decode_frame, encode_frame,
-    flow::{FlowControl, decode_window_update, encode_window_update},
+    flow::{FlowControl, decode_window_update},
     frame::{DEFAULT_MAX_FRAME_SIZE, FRAME_HEADER_LEN},
     settings::{Setting, SettingId, decode_settings, encode_settings},
-    stream::is_client_initiated,
 };
 
 pub use zerodds_hpack::HeaderField;
@@ -83,6 +85,7 @@ struct Stream {
     send: FlowControl,
     receive: FlowControl,
     remote_closed: bool,
+    pending_receive_credit: u32,
 }
 
 pub struct Server<Io> {
@@ -143,87 +146,6 @@ impl<Io: Read + Write> Server<Io> {
         Ok(server)
     }
 
-    /// Read a complete request or report a reset before its body completed.
-    /// A successful request must be answered before reading the next one.
-    pub async fn accept(&mut self) -> Result<Request, Error<Io::Error>> {
-        if self.stream.is_some() {
-            return Err(Error::Protocol);
-        }
-
-        let mut request = loop {
-            let frame = self.read_frame().await?;
-            if frame.kind != FrameType::Headers as u8 {
-                self.control(frame).await?;
-                continue;
-            }
-            if !is_client_initiated(frame.stream_id) || frame.stream_id <= self.last_stream {
-                return Err(Error::Protocol);
-            }
-            let fields = self.read_headers(&frame).await?;
-            self.last_stream = frame.stream_id;
-            self.stream = Some(Stream {
-                id: frame.stream_id,
-                send: FlowControl::new(i64::from(self.peer.initial_window_size)),
-                receive: FlowControl::default(),
-                remote_closed: frame.flags.has(Flags::END_STREAM),
-            });
-            break Request {
-                stream_id: frame.stream_id,
-                headers: fields,
-                body: Vec::new(),
-                trailers: Vec::new(),
-            };
-        };
-
-        while self.stream.as_ref().is_some_and(|s| !s.remote_closed) {
-            let frame = self.read_frame().await?;
-            if frame.kind == FrameType::Headers as u8 {
-                if frame.stream_id != request.stream_id || !frame.flags.has(Flags::END_STREAM) {
-                    return Err(Error::Protocol);
-                }
-                let trailers = self.read_headers(&frame).await?;
-                if trailers.iter().any(|field| field.name.starts_with(':')) {
-                    return Err(Error::Protocol);
-                }
-                request.trailers = trailers;
-                break;
-            }
-            if frame.kind != FrameType::Data as u8 {
-                self.control(frame).await?;
-                continue;
-            }
-            let Some(stream) = self.stream.as_mut().filter(|s| s.id == frame.stream_id) else {
-                return Err(Error::Protocol);
-            };
-            let data = strip_padding(&self.payload, frame.flags).ok_or(Error::Protocol)?;
-            if request.body.len() + data.len() > MAX_BODY {
-                return Err(Error::BodyLimit);
-            }
-            // Flow control charges the entire DATA payload, including the
-            // pad-length byte and padding (RFC 9113 §6.1).
-            let credit = self.payload.len() as u32;
-            self.connection_receive.consume(credit)?;
-            stream.receive.consume(credit)?;
-            request.body.extend_from_slice(data);
-            let ended = frame.flags.has(Flags::END_STREAM);
-            stream.remote_closed = ended;
-
-            if credit > 0 {
-                self.connection_receive.apply_window_update(credit)?;
-                let payload = encode_window_update(credit);
-                if !ended {
-                    stream.receive.apply_window_update(credit)?;
-                    self.write_frame(FrameType::WindowUpdate, frame.stream_id, 0, &payload)
-                        .await?;
-                }
-                self.write_frame(FrameType::WindowUpdate, 0, 0, &payload)
-                    .await?;
-            }
-        }
-        self.stream.as_mut().ok_or(Error::Protocol)?.remote_closed = true;
-        Ok(request)
-    }
-
     /// Send response headers, bounded DATA, then trailers when supplied.
     pub async fn respond(
         &mut self,
@@ -247,6 +169,7 @@ impl<Io: Read + Write> Server<Io> {
             Some(self.encode_headers(response.trailers)?)
         };
 
+        self.release_capacity(stream_id).await?;
         let end_in_headers = response.body.is_empty() && trailers.is_none();
         let flags = Flags::END_HEADERS | if end_in_headers { Flags::END_STREAM } else { 0 };
         self.write_frame(FrameType::Headers, stream_id, flags, &head)
@@ -451,12 +374,9 @@ impl<Io: Read + Write> Server<Io> {
             {
                 let code =
                     u32::from_be_bytes(self.payload[..].try_into().map_err(|_| Error::Protocol)?);
-                if self
-                    .stream
-                    .as_ref()
-                    .is_some_and(|s| s.id == frame.stream_id)
-                {
-                    self.stream = None;
+                if let Some(stream) = self.stream.take_if(|stream| stream.id == frame.stream_id) {
+                    self.release_connection_capacity(stream.pending_receive_credit)
+                        .await?;
                     return Err(Error::Reset {
                         stream_id: frame.stream_id,
                         code,

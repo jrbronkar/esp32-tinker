@@ -1,9 +1,9 @@
-use embedded_http2::{Error, HeaderField, Response, Server};
+use embedded_http2::{BodyFrame, Error, HeaderField, Response, Server};
 use embedded_io_adapters::tokio_1::FromTokio;
-use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 use zerodds_http2::{
     CLIENT_PREFACE, ErrorCode, Flags, FrameHeader, FrameType, Http2Error, encode_frame,
-    flow::encode_window_update,
+    flow::{INITIAL_WINDOW_SIZE, encode_window_update},
     frame::{DEFAULT_MAX_FRAME_SIZE, FRAME_HEADER_LEN},
     settings::{Setting, SettingId, encode_settings},
 };
@@ -441,4 +441,318 @@ async fn honors_the_peers_header_list_limit_for_trailers() {
         &output[consumed..],
         [ack.as_slice(), ack.as_slice()].concat()
     );
+}
+
+const FIRST_STREAM: u32 = 1;
+const NEXT_STREAM: u32 = 3;
+const CONNECTION: u32 = 0;
+const NO_FLAGS: u8 = 0;
+
+fn describe_transport_error(error: TestError) -> String {
+    format!("{error:?}")
+}
+
+async fn read_wire_frame(peer: &mut DuplexStream) -> std::io::Result<Vec<u8>> {
+    let mut header = [0; FRAME_HEADER_LEN];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        peer.read_exact(&mut header),
+    )
+    .await??;
+    // The payload length is the first 24 bits of the HTTP/2 frame header.
+    let [len_hi, len_mid, len_lo, ..] = header;
+    let len = u32::from_be_bytes([0, len_hi, len_mid, len_lo]) as usize;
+    if len > DEFAULT_MAX_FRAME_SIZE as usize {
+        return Err(std::io::Error::other("unexpected test frame length"));
+    }
+    let mut bytes = header.to_vec();
+    bytes.resize(FRAME_HEADER_LEN + len, 0);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        peer.read_exact(&mut bytes[FRAME_HEADER_LEN..]),
+    )
+    .await??;
+    Ok(bytes)
+}
+
+async fn expect_no_output(peer: &mut DuplexStream) -> std::io::Result<()> {
+    let mut byte = [0];
+    tokio::select! {
+        biased;
+        result = peer.read(&mut byte) => Err(std::io::Error::other(format!("unexpected read: {result:?}"))),
+        _ = std::future::ready(()) => Ok(()),
+    }
+}
+
+fn window_update(stream_id: u32, credit: usize) -> Vec<u8> {
+    frame(
+        FrameType::WindowUpdate,
+        stream_id,
+        NO_FLAGS,
+        &encode_window_update(credit as u32),
+    )
+}
+
+#[tokio::test]
+async fn incremental_body_returns_credit_on_release_and_response()
+-> Result<(), Box<dyn std::error::Error>> {
+    const PAD_LENGTH: u8 = 1;
+    const PADDING: u8 = 0;
+    const PAYLOAD: u8 = b'a';
+    let padded_data = [PAD_LENGTH, PAYLOAD, PADDING];
+    let final_data = b"end";
+    let (mut server, mut peer) = connection(&[
+        frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+        frame(FrameType::Data, FIRST_STREAM, Flags::PADDED, &padded_data),
+        frame(FrameType::Data, FIRST_STREAM, END_STREAM, final_data),
+    ])
+    .await;
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+
+    let head = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?;
+    assert_eq!(head.stream_id, FIRST_STREAM);
+    assert!(!head.end_stream);
+    assert!(head.headers.iter().any(|field| field.name == ":method"));
+    assert!(matches!(
+        server.read_body(head.stream_id).await.map_err(describe_transport_error)?,
+        Some(BodyFrame::Data(bytes)) if bytes == [PAYLOAD]
+    ));
+    expect_no_output(&mut peer).await?;
+    server
+        .release_capacity(head.stream_id)
+        .await
+        .map_err(describe_transport_error)?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        window_update(FIRST_STREAM, padded_data.len())
+    );
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        window_update(CONNECTION, padded_data.len())
+    );
+    server
+        .release_capacity(head.stream_id)
+        .await
+        .map_err(describe_transport_error)?;
+    expect_no_output(&mut peer).await?;
+
+    assert!(matches!(
+        server.read_body(head.stream_id).await.map_err(describe_transport_error)?,
+        Some(BodyFrame::Data(bytes)) if bytes == final_data
+    ));
+    assert!(
+        server
+            .read_body(head.stream_id)
+            .await
+            .map_err(describe_transport_error)?
+            .is_none()
+    );
+    expect_no_output(&mut peer).await?;
+
+    server
+        .respond(
+            head.stream_id,
+            Response {
+                headers: &[HeaderField {
+                    name: ":status".into(),
+                    value: "204".into(),
+                }],
+                body: &[],
+                trailers: &[],
+            },
+        )
+        .await
+        .map_err(describe_transport_error)?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        window_update(CONNECTION, final_data.len())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn incremental_reset_reclaims_connection_credit_for_next_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pending = b"abandoned";
+    let cancel = (ErrorCode::Cancel as u32).to_be_bytes();
+    let (mut server, mut peer) = connection(&[
+        frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+        frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, pending),
+        frame(FrameType::RstStream, FIRST_STREAM, NO_FLAGS, &cancel),
+        frame(
+            FrameType::Headers,
+            NEXT_STREAM,
+            END_HEADERS | END_STREAM,
+            REQUEST,
+        ),
+    ])
+    .await;
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+    let head = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?;
+    assert!(matches!(
+        server.read_body(head.stream_id).await.map_err(describe_transport_error)?,
+        Some(BodyFrame::Data(bytes)) if bytes == pending
+    ));
+    assert!(matches!(
+        server.read_body(head.stream_id).await,
+        Err(Error::Reset { stream_id: FIRST_STREAM, code }) if code == ErrorCode::Cancel as u32
+    ));
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        window_update(CONNECTION, pending.len())
+    );
+    expect_no_output(&mut peer).await?;
+    let next = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?;
+    assert_eq!(next.stream_id, NEXT_STREAM);
+    assert!(next.end_stream);
+    Ok(())
+}
+
+#[tokio::test]
+async fn incremental_body_rejects_invalid_stream_transitions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let invalid_frames = [
+        frame(FrameType::Data, NEXT_STREAM, END_STREAM, b"wrong stream"),
+        frame(
+            FrameType::Headers,
+            NEXT_STREAM,
+            END_HEADERS | END_STREAM,
+            &[],
+        ),
+        frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, &[]),
+        // Request pseudo-headers are forbidden in trailers.
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            REQUEST,
+        ),
+    ];
+    for invalid in invalid_frames {
+        let (mut server, _peer) = connection(&[
+            frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+            invalid,
+        ])
+        .await;
+        let head = server
+            .accept_head()
+            .await
+            .map_err(describe_transport_error)?;
+        assert!(matches!(
+            server.read_body(NEXT_STREAM).await,
+            Err(Error::Protocol)
+        ));
+        assert!(matches!(
+            server.release_capacity(NEXT_STREAM).await,
+            Err(Error::Protocol)
+        ));
+        assert!(matches!(
+            server.read_body(head.stream_id).await,
+            Err(Error::Protocol)
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn incremental_body_enforces_unreleased_receive_window()
+-> Result<(), Box<dyn std::error::Error>> {
+    let window = INITIAL_WINDOW_SIZE as usize;
+    let payload = vec![0; window];
+    let mut frames = vec![frame(
+        FrameType::Headers,
+        FIRST_STREAM,
+        END_HEADERS,
+        REQUEST,
+    )];
+    frames.extend(
+        payload
+            .chunks(DEFAULT_MAX_FRAME_SIZE as usize)
+            .map(|chunk| frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, chunk)),
+    );
+    frames.push(frame(FrameType::Data, FIRST_STREAM, END_STREAM, b"x"));
+    let (mut server, _peer) = connection(&frames).await;
+    let head = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?;
+    let mut received = 0;
+    while received < window {
+        match server
+            .read_body(head.stream_id)
+            .await
+            .map_err(describe_transport_error)?
+        {
+            Some(BodyFrame::Data(bytes)) if !bytes.is_empty() => received += bytes.len(),
+            other => return Err(format!("expected nonempty DATA, got {other:?}").into()),
+        }
+    }
+    assert_eq!(received, window);
+    assert!(matches!(
+        server.read_body(head.stream_id).await,
+        Err(Error::Wire(Http2Error::FlowControlExceeded))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn incremental_headers_do_not_wait_for_data_and_reject_invalid_trailers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let initial = frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST);
+    let (mut server, _peer) = connection(core::slice::from_ref(&initial)).await;
+    let head = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?;
+    assert!(!head.end_stream);
+    assert!(matches!(
+        server.read_body(head.stream_id).await,
+        Err(Error::Read(_))
+    ));
+
+    // RFC 7541 reserves index zero. The indexed-field prefix alone is invalid.
+    const INVALID_INDEXED_FIELD: &[u8] = &[0b1000_0000];
+    let (mut server, _peer) = connection(&[
+        initial,
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            INVALID_INDEXED_FIELD,
+        ),
+    ])
+    .await;
+    let head = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?;
+    assert!(matches!(
+        server.read_body(head.stream_id).await,
+        Err(Error::HeaderBlock)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn credit_release_propagates_stream_and_connection_write_failures() {
+    for flags in [NO_FLAGS, END_STREAM] {
+        let (mut server, peer) = connection(&[
+            frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+            frame(FrameType::Data, FIRST_STREAM, flags, b"data"),
+        ])
+        .await;
+        drop(peer);
+        assert!(matches!(server.accept().await, Err(Error::Write(_))));
+    }
 }
