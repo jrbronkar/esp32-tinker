@@ -86,19 +86,6 @@ h2spec targets RFC 7540 and RFC 7541. Use RFC 9113 to assess its HTTP/2
 findings. [Upstream RFC 9113 tracking issue](https://github.com/summerwind/h2spec/issues/128). The Rust `h2` and Tonic tests cover the transport and RPC behavior
 specific to this project.
 
-### CI exceptions by case
-
-`nix run .#http2-conformance` runs all 146 default probes. The
-[case list](../../tools/http2-conformance/known-failures.txt) allows the
-following failures. Any other failed probe, skipped case, or incomplete run
-fails the check. A passing exception is reported so it can be removed.
-
-| Case | What the probe expects | Why CI allows the default run to fail |
-| --- | --- | --- |
-| `generic/3.8/1` | Accept peer GOAWAY and observe a connection close or PING ACK. | The fixture drops the socket on GOAWAY. With unread data, the peer can observe a TCP reset. Revisit during graceful shutdown work. [RFC 9113 §6.8](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.8) |
-| `http2/3.5/2` | Terminate the connection for an invalid preface. The probe accepts a protocol-error GOAWAY or a clean close. | The fixture closes and the peer can see a TCP reset. The RFC permits omitting GOAWAY for an invalid preface. [RFC 9113 §3.4](https://www.rfc-editor.org/rfc/rfc9113.html#section-3.4) |
-| `http2/7/1` | Treat GOAWAY with an unknown error code like an ordinary GOAWAY. | The same socket teardown can produce a TCP reset. Revisit alongside the ordinary GOAWAY case. [RFC 9113 §6.8](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.8), [§7](https://www.rfc-editor.org/rfc/rfc9113.html#section-7) |
-| `http2/5.3.1/1` | Signal a protocol error for a HEADERS priority dependency on the same stream. | The server skips the legacy priority fields and processes the headers. RFC 9113 deprecates the RFC 7540 dependency scheme. [RFC 9113 §5.3.2](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.3.2) |
-| `http2/5.3.1/2` | Signal a protocol error for a PRIORITY frame that depends on its own stream. | The server ignores legacy priority signals after checking frame shape. [RFC 9113 §5.3.2](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.3.2), [§6.3](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.3) |
-| `http2/6.10/1` | Accept a header block split across multiple CONTINUATION frames. | Two default 4,000-byte field values exceed the 4 KiB advertised header-list limit. CI requires this exact probe to pass separately with `--max-header-length 512`. [RFC 9113 §6.10](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.10) |
-| `http2/6.10/5` | Receive GOAWAY with `PROTOCOL_ERROR` for an extra CONTINUATION after `END_HEADERS`. | The server sends GOAWAY, but the probe can see a TCP reset before receiving it. Keep this exception until error delivery is reliable. [RFC 9113 §6.10](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.10) |
+CI checks the default suite against the documented exceptions in
+[the case list](../../tools/http2-conformance/known-failures.txt). It also
+requires the valid CONTINUATION probe to pass within the advertised limit.
