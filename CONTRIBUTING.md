@@ -29,6 +29,31 @@ Use `cargo fmt --all` to apply formatting. Host tests need neither a board nor
 Wi-Fi credentials. The standalone visualizers have their own Cargo workspaces
 and can be built with `nix build .#imu-visualizer .#soil-visualizer`.
 
+## Host coverage reports
+
+Run from the repository root. The Nix command supplies the pinned compiler
+and matching LLVM tools, runs the host tests, and prints a coverage table
+and the path to an HTML report.
+
+```sh
+nix run .#coverage
+```
+
+To measure a specific component, repeat `--source` for each source path and
+pass Cargo test selectors after the second `--`. For example, combine the
+HTTP/2 and gRPC interoperability tests while reporting the HTTP/2 sources.
+
+```sh
+nix run .#coverage -- --source crates/embedded-http2/src -- \
+  -p embedded-http2 -p espctl --test interop --test grpc_interop
+```
+
+Each run creates fresh profiles under `target/coverage-build/report.*` and
+reuses the instrumented build. Set `COVERAGE_BUILD_DIR` to use another
+directory. Host tests may require loopback access. In a PR, report the test
+suites, source scope, and metric, such as covered lines over total lines.
+List ESP32-S3 and board checks separately.
+
 ## ESP32-S3 checks
 
 Select the firmware package and target explicitly. For a build and lint check
