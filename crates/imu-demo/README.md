@@ -94,14 +94,14 @@ nix run .#imu-visualizer -- --udp
 
 ## Library and tests
 
-Sensor behavior is implemented in `src/lib.rs`, independently of the ESP32 executable. The library owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. `src/main.rs` only creates the ESP32 I²C peripheral and displays the library's results.
+The [`mpu6050` driver crate](../mpu6050) owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. The serial and Wi-Fi entry points configure the ESP32 I²C peripheral and publish the driver's readings.
 
 Firmware startup is also fallible: `main` passes hardware ownership to `run`, then handles any returned setup error in a persistent safe-state loop. Expected setup failures do not use `unwrap()` or panic. The existing `esp-backtrace` panic handler remains a final boundary for programming defects and other unexpected failures.
 
 To run the library unit tests on the Mac, use ordinary Cargo from the repository root:
 
 ```sh
-cargo test -p imu-demo --lib
+cargo test -p mpu6050 --lib
 ```
 
 ## References

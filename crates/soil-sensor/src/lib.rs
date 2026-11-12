@@ -1,7 +1,48 @@
 #![no_std]
 #![deny(missing_docs)]
 
-//! Calibration helpers for an analog capacitive soil-moisture probe.
+//! Sampling and calibration for an analog capacitive soil-moisture probe.
+
+/// ADC adapter for the ESP32-S3 demo board wiring.
+#[cfg(all(feature = "esp32s3", target_arch = "xtensa"))]
+pub mod esp32s3;
+
+/// One raw and calibrated soil-moisture sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reading {
+    /// ADC count before filtering.
+    pub raw_adc: u16,
+    /// ADC count after filtering.
+    pub filtered_adc: u16,
+    /// Relative moisture on the calibrated 0–100% scale.
+    pub moisture_percent: u8,
+}
+
+/// Holds the calibration and filter state for one probe.
+pub struct SoilSensor {
+    calibration: Calibration,
+    smoother: Smoother,
+}
+
+impl SoilSensor {
+    /// Creates a sensor with a fresh filter and probe-specific calibration.
+    pub fn new(calibration: Calibration) -> Self {
+        Self {
+            calibration,
+            smoother: Smoother::default(),
+        }
+    }
+
+    /// Filters a successful ADC sample and converts it to relative moisture.
+    pub fn sample(&mut self, raw_adc: u16) -> Reading {
+        let filtered_adc = self.smoother.update(raw_adc);
+        Reading {
+            raw_adc,
+            filtered_adc,
+            moisture_percent: self.calibration.moisture_percent(filtered_adc),
+        }
+    }
+}
 
 /// A calibration error that prevents meaningful percentage conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +139,20 @@ mod tests {
         let calibration = Calibration::new(3_000, 1_000).unwrap();
         assert_eq!(calibration.moisture_percent(4_000), 0);
         assert_eq!(calibration.moisture_percent(0), 100);
+    }
+
+    #[test]
+    fn reports_moisture_from_the_filtered_sample() {
+        let mut sensor = SoilSensor::new(Calibration::new(4_000, 2_000).unwrap());
+        assert_eq!(sensor.sample(4_000).moisture_percent, 0);
+        assert_eq!(
+            sensor.sample(2_000),
+            Reading {
+                raw_adc: 2_000,
+                filtered_adc: 3_500,
+                moisture_percent: 25,
+            }
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use esp_hal::{
     time::Rate,
 };
 use heapless::String;
-use imu_demo::{Mpu6050, ADDRESS_LOW};
+use mpu6050::{Mpu6050, ADDRESS_LOW};
 use wifi_telemetry::UdpTelemetry;
 
 pub async fn run(
@@ -41,12 +41,11 @@ pub async fn run(
         }
         logs.log(LogSeverity::Info, "MPU6050 ready");
         loop {
-            let Ok(raw) = sensor.read_raw() else {
+            let Ok(reading) = sensor.read() else {
                 logs.log(LogSeverity::Warn, "MPU6050 read failed; retrying");
                 Timer::after_secs(1).await;
                 break;
             };
-            let reading = raw.into_reading();
             let [ax, ay, az] = reading.acceleration_g;
             let [gx, gy, gz] = reading.angular_velocity_dps;
             let temperature = reading.temperature_c;

@@ -6,7 +6,6 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 use esp_hal::{
-    analog::adc::{Adc, AdcConfig, Attenuation},
     clock::CpuClock,
     ram,
     rmt::{Rmt, TxChannelConfig, TxChannelCreator},
@@ -15,7 +14,7 @@ use esp_hal::{
 use esp_println::println;
 use heapless::String;
 use onboard_rgb::{breathing_rgb, DEFAULT_BRIGHTNESS};
-use soil_sensor::{Calibration, Smoother};
+use soil_sensor::{esp32s3::SoilProbe, Calibration};
 use wifi_network::Settings;
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
@@ -53,9 +52,6 @@ async fn main(spawner: Spawner) -> ! {
     let mut telemetry = wifi_telemetry::UdpTelemetry::new(stack, destination, SOIL_UDP_PORT)
         .unwrap_or_else(|_| fatal("UDP telemetry initialization failed"));
 
-    let mut adc_config = AdcConfig::new();
-    let mut soil_pin = adc_config.enable_pin(peripherals.GPIO4, Attenuation::_11dB);
-    let mut adc = Adc::new(peripherals.ADC1, adc_config);
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
         .unwrap_or_else(|_| fatal("RGB LED clock configuration failed"));
     let led_config = TxChannelConfig::default()
@@ -69,7 +65,7 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap_or_else(|_| fatal("RGB LED channel configuration failed"));
     let calibration = Calibration::new(DRY_ADC, WATERED_ADC)
         .unwrap_or_else(|_| fatal("Soil calibration endpoints are invalid"));
-    let mut smoother = Smoother::default();
+    let mut soil = SoilProbe::new(peripherals.ADC1, peripherals.GPIO4, calibration);
     let started = Instant::now();
     let mut animation_frame = 0_u16;
     let mut sample_frame = 0_u8;
@@ -88,17 +84,16 @@ async fn main(spawner: Spawner) -> ! {
         sample_frame = sample_frame.wrapping_add(1);
         if sample_frame == 50 {
             sample_frame = 0;
-            match nb::block!(adc.read_oneshot(&mut soil_pin)) {
-                Ok(raw) => {
-                    let filtered = smoother.update(raw);
-                    moisture_percent = calibration.moisture_percent(filtered);
+            match soil.read() {
+                Ok(reading) => {
+                    moisture_percent = reading.moisture_percent;
                     let mut record = String::<96>::new();
                     if write!(
                         record,
                         "SOIL,{},{},{},{}",
                         started.elapsed().as_millis(),
-                        raw,
-                        filtered,
+                        reading.raw_adc,
+                        reading.filtered_adc,
                         moisture_percent
                     )
                     .is_ok()

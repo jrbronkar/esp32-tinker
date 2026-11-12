@@ -1,5 +1,4 @@
 use esp_hal::{
-    analog::adc::{Adc, AdcConfig, Attenuation},
     delay::Delay,
     main,
     rmt::{Rmt, TxChannelConfig, TxChannelCreator},
@@ -7,7 +6,7 @@ use esp_hal::{
 };
 use esp_println::println;
 use onboard_rgb::{breathing_rgb, DEFAULT_BRIGHTNESS};
-use soil_sensor::{Calibration, Smoother};
+use soil_sensor::{esp32s3::SoilProbe, Calibration};
 
 // These provisional endpoints came from this probe. Replace DRY_ADC with the
 // stable value observed at the soil dryness where watering should begin.
@@ -17,10 +16,6 @@ const WATERED_ADC: u16 = 3425;
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    // GPIO4 samples the probe's analog output through ADC1.
-    let mut adc_config = AdcConfig::new();
-    let mut soil_pin = adc_config.enable_pin(peripherals.GPIO4, Attenuation::_11dB);
-    let mut adc = Adc::new(peripherals.ADC1, adc_config);
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
         .unwrap_or_else(|_| fatal("RGB LED clock configuration failed"));
     let led_config = TxChannelConfig::default()
@@ -35,7 +30,7 @@ fn main() -> ! {
     let delay = Delay::new();
     let calibration = Calibration::new(DRY_ADC, WATERED_ADC)
         .unwrap_or_else(|_| fatal("Soil calibration endpoints are invalid"));
-    let mut smoother = Smoother::default();
+    let mut soil = SoilProbe::new(peripherals.ADC1, peripherals.GPIO4, calibration);
     let started = Instant::now();
     let mut animation_frame = 0_u16;
     let mut sample_frame = 0_u8;
@@ -59,15 +54,14 @@ fn main() -> ! {
         sample_frame = sample_frame.wrapping_add(1);
         if sample_frame == 50 {
             sample_frame = 0;
-            match nb::block!(adc.read_oneshot(&mut soil_pin)) {
-                Ok(raw) => {
-                    let filtered = smoother.update(raw);
-                    moisture_percent = calibration.moisture_percent(filtered);
+            match soil.read() {
+                Ok(reading) => {
+                    moisture_percent = reading.moisture_percent;
                     println!(
                         "SOIL,{},{},{},{}",
                         started.elapsed().as_millis(),
-                        raw,
-                        filtered,
+                        reading.raw_adc,
+                        reading.filtered_adc,
                         moisture_percent
                     );
                 }

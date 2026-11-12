@@ -493,7 +493,7 @@ dependencies = [
  "esp-println",
  "esp-rtos",
  "heapless 0.8.0",
- "imu-demo",
+ "mpu6050",
  "onboard-rgb",
  "static_cell",
  "wifi-network",
@@ -1694,7 +1694,6 @@ version = "0.1.0"
 dependencies = [
  "embassy-executor",
  "embassy-time",
- "embedded-hal 1.0.0",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
@@ -1702,6 +1701,7 @@ dependencies = [
  "esp-println",
  "esp-rtos",
  "heapless 0.8.0",
+ "mpu6050",
  "onboard-rgb",
  "wifi-network",
  "wifi-telemetry",
@@ -1943,6 +1943,13 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mpu6050"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 1.0.0",
 ]
 
 [[package]]
@@ -2644,7 +2651,6 @@ dependencies = [
  "esp-println",
  "esp-rtos",
  "heapless 0.8.0",
- "nb 1.1.0",
  "onboard-rgb",
  "soil-sensor",
  "wifi-network",
@@ -2654,6 +2660,10 @@ dependencies = [
 [[package]]
 name = "soil-sensor"
 version = "0.1.0"
+dependencies = [
+ "esp-hal",
+ "nb 1.1.0",
+]
 
 [[package]]
 name = "somni-expr"

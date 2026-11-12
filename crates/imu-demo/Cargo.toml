@@ -9,7 +9,7 @@ default = []
 wifi = ["dep:embassy-executor", "dep:embassy-time", "dep:esp-alloc", "dep:esp-rtos", "dep:heapless", "dep:wifi-telemetry", "dep:wifi-network"]
 
 [dependencies]
-embedded-hal = "1.0.0"
+mpu6050 = { path = "../mpu6050" }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 esp-backtrace = { version = "0.19.0", features = ["esp32s3", "panic-handler", "println"] }

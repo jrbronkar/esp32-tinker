@@ -9,7 +9,7 @@ use esp_hal::{
     time::{Instant, Rate},
 };
 use esp_println::println;
-use imu_demo::{Error as SensorError, Mpu6050, ADDRESS_LOW};
+use mpu6050::{Error as SensorError, Mpu6050, ADDRESS_LOW};
 use onboard_rgb::breathing_green;
 
 #[derive(Debug)]
@@ -58,9 +58,8 @@ fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
     let telemetry_started = Instant::now();
     let mut animation_frame = 0_u16;
     loop {
-        match sensor.read_raw() {
-            Ok(raw) => {
-                let reading = raw.into_reading();
+        match sensor.read() {
+            Ok(reading) => {
                 println!(
                     "IMU,{},{:.5},{:.5},{:.5},{:.3},{:.3},{:.3},{:.2}",
                     telemetry_started.elapsed().as_millis(),
