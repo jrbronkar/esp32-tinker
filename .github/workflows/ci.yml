@@ -40,6 +40,6 @@ jobs:
           WIFI_PASSWORD: build-check
         run: |
           nix develop --command bash -euo pipefail -c '
-            cargo clippy --locked --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc -p device-demo -p embedded-http2 -- -D warnings
+            cargo clippy --locked --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc -p device-demo -p embedded-http2 -p management-grpc -- -D warnings
             cargo build --locked --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
           '

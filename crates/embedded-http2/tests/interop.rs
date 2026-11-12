@@ -57,6 +57,11 @@ async fn h2_client_exchanges_headers_data_and_trailers_over_tcp() {
                 assert_eq!(request.stream_id, expected_id);
                 assert!(request.headers.contains(&field(":path", "/echo")));
                 assert_eq!(request.body, b"hello");
+                if expected_id == 1 {
+                    assert_eq!(request.trailers, [field("x-request-end", "yes")]);
+                } else {
+                    assert!(request.trailers.is_empty());
+                }
                 server
                     .respond(
                         request.stream_id,
@@ -83,12 +88,18 @@ async fn h2_client_exchanges_headers_data_and_trailers_over_tcp() {
             .unwrap();
         let driver = tokio::spawn(connection);
 
-        for _ in 0..2 {
+        for with_trailers in [true, false] {
             client = client.ready().await.unwrap();
             let request = Request::post("http://localhost/echo").body(()).unwrap();
             let (response, mut send) = client.send_request(request, false).unwrap();
             send.send_data(Bytes::from_static(b"he"), false).unwrap();
-            send.send_data(Bytes::from_static(b"llo"), true).unwrap();
+            send.send_data(Bytes::from_static(b"llo"), !with_trailers)
+                .unwrap();
+            if with_trailers {
+                let mut trailers = http::HeaderMap::new();
+                trailers.insert("x-request-end", "yes".parse().unwrap());
+                send.send_trailers(trailers).unwrap();
+            }
 
             let response = response.await.unwrap();
             assert_eq!(response.status(), 200);

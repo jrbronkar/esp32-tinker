@@ -10,6 +10,8 @@ members = [
     "crates/hello-world",
     "crates/imu-demo",
     "crates/embedded-http2",
+    "crates/embedded-grpc",
+    "crates/management-grpc",
     "crates/mpu6050",
     "crates/onboard-rgb",
     "crates/rgb-demo",
@@ -28,6 +30,8 @@ members = [
 # Firmware packages are selected explicitly with -p and the Xtensa target.
 default-members = [
     "crates/embedded-http2",
+    "crates/embedded-grpc",
+    "crates/management-grpc",
     "crates/mpu6050",
     "crates/soil-sensor",
     "crates/device-grpc",

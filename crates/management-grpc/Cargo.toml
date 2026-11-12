@@ -1,0 +1,12 @@
+[package]
+name = "management-grpc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embedded-grpc = { path = "../embedded-grpc" }
+ota-protocol = { path = "../ota-protocol" }
+
+[build-dependencies]
+protobuf-parse = "3.7"

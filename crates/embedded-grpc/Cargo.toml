@@ -1,0 +1,10 @@
+[package]
+name = "embedded-grpc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embedded-http2 = { path = "../embedded-http2" }
+heapless = "0.8"
+micropb = { version = "=0.6.0", default-features = false, features = ["container-heapless-0-8", "encode", "decode"] }

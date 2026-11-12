@@ -18,6 +18,9 @@ mdns-sd = "0.21"
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
+embedded-http2 = { path = "../../crates/embedded-http2" }
+embedded-io-adapters = { version = "0.7", features = ["tokio-1"] }
+management-grpc = { path = "../../crates/management-grpc" }
 device-grpc = { path = "../../crates/device-grpc" }
 embassy-futures = "0.1"
 protolink = { path = "../../vendor/protolink/protolink", default-features = false, features = ["tokio"] }
