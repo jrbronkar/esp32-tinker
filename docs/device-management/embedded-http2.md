@@ -1,8 +1,8 @@
-# Embedded HTTP/2 request streaming
+# Embedded HTTP/2 streaming
 
 The replacement transport currently supports one active stream per connection.
-Requests can be read frame by frame. Responses are buffered and sent after the
-request half-closes. The production endpoint still uses Protolink.
+Requests and responses can transfer one frame at a time. The production
+endpoint still uses Protolink.
 
 ## Reading a request
 
@@ -24,8 +24,24 @@ connection credit before reporting the reset so the next request can proceed.
 [RFC 9113 §6.1](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.1),
 [RFC 9113 §6.9](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.9).
 
+## Sending a response
+
+1. Call `start_response` to send response headers. The peer can keep sending
+   request DATA while the server sends response DATA.
+2. Call `send_data` with the remaining response bytes. It sends at most one
+   frame, bounded by both send windows and the frame limit. Advance the cursor
+   by the returned byte count.
+3. If a nonempty slice sends zero bytes, call `wait_send_capacity`. Retry the
+   write on `Ready`. If it yields `RequestBody`, process the frame and release
+   any consumed DATA credit before waiting again.
+4. After the request half-closes, call `finish_response` to send trailers or an
+   empty DATA frame with `END_STREAM`.
+
 A DATA slice can contain part of a gRPC message or several messages. The gRPC
-layer will assemble messages across DATA boundaries. `Upload` also needs incremental responses so the server can
-send an ACK while the client keeps its request open. Concurrent `Logs` and
-`Upload` on one connection require multiplexing. [gRPC over HTTP/2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md),
+layer will assemble messages across DATA boundaries. Incremental responses let
+`Upload` send ACKs while the request is open. Concurrent `Logs` and `Upload`
+on one connection require multiplexing.
+[RFC 9113 §5.1](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.1),
+[RFC 9113 §6.9](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.9),
+[gRPC over HTTP/2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md),
 [OTA protocol](../ota/protocol.md).

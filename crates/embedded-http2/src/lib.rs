@@ -4,8 +4,8 @@
 //! A cleartext HTTP/2 server connection for embedded async I/O.
 //!
 //! Supports one active stream per connection. Requests can be read
-//! incrementally or buffered within a fixed limit. Responses are buffered
-//! and may include trailers.
+//! incrementally or buffered within a fixed limit. Responses can send DATA
+//! before the request half-closes and may include trailers.
 //! Drop the connection on an error other than a reported stream reset, or
 //! if an I/O future is canceled partway through a frame.
 
@@ -13,12 +13,13 @@ extern crate alloc;
 
 mod headers;
 mod request;
+mod response;
 pub mod service;
 
 pub use request::{BodyFrame, RequestHead};
+pub use response::SendEvent;
 
 use alloc::{vec, vec::Vec};
-use core::cmp::min;
 
 use embedded_io_async::{Read, ReadExactError, Write};
 use zerodds_hpack::{Decoder, Encoder};
@@ -34,6 +35,7 @@ pub use zerodds_hpack::HeaderField;
 
 // The first server slice buffers complete bodies up to this local limit.
 const MAX_BODY: usize = 16 * 1024;
+const NO_FLAGS: u8 = 0;
 
 // RFC 9113 section 4.1 defines a 31-bit stream identifier.
 const STREAM_ID_MASK: u32 = 0x7fff_ffff;
@@ -85,6 +87,7 @@ struct Stream {
     send: FlowControl,
     receive: FlowControl,
     remote_closed: bool,
+    response_started: bool,
     pending_receive_credit: u32,
 }
 
@@ -144,73 +147,6 @@ impl<Io: Read + Write> Server<Io> {
         }
         server.control(first).await?;
         Ok(server)
-    }
-
-    /// Send response headers, bounded DATA, then trailers when supplied.
-    pub async fn respond(
-        &mut self,
-        stream_id: StreamId,
-        response: Response<'_>,
-    ) -> Result<(), Error<Io::Error>> {
-        if !self
-            .stream
-            .as_ref()
-            .is_some_and(|s| s.id == stream_id && s.remote_closed)
-        {
-            return Err(Error::Protocol);
-        }
-        if response.body.len() > MAX_BODY {
-            return Err(Error::BodyLimit);
-        }
-        let head = self.encode_headers(response.headers)?;
-        let trailers = if response.trailers.is_empty() {
-            None
-        } else {
-            Some(self.encode_headers(response.trailers)?)
-        };
-
-        self.release_capacity(stream_id).await?;
-        let end_in_headers = response.body.is_empty() && trailers.is_none();
-        let flags = Flags::END_HEADERS | if end_in_headers { Flags::END_STREAM } else { 0 };
-        self.write_frame(FrameType::Headers, stream_id, flags, &head)
-            .await?;
-
-        let mut body = response.body;
-        while !body.is_empty() {
-            let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
-            let window = min(self.connection_send.window(), stream.send.window());
-            if window <= 0 {
-                let frame = self.read_frame().await?;
-                self.control(frame).await?;
-                continue;
-            }
-            let len = body
-                .len()
-                .min(window as usize)
-                .min(DEFAULT_MAX_FRAME_SIZE as usize);
-            let flags = if len == body.len() && trailers.is_none() {
-                Flags::END_STREAM
-            } else {
-                0
-            };
-            self.connection_send.consume(len as u32)?;
-            stream.send.consume(len as u32)?;
-            self.write_frame(FrameType::Data, stream_id, flags, &body[..len])
-                .await?;
-            body = &body[len..];
-        }
-
-        if let Some(trailers) = trailers {
-            self.write_frame(
-                FrameType::Headers,
-                stream_id,
-                Flags::END_HEADERS | Flags::END_STREAM,
-                &trailers,
-            )
-            .await?;
-        }
-        self.stream = None;
-        Ok(())
     }
 
     async fn read_frame(&mut self) -> Result<Frame, Error<Io::Error>> {

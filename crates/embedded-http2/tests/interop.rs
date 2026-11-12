@@ -2,7 +2,7 @@
 mod protocol;
 
 use bytes::Bytes;
-use embedded_http2::{Error, HeaderField, Response, Server};
+use embedded_http2::{BodyFrame, Error, HeaderField, Response, SendEvent, Server};
 use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_io_async::{ErrorType, Read, Write};
 use http::Request;
@@ -187,4 +187,129 @@ async fn h2_client_reset_interrupts_a_blocked_response() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn h2_client_receives_ack_before_request_closes() -> Result<(), Box<dyn std::error::Error>> {
+    const FIRST_OPERATION: &[u8] = b"first";
+    const NEXT_OPERATION: &[u8] = b"next";
+    const ACK_PREFIX: &[u8] = b"ac";
+    const ACK_SUFFIX: &[u8] = b"k!";
+    const ACK: &[u8] = b"ack!";
+    const GRPC_OK: &str = "0";
+    const DUPLEX_BUFFER: usize = 4096;
+
+    timeout(Duration::from_secs(5), async {
+        let (peer, socket) = tokio::io::duplex(DUPLEX_BUFFER);
+        let (observed_body, body_observed) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut server = Server::handshake(FromTokio::new(socket))
+                .await
+                .map_err(transport_error)?;
+            let head = server.accept_head().await.map_err(transport_error)?;
+            let id = head.stream_id;
+            assert!(!head.end_stream);
+            assert!(matches!(
+                server.read_body(id).await.map_err(transport_error)?,
+                Some(BodyFrame::Data(bytes)) if bytes == FIRST_OPERATION
+            ));
+            server.release_capacity(id).await.map_err(transport_error)?;
+            server
+                .start_response(
+                    id,
+                    &[
+                        field(":status", "200"),
+                        field("content-type", "application/grpc"),
+                    ],
+                )
+                .await
+                .map_err(transport_error)?;
+            assert_eq!(
+                server.send_data(id, ACK).await.map_err(transport_error)?,
+                ACK_PREFIX.len()
+            );
+            assert_eq!(
+                server
+                    .send_data(id, ACK_SUFFIX)
+                    .await
+                    .map_err(transport_error)?,
+                0
+            );
+            assert!(matches!(
+                server.wait_send_capacity(id).await.map_err(transport_error)?,
+                SendEvent::RequestBody(BodyFrame::Data(bytes)) if bytes == NEXT_OPERATION
+            ));
+            server.release_capacity(id).await.map_err(transport_error)?;
+            observed_body
+                .send(())
+                .map_err(|()| "client stopped waiting")?;
+            assert!(matches!(
+                server
+                    .wait_send_capacity(id)
+                    .await
+                    .map_err(transport_error)?,
+                SendEvent::Ready
+            ));
+            assert_eq!(
+                server
+                    .send_data(id, ACK_SUFFIX)
+                    .await
+                    .map_err(transport_error)?,
+                ACK_SUFFIX.len()
+            );
+
+            assert!(matches!(
+                server.read_body(id).await.map_err(transport_error)?,
+                Some(BodyFrame::Trailers(fields)) if fields == [field("x-upload-end", "yes")]
+            ));
+            assert!(
+                server
+                    .read_body(id)
+                    .await
+                    .map_err(transport_error)?
+                    .is_none()
+            );
+            server
+                .finish_response(id, &[field("grpc-status", GRPC_OK)])
+                .await
+                .map_err(transport_error)
+        });
+
+        let (mut client, connection) = h2::client::Builder::new()
+            .initial_window_size(ACK_PREFIX.len() as u32)
+            .handshake::<_, Bytes>(peer)
+            .await?;
+        let driver = tokio::spawn(connection);
+        let request = Request::post("http://localhost/test.Upload/Upload").body(())?;
+        let (reply, mut send) = client.send_request(request, false)?;
+        send.send_data(Bytes::from_static(FIRST_OPERATION), false)?;
+
+        let reply = reply.await?;
+        assert_eq!(reply.status(), http::StatusCode::OK);
+        let mut body = reply.into_body();
+        let prefix = body.data().await.ok_or("missing ACK prefix")??;
+        assert_eq!(prefix.as_ref(), ACK_PREFIX);
+
+        // The server must receive this frame even while its send window is full.
+        send.send_data(Bytes::from_static(NEXT_OPERATION), false)?;
+        body_observed.await?;
+        body.flow_control().release_capacity(prefix.len())?;
+        let suffix = body.data().await.ok_or("missing ACK suffix")??;
+        assert_eq!(suffix.as_ref(), ACK_SUFFIX);
+
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert("x-upload-end", http::HeaderValue::from_static("yes"));
+        send.send_trailers(trailers)?;
+        assert!(body.data().await.is_none());
+        let trailers = body.trailers().await?.ok_or("missing gRPC status")?;
+        assert_eq!(trailers["grpc-status"], GRPC_OK);
+        server.await??;
+        driver.abort();
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await?
+}
+
+fn transport_error(error: Error<std::io::Error>) -> String {
+    format!("{error:?}")
 }
