@@ -1,0 +1,17 @@
+[package]
+name = "embedded-http2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+embedded-io-async = "0.7"
+zerodds-http2 = { version = "=1.0.0-rc.7", default-features = false, features = ["alloc"] }
+zerodds-hpack = { version = "=1.0.0-rc.7", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+bytes = "1"
+embedded-io-adapters = { version = "0.7", features = ["tokio-1"] }
+h2 = "0.4"
+http = "1"
+tokio = { version = "1", features = ["macros", "net", "rt", "time"] }

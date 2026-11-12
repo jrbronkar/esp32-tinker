@@ -851,6 +851,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-http2"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "embedded-io-adapters",
+ "embedded-io-async 0.7.0",
+ "h2",
+ "http",
+ "tokio",
+ "zerodds-hpack",
+ "zerodds-http2",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
