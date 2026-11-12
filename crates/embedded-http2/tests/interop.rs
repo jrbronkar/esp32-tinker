@@ -1,3 +1,6 @@
+#[path = "support/protocol.rs"]
+mod protocol;
+
 use bytes::Bytes;
 use embedded_http2::{Error, HeaderField, Response, Server};
 use embedded_io_adapters::tokio_1::FromTokio;
