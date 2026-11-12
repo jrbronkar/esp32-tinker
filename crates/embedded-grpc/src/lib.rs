@@ -162,14 +162,17 @@ pub struct UnaryResponse(Vec<u8>);
 
 impl UnaryResponse {
     pub fn encode<M: MessageEncode, const MAX: usize>(message: M) -> Result<Self, Status> {
-        let mut encoder = PbEncoder::new(heapless::Vec::<u8, MAX>::new());
+        let mut buffer = [0; MAX];
+        let mut encoder = PbEncoder::new(buffer.as_mut_slice());
         message.encode(&mut encoder).map_err(|_| Status::Internal)?;
-        let bytes = encoder.into_writer();
-        let len = u32::try_from(bytes.len()).map_err(|_| Status::Internal)?;
+        // The slice writer advances past the encoded bytes on every write.
+        let written = MAX - encoder.into_writer().len();
+        let bytes = &buffer[..written];
+        let len = u32::try_from(written).map_err(|_| Status::Internal)?;
         let mut body = Vec::with_capacity(ENVELOPE_LEN + bytes.len());
         body.push(0);
         body.extend_from_slice(&len.to_be_bytes());
-        body.extend_from_slice(&bytes);
+        body.extend_from_slice(bytes);
         Ok(Self(body))
     }
 }
