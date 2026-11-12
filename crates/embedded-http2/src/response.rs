@@ -159,6 +159,7 @@ impl<Io: Read + Write> Server<Io> {
         if trailers.is_empty() {
             Ok(None)
         } else {
+            crate::request_fields::check_trailers(trailers).map_err(|_| Error::Protocol)?;
             self.encode_headers(trailers).map(Some)
         }
     }

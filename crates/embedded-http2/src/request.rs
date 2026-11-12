@@ -1,13 +1,15 @@
 use alloc::vec::Vec;
-use core::mem;
+use core::{mem, ops::Range};
 
 use embedded_io_async::{Read, Write};
 use zerodds_http2::{
-    Flags, FrameType, StreamId, flow::encode_window_update, stream::is_client_initiated,
+    ErrorCode, Flags, FrameType, StreamId, flow::encode_window_update, stream::is_client_initiated,
 };
 
 use crate::{
-    Error, FlowControl, HeaderField, MAX_BODY, NO_FLAGS, Request, Server, Stream, strip_padding,
+    Error, FlowControl, HeaderField, MAX_BODY, NO_FLAGS, Request, Server, Stream,
+    request_fields::{RequestLength, check_trailers},
+    strip_padding,
 };
 
 const CONNECTION_STREAM_ID: StreamId = 0;
@@ -28,7 +30,7 @@ pub enum BodyFrame<'a> {
 }
 
 pub(super) enum ReceivedBody {
-    Data(Flags),
+    Data(Range<usize>),
     Trailers(Vec<HeaderField>),
 }
 
@@ -50,6 +52,10 @@ impl<Io: Read + Write> Server<Io> {
 
             let headers = self.read_headers(&frame).await?;
             let end_stream = frame.flags.has(Flags::END_STREAM);
+            let request_length = match RequestLength::parse(&headers) {
+                Ok(length) if !end_stream || length.finish().is_ok() => length,
+                _ => return self.reject_malformed_request(frame.stream_id).await,
+            };
             self.last_stream = frame.stream_id;
             self.stream = Some(Stream {
                 id: frame.stream_id,
@@ -58,6 +64,7 @@ impl<Io: Read + Write> Server<Io> {
                 remote_closed: end_stream,
                 response_started: false,
                 pending_receive_credit: 0,
+                request_length,
             });
             return Ok(RequestHead {
                 stream_id: frame.stream_id,
@@ -105,14 +112,19 @@ impl<Io: Read + Write> Server<Io> {
                     return Err(Error::Protocol);
                 }
                 let trailers = self.read_headers(&frame).await?;
-                if trailers.iter().any(|field| field.name.starts_with(':')) {
-                    return Err(Error::Protocol);
+                check_trailers(&trailers).map_err(|_| Error::Protocol)?;
+                let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
+                if stream.request_length.finish().is_err() {
+                    return self.reject_malformed_request(stream_id).await;
                 }
-                self.stream.as_mut().ok_or(Error::Protocol)?.remote_closed = true;
+                stream.remote_closed = true;
                 Ok(Some(ReceivedBody::Trailers(trailers)))
             }
             Ok(FrameType::Data) => {
                 self.require_open_body(stream_id, frame.stream_id)?;
+                let data = strip_padding(&self.payload, frame.flags).ok_or(Error::Protocol)?;
+                let data_start = usize::from(frame.flags.has(Flags::PADDED));
+                let data_range = data_start..data_start + data.len();
                 let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
                 // RFC 9113 §6.1 charges the whole DATA payload, including padding.
                 let credit = self.payload.len() as u32;
@@ -120,14 +132,30 @@ impl<Io: Read + Write> Server<Io> {
                 stream.receive.consume(credit)?;
                 // The receive window bounds the accumulated credit.
                 stream.pending_receive_credit += credit;
+                if stream.request_length.consume(data.len()).is_err()
+                    || (end_stream && stream.request_length.finish().is_err())
+                {
+                    return self.reject_malformed_request(stream_id).await;
+                }
                 stream.remote_closed = end_stream;
-                Ok(Some(ReceivedBody::Data(frame.flags)))
+                Ok(Some(ReceivedBody::Data(data_range)))
             }
             _ => {
                 self.control(frame).await?;
                 Ok(None)
             }
         }
+    }
+
+    async fn reject_malformed_request<T>(
+        &mut self,
+        stream_id: StreamId,
+    ) -> Result<T, Error<Io::Error>> {
+        // RFC 9113 §8.1.1 specifies a stream error for malformed messages.
+        let code = (ErrorCode::ProtocolError as u32).to_be_bytes();
+        self.write_frame(FrameType::RstStream, stream_id, NO_FLAGS, &code)
+            .await?;
+        Err(Error::MalformedRequest)
     }
 
     fn require_open_body(
@@ -152,7 +180,9 @@ impl<Io: Read + Write> Server<Io> {
         frame: ReceivedBody,
     ) -> Result<BodyFrame<'_>, Error<Io::Error>> {
         match frame {
-            ReceivedBody::Data(flags) => strip_padding(&self.payload, flags)
+            ReceivedBody::Data(range) => self
+                .payload
+                .get(range)
                 .map(BodyFrame::Data)
                 .ok_or(Error::Protocol),
             ReceivedBody::Trailers(trailers) => Ok(BodyFrame::Trailers(trailers)),
