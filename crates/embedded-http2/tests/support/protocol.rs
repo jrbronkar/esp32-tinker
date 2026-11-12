@@ -341,3 +341,104 @@ async fn reports_goaway_after_a_peer_resets_the_request() {
     ));
     assert!(matches!(server.accept().await, Err(Error::Closed)));
 }
+
+#[tokio::test]
+async fn reports_disconnect_during_frame_header_or_continuation() {
+    let partial_header = frame(FrameType::Ping, 0, 0, &[0; 8]);
+    for frames in [
+        vec![partial_header[..4].to_vec()],
+        vec![frame(FrameType::Headers, 1, END_STREAM, REQUEST)],
+    ] {
+        let (mut server, _peer) = connection(&frames).await;
+        assert!(matches!(server.accept().await, Err(Error::Read(_))));
+    }
+}
+
+#[tokio::test]
+async fn reports_disconnect_while_sending_a_response() {
+    for window in [0, 1024] {
+        let (mut server, peer) = connection(&[
+            frame(
+                FrameType::Settings,
+                0,
+                0,
+                &encode_settings(&[Setting {
+                    id: SettingId::InitialWindowSize,
+                    value: window,
+                }]),
+            ),
+            frame(FrameType::Headers, 1, END_HEADERS | END_STREAM, REQUEST),
+        ])
+        .await;
+        let request = server.accept().await.unwrap();
+        // With a zero send window, keep the read half open so the server can
+        // send headers before discovering EOF while waiting for credit.
+        let peer = if window == 0 {
+            Some(peer)
+        } else {
+            drop(peer);
+            None
+        };
+        let response = Response {
+            headers: &[HeaderField {
+                name: ":status".into(),
+                value: "200".into(),
+            }],
+            body: b"response",
+            trailers: &[],
+        };
+        let result = server.respond(request.stream_id, response).await;
+        assert!(if window == 0 {
+            matches!(result, Err(Error::Read(_)))
+        } else {
+            matches!(result, Err(Error::Write(_)))
+        });
+        drop(peer);
+    }
+}
+
+#[tokio::test]
+async fn honors_the_peers_header_list_limit_for_trailers() {
+    let (mut server, mut peer) = connection(&[
+        frame(
+            FrameType::Settings,
+            0,
+            0,
+            &encode_settings(&[Setting {
+                id: SettingId::MaxHeaderListSize,
+                value: 64,
+            }]),
+        ),
+        frame(FrameType::Headers, 1, END_HEADERS | END_STREAM, REQUEST),
+    ])
+    .await;
+    let request = server.accept().await.unwrap();
+    let response = Response {
+        headers: &[HeaderField {
+            name: ":status".into(),
+            value: "200".into(),
+        }],
+        body: b"response",
+        trailers: &[HeaderField {
+            name: "x-result".into(),
+            value: "x".repeat(64),
+        }],
+    };
+    assert!(matches!(
+        server.respond(request.stream_id, response).await,
+        Err(Error::HeaderBlock)
+    ));
+    drop(server);
+    let mut output = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut peer, &mut output)
+        .await
+        .unwrap();
+    let (settings, consumed) =
+        zerodds_http2::decode_frame(&output, DEFAULT_MAX_FRAME_SIZE).unwrap();
+    assert_eq!(settings.header.frame_type, FrameType::Settings);
+    let ack = frame(FrameType::Settings, 0, Flags::ACK, &[]);
+    assert_eq!(
+        &output[consumed..],
+        [ack.as_slice(), ack.as_slice()].concat()
+    );
+}
