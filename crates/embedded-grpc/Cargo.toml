@@ -9,3 +9,11 @@ embedded-http2 = { path = "../embedded-http2" }
 embedded-io-async = "0.7"
 heapless = "0.8"
 micropb = { version = "=0.6.0", default-features = false, features = ["container-heapless-0-8", "encode", "decode"] }
+
+[dev-dependencies]
+bytes = "1"
+embedded-io-adapters = { version = "0.7", features = ["tokio-1"] }
+h2 = "0.4"
+http = "1"
+ota-protocol = { path = "../ota-protocol" }
+tokio = { version = "1", features = ["io-util", "macros", "rt", "time"] }

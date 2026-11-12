@@ -829,10 +829,16 @@ dependencies = [
 name = "embedded-grpc"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "embedded-http2",
+ "embedded-io-adapters",
  "embedded-io-async 0.7.0",
+ "h2",
  "heapless 0.8.0",
+ "http",
  "micropb",
+ "ota-protocol",
+ "tokio",
 ]
 
 [[package]]
