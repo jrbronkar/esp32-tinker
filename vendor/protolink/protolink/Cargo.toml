@@ -15,8 +15,8 @@ rust-version = "1.88"
 protolink-grpc = { version = "0", path = "../protolink-grpc", default-features = false }
 embedded-io-async = { version = "0.7", optional = true }
 embedded-io = { version = "0.7", optional = true }
-cobs-io-async = { version = "0.0.4", default-features = false, optional = true }
-arq-io-async = { version = "0.0.3", default-features = false, optional = true }
+cobs-io-async = { version = "0.0.4", path = "../cobs-io-async", default-features = false, optional = true }
+arq-io-async = { version = "0.0.3", path = "../arq-io-async", default-features = false, optional = true }
 crc = { version = "3.4", optional = true }
 embedded-io-adapters = { version = "0.7", features = ["tokio-1"], optional = true }
 tokio = { version = "1", default-features = false, optional = true }
