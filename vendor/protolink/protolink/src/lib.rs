@@ -1,3 +1,5 @@
+// Modified by esp32-tinker to remove the unused COBS and ARQ transport.
+
 //! # Protolink
 //!
 //! Protolink is a gRPC framework that unifies embedded transports, framing,
@@ -11,7 +13,6 @@
 //! gRPC         ── protolink-grpc   (re-exported as `protolink::grpc`)
 //! HTTP/2       ── protolink-http2  (on zerodds-http2 + zerodds-hpack)
 //! drivers      ── this crate: async / blocking / tokio I/O loops
-//! link         ── this crate: COBS framing + ARQ reliability (optional)
 //! transport    ── anything implementing embedded-io(-async) or tokio I/O
 //! ```
 //!
@@ -59,10 +60,6 @@
 //! - `tokio`: [`tokio`] factories adapting tokio I/O to the async drivers.
 //! - Deadlines: [`Timer`] / [`Clock`] let the drivers enforce `grpc-timeout`;
 //!   see below.
-//! - `std`: `std` support in dependencies, including a default ARQ
-//!   retransmission timer for [`link::reliable`] ([`link::StdTimer`]). Without
-//!   it, supply a platform timer with
-//!   [`with_retransmission_timer`](link::ReliableBuilder::with_retransmission_timer).
 //!
 //! An allocator is always required (`no_std + alloc`).
 //!
@@ -101,8 +98,7 @@
 //! expired locally. With a timer the transport `read` must be cancel-safe,
 //! even without streaming: a pending read is dropped when a deadline is
 //! reached. A unary handler that is already running can't be preempted; it
-//! can check [`CallContext::remaining`]. [`Timer`] is unrelated to
-//! `link::Timer`, the ARQ retransmission timer.
+//! can check [`CallContext::remaining`].
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -131,8 +127,7 @@ pub use error::Error;
 mod asynch;
 #[cfg(feature = "async")]
 pub use asynch::{
-    Call, Client, ClientBuilder, Server, ServerBuilder, client, client_reliable, client_split,
-    server, server_reliable, server_split,
+    Call, Client, ClientBuilder, Server, ServerBuilder, client, client_split, server, server_split,
 };
 #[cfg(feature = "async")]
 mod coordinator;
@@ -144,15 +139,12 @@ pub mod driver;
 #[cfg(feature = "async")]
 mod mode;
 #[cfg(feature = "async")]
-pub use mode::{CoordinatedReliable, Duplex, Mode, Serial};
+pub use mode::{Duplex, Mode, Serial};
 /// Interior mutability of the async drivers. Named by [`Mode`](crate::Mode);
 /// not part of the API.
 #[doc(hidden)]
 #[cfg(feature = "async")]
 pub mod shared;
-
-#[cfg(feature = "async")]
-pub mod link;
 
 #[cfg(feature = "blocking")]
 pub mod blocking;

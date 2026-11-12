@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
 exclude = [
-    "vendor/protolink/arq-io-async",
-    "vendor/protolink/cobs-io-async",
     "vendor/protolink/protolink",
     "vendor/protolink/protolink-grpc",
     "vendor/protolink/protolink-grpc-gen",

@@ -28,8 +28,9 @@ copyright notices in the included files.
 We include the library and code generator sources used by this workspace.
 Upstream integration tests, test-only dependencies, and unrelated crates
 are omitted. Local manifest edits remove the omitted test dependencies
-and redirect two dependencies to the local copies described below. The
-Rust sources are unchanged.
+and drop the COBS and ARQ dependencies. The Protolink driver sources
+remove the alternate reliable-link transport and its tests. The TCP
+drivers, gRPC runtime, HTTP/2 runtime, and code generator are retained.
 
 ## ZeroDDS attribution
 
@@ -48,21 +49,17 @@ that contains this code.
 The [crates.io index](https://github.com/rust-lang/crates.io-index/commit/3b9d773372f813479eddf7145c775cc7f353f603)
 records the deletion without a reason. A November 11, 2026 search of the
 [RustSec advisory database](https://github.com/RustSec/advisory-db) found
-no entries mentioning the six crate names or the upstream account
+no entries mentioning the four Protolink crates, COBS, ARQ, or the upstream account
 `thives`. A search of [GitHub's public DMCA notices](https://github.com/github/dmca)
 found no matching notice. These searches leave the reason for removal
 unknown.
 
 ## COBS and ARQ dependencies
 
-Protolink's async feature resolves `cobs-io-async` and `arq-io-async`.
-Their crates.io index entries were deleted on November 10, 2026. We
-vendored the exact published archives from the local Cargo cache after
-matching their SHA-256 checksums to the previous `Cargo.lock`. Both
-declare `MIT OR Apache-2.0`. Each directory retains its upstream license
-files and source notices. The imported Rust files are unchanged. Local
-manifest edits point Protolink to these copies and omit upstream
-benchmark targets and dev-dependencies.
+Upstream Protolink bundles COBS framing and ARQ retransmission into its
+async feature. Firmware and host tests use TCP, so this copy omits that
+alternate transport and its dependencies. Their crates.io index entries
+were deleted on November 10, 2026.
 
 | Crate | Original GitHub repository | Original crates.io release | Index deletion |
 | --- | --- | --- | --- |

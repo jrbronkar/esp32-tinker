@@ -1,9 +1,10 @@
+// Modified by esp32-tinker to remove the unused COBS and ARQ transport.
+
 //! Async drivers over `embedded_io_async`.
 //!
 //! A driver is built over a [`Mode`]: [`Serial`] for one transport read and
-//! written in turn, [`Duplex`] for independent halves, or
-//! [`CoordinatedReliable`] for a reliable link. The same protocol code runs in
-//! every mode; only the workers that move bytes differ.
+//! written in turn or [`Duplex`] for independent halves. Both modes share the
+//! same protocol code and use different I/O workers.
 
 use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
@@ -21,8 +22,7 @@ use crate::grpc::{
     self, CallId, CallOptions, ClientConfig, Handler, Metadata, Next, Response, Router,
     ServerConfig, Status, StreamingCall, StreamingTransport, UnaryTransport,
 };
-use crate::link::{ReliableLink, Timer as LinkTimer};
-use crate::mode::{CoordinatedReliable, Duplex, Mode, Serial};
+use crate::mode::{Duplex, Mode, Serial};
 use crate::shared::Shared;
 use crate::timer::{NoTimer, Timer};
 
@@ -83,22 +83,7 @@ where
     }
 }
 
-/// Start building an async gRPC server on a built reliable link, served as one
-/// coordinated engine (see [`CoordinatedReliable`]).
-pub fn server_reliable<S, L>(link: ReliableLink<S, L>) -> ServerBuilder<CoordinatedReliable<S, L>>
-where
-    S: Read + Write,
-    L: LinkTimer,
-{
-    ServerBuilder {
-        mode: CoordinatedReliable::new(link),
-        config: ServerConfig::default(),
-        timer: DeadlinesUnspecified,
-    }
-}
-
-/// Factory of an async [`Server`], created by [`server`], [`server_split`] or
-/// [`server_reliable`].
+/// Factory of an async [`Server`], created by [`server`] or [`server_split`].
 ///
 /// `M` is the [`Mode`] the transport is served in, and `T` the deadline policy:
 /// [`DeadlinesUnspecified`] until one is chosen, then the [`Timer`] (or
@@ -154,8 +139,8 @@ impl<M: Mode, T: Timer> ServerBuilder<M, T> {
     }
 }
 
-/// An async gRPC server driver for one connection, built by [`server`],
-/// [`server_split`] or [`server_reliable`].
+/// An async gRPC server driver for one connection, built by [`server`]
+/// or [`server_split`].
 ///
 /// It owns the transport, the configuration and the deadline timer. The
 /// application's services are only joined to it by [`serve`](Self::serve).
@@ -177,8 +162,7 @@ impl<M: Mode, T: Timer> Server<M, T> {
     ///
     /// Streaming handlers are polled with this future's waker. When the
     /// connection needs the transport for output, a pending read is dropped
-    /// (serial mode), or continues in the background (duplex and reliable
-    /// modes); see [`Mode`].
+    /// (serial mode), or continues in the background (duplex mode). See [`Mode`].
     ///
     /// When the connection ends, normally or with an error, every active
     /// streaming call is reported to [`Handler::on_cancel`] before this
@@ -291,35 +275,6 @@ impl<M: Mode, T: Timer> Server<M, T> {
             .collect();
         serve_routed(&mut mode, &timer, router, &mut lanes).await
     }
-
-    /// [`serve_router`](Self::serve_router) with coordinated reliable
-    /// downstreams, each polled as one engine.
-    ///
-    /// # Panics
-    ///
-    /// As [`serve_router`](Self::serve_router).
-    pub async fn serve_router_reliable<S, L>(
-        self,
-        router: &mut Router,
-        downstream: &mut [CoordinatedReliable<S, L>],
-    ) -> Result<(), Error<M::Error>>
-    where
-        S: Read + Write,
-        L: LinkTimer,
-        M: Mode<Error = crate::link::ReliableError<S::Error>>,
-    {
-        assert_backends(router, downstream.len());
-        let Self {
-            mut mode, timer, ..
-        } = self;
-        let ports = coordinator::ports::<M::Error>(downstream.len());
-        let mut lanes: Vec<_> = downstream
-            .iter_mut()
-            .zip(&ports)
-            .map(|(transport, port)| Lane::new(port, transport.worker(port)))
-            .collect();
-        serve_routed(&mut mode, &timer, router, &mut lanes).await
-    }
 }
 
 fn assert_backends(router: &Router, transports: usize) {
@@ -417,8 +372,7 @@ impl<H: Handler + ?Sized> Drop for Serving<'_, H> {
 /// another call has something to write (a request, a half-close, or the
 /// cancellation of a dropped call), the read is **dropped** so the transport
 /// can be used, and started again afterwards. This requires a cancel-safe
-/// `read`, which tokio streams, [`CobsFramed`](crate::link::CobsFramed) and
-/// the [`link`](crate::link) stack are (the same requirement as
+/// `read`, as provided by Tokio streams (the same requirement as
 /// [`Server::serve`] with streaming handlers). It only matters when more than one call
 /// is active; a client with one call never drops a read. For transports
 /// without a cancel-safe `read` (for example a one-shot DMA UART), put them
@@ -631,22 +585,7 @@ where
     }
 }
 
-/// Start building an async gRPC client on a built reliable link, served as one
-/// coordinated engine (see [`CoordinatedReliable`]).
-pub fn client_reliable<S, L>(link: ReliableLink<S, L>) -> ClientBuilder<CoordinatedReliable<S, L>>
-where
-    S: Read + Write,
-    L: LinkTimer,
-{
-    ClientBuilder {
-        mode: CoordinatedReliable::new(link),
-        config: ClientConfig::default(),
-        timer: DeadlinesUnspecified,
-    }
-}
-
-/// Factory of an async [`Client`], created by [`client`], [`client_split`] or
-/// [`client_reliable`].
+/// Factory of an async [`Client`], created by [`client`] or [`client_split`].
 ///
 /// `T` is the deadline policy: [`DeadlinesUnspecified`] until one is chosen,
 /// then the [`Timer`] (or [`NoTimer`]) the client will use.
@@ -705,17 +644,6 @@ impl<R: Read, W: Write<Error = R::Error>, T> Client<Duplex<R, W>, T> {
             .io
             .expect("the transport is checked in when no operation is running")
             .into_parts()
-    }
-}
-
-impl<S: Read + Write, L: LinkTimer, T> Client<CoordinatedReliable<S, L>, T> {
-    /// Unwrap the reliable link of a coordinated client.
-    pub fn into_link(self) -> ReliableLink<S, L> {
-        self.shared
-            .into_inner()
-            .io
-            .expect("the transport is checked in when no operation is running")
-            .into_link()
     }
 }
 

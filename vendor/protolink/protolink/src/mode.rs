@@ -1,31 +1,29 @@
+// Modified by esp32-tinker to remove the unused COBS and ARQ transport.
+
 //! The transport modes of the async drivers.
 //!
-//! A driver is built over one of three modes, which say how the transport is
+//! A driver is built over one of two modes, which say how the transport is
 //! served:
 //!
 //! - [`Serial`]: one object, read and written in turn. A blocked write stops
 //!   input, so the transport must buffer what its peer sends meanwhile.
 //! - [`Duplex`]: independent read and write halves. Input keeps flowing while
 //!   output is blocked on the same connection.
-//! - [`CoordinatedReliable`]: a reliable link whose ARQ engine is one object,
-//!   polled in both directions by a single worker.
 //!
-//! The modes are sealed: [`Mode`] is implemented by these three types only.
+//! The modes are sealed: [`Mode`] is implemented by these two types only.
 
 use core::future::Future;
 
 use embedded_io_async::{Read, Write};
 
 use crate::driver::{self, Port};
-use crate::link::{ReliableError, ReliableLink, Timer};
 use crate::shared::Shared;
 
 mod private {
     pub trait Sealed {}
 }
 
-/// How a transport is served. Implemented by [`Serial`], [`Duplex`] and
-/// [`CoordinatedReliable`] only.
+/// How a transport is served. Implemented by [`Serial`] and [`Duplex`].
 pub trait Mode: private::Sealed {
     /// The error of the transport. Both halves of a duplex transport have it.
     type Error;
@@ -159,57 +157,5 @@ where
         buf: &'a mut [u8],
     ) -> impl Future<Output = Result<usize, Self::Error>> + 'a {
         Read::read(&mut self.reader, buf)
-    }
-}
-
-/// A reliable link served as one coordinated engine.
-///
-/// The link is ARQ over COBS over the raw transport, see
-/// [`link::reliable`](crate::link::reliable). Its reads and writes are polled
-/// by one worker, so the link's own state stays in one place.
-pub struct CoordinatedReliable<S: Read + Write, L: Timer> {
-    link: ReliableLink<S, L>,
-}
-
-impl<S: Read + Write, L: Timer> CoordinatedReliable<S, L> {
-    /// Use a built reliable link.
-    pub fn new(link: ReliableLink<S, L>) -> Self {
-        Self { link }
-    }
-
-    /// Unwrap the link.
-    pub fn into_link(self) -> ReliableLink<S, L> {
-        self.link
-    }
-}
-
-impl<S: Read + Write, L: Timer> private::Sealed for CoordinatedReliable<S, L> {}
-
-impl<S: Read + Write, L: Timer> Mode for CoordinatedReliable<S, L> {
-    type Error = ReliableError<S::Error>;
-
-    fn worker<'a>(
-        &'a mut self,
-        port: &'a Shared<Port<Self::Error>>,
-    ) -> impl Future<Output = ()> + 'a {
-        driver::run_reliable(&mut self.link, port)
-    }
-
-    fn write<'a>(
-        &'a mut self,
-        buf: &'a [u8],
-    ) -> impl Future<Output = Result<usize, Self::Error>> + 'a {
-        Write::write(&mut self.link, buf)
-    }
-
-    fn flush<'a>(&'a mut self) -> impl Future<Output = Result<(), Self::Error>> + 'a {
-        Write::flush(&mut self.link)
-    }
-
-    fn read<'a>(
-        &'a mut self,
-        buf: &'a mut [u8],
-    ) -> impl Future<Output = Result<usize, Self::Error>> + 'a {
-        Read::read(&mut self.link, buf)
     }
 }

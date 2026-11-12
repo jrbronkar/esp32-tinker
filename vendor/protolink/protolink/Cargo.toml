@@ -1,3 +1,5 @@
+# Modified by esp32-tinker to remove the unused COBS and ARQ transport.
+
 [package]
 name = "protolink"
 version = "0.0.5"
@@ -15,9 +17,6 @@ rust-version = "1.88"
 protolink-grpc = { version = "0", path = "../protolink-grpc", default-features = false }
 embedded-io-async = { version = "0.7", optional = true }
 embedded-io = { version = "0.7", optional = true }
-cobs-io-async = { version = "0.0.4", path = "../cobs-io-async", default-features = false, optional = true }
-arq-io-async = { version = "0.0.3", path = "../arq-io-async", default-features = false, optional = true }
-crc = { version = "3.4", optional = true }
 embedded-io-adapters = { version = "0.7", features = ["tokio-1"], optional = true }
 tokio = { version = "1", default-features = false, optional = true }
 
@@ -26,12 +25,7 @@ default = ["micropb"]
 # Message codec backends of the generated gRPC bindings.
 micropb = ["protolink-grpc/micropb"]
 prost = ["protolink-grpc/prost"]
-async = [
-    "dep:embedded-io-async",
-    "dep:cobs-io-async",
-    "dep:arq-io-async",
-    "dep:crc",
-]
+async = ["dep:embedded-io-async"]
 embedded-io = ["async"]
 blocking = ["dep:embedded-io"]
 tokio = ["std", "async", "dep:embedded-io-adapters", "dep:tokio", "tokio/time", "tokio/io-util"]
