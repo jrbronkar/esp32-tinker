@@ -756,3 +756,195 @@ async fn credit_release_propagates_stream_and_connection_write_failures() {
         assert!(matches!(server.accept().await, Err(Error::Write(_))));
     }
 }
+
+#[tokio::test]
+async fn incremental_response_enforces_order_and_can_finish_without_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let settings = encode_settings(&[Setting {
+        id: SettingId::InitialWindowSize,
+        value: 0,
+    }]);
+    let (mut server, mut peer) = connection(&[
+        frame(FrameType::Settings, CONNECTION, NO_FLAGS, &settings),
+        frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+        frame(FrameType::Data, FIRST_STREAM, END_STREAM, &[]),
+    ])
+    .await;
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _initial_ack = read_wire_frame(&mut peer).await?;
+    let id = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?
+        .stream_id;
+    let _settings_ack = read_wire_frame(&mut peer).await?;
+    let head = [HeaderField {
+        name: ":status".into(),
+        value: "200".into(),
+    }];
+    assert!(matches!(
+        server.send_data(id, b"data").await,
+        Err(Error::Protocol)
+    ));
+    assert!(matches!(
+        server.wait_send_capacity(id).await,
+        Err(Error::Protocol)
+    ));
+    assert!(matches!(
+        server.start_response(NEXT_STREAM, &head).await,
+        Err(Error::Protocol)
+    ));
+    server
+        .start_response(id, &head)
+        .await
+        .map_err(describe_transport_error)?;
+    let _response_head = read_wire_frame(&mut peer).await?;
+    assert!(matches!(
+        server.start_response(id, &head).await,
+        Err(Error::Protocol)
+    ));
+    assert!(matches!(
+        server.finish_response(id, &[]).await,
+        Err(Error::Protocol)
+    ));
+    assert!(matches!(
+        server.wait_send_capacity(id).await.map_err(describe_transport_error)?,
+        embedded_http2::SendEvent::RequestBody(BodyFrame::Data(bytes)) if bytes.is_empty()
+    ));
+    assert_eq!(
+        server
+            .send_data(id, b"blocked")
+            .await
+            .map_err(describe_transport_error)?,
+        0
+    );
+    expect_no_output(&mut peer).await?;
+    server
+        .finish_response(id, &[])
+        .await
+        .map_err(describe_transport_error)?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        frame(FrameType::Data, id, END_STREAM, &[])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn incremental_response_obeys_the_connection_window_and_frame_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let connection_window = INITIAL_WINDOW_SIZE as usize;
+    let body = vec![b'x'; connection_window + 1];
+    let settings = encode_settings(&[Setting {
+        id: SettingId::InitialWindowSize,
+        value: body.len() as u32,
+    }]);
+    let (mut server, _peer) = connection(&[
+        frame(FrameType::Settings, CONNECTION, NO_FLAGS, &settings),
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            REQUEST,
+        ),
+        window_update(CONNECTION, 1),
+    ])
+    .await;
+    let id = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?
+        .stream_id;
+    let head = [HeaderField {
+        name: ":status".into(),
+        value: "200".into(),
+    }];
+    server
+        .start_response(id, &head)
+        .await
+        .map_err(describe_transport_error)?;
+    let mut sent = 0;
+    while sent < connection_window {
+        let remaining = body.get(sent..).ok_or("invalid response cursor")?;
+        let written = server
+            .send_data(id, remaining)
+            .await
+            .map_err(describe_transport_error)?;
+        assert_eq!(
+            written,
+            (connection_window - sent).min(DEFAULT_MAX_FRAME_SIZE as usize)
+        );
+        sent += written;
+    }
+    let tail = body.get(sent..).ok_or("missing response tail")?;
+    assert_eq!(
+        server
+            .send_data(id, tail)
+            .await
+            .map_err(describe_transport_error)?,
+        0
+    );
+    assert!(matches!(
+        server
+            .wait_send_capacity(id)
+            .await
+            .map_err(describe_transport_error)?,
+        embedded_http2::SendEvent::Ready
+    ));
+    assert_eq!(
+        server
+            .send_data(id, tail)
+            .await
+            .map_err(describe_transport_error)?,
+        tail.len()
+    );
+    server
+        .finish_response(id, &[])
+        .await
+        .map_err(describe_transport_error)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn incremental_wait_surfaces_request_trailers_and_peer_reset()
+-> Result<(), Box<dyn std::error::Error>> {
+    let settings = encode_settings(&[Setting {
+        id: SettingId::InitialWindowSize,
+        value: 0,
+    }]);
+    let cancel = (ErrorCode::Cancel as u32).to_be_bytes();
+    let (mut server, _peer) = connection(&[
+        frame(FrameType::Settings, CONNECTION, NO_FLAGS, &settings),
+        frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            &[],
+        ),
+        frame(FrameType::RstStream, FIRST_STREAM, NO_FLAGS, &cancel),
+    ])
+    .await;
+    let id = server
+        .accept_head()
+        .await
+        .map_err(describe_transport_error)?
+        .stream_id;
+    let head = [HeaderField {
+        name: ":status".into(),
+        value: "200".into(),
+    }];
+    server
+        .start_response(id, &head)
+        .await
+        .map_err(describe_transport_error)?;
+    assert!(matches!(
+        server.wait_send_capacity(id).await.map_err(describe_transport_error)?,
+        embedded_http2::SendEvent::RequestBody(BodyFrame::Trailers(fields)) if fields.is_empty()
+    ));
+    assert!(matches!(
+        server.wait_send_capacity(id).await,
+        Err(Error::Reset { stream_id: FIRST_STREAM, code }) if code == ErrorCode::Cancel as u32
+    ));
+    Ok(())
+}

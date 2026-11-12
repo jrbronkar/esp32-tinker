@@ -6,10 +6,11 @@ use zerodds_http2::{
     Flags, FrameType, StreamId, flow::encode_window_update, stream::is_client_initiated,
 };
 
-use crate::{Error, FlowControl, HeaderField, MAX_BODY, Request, Server, Stream, strip_padding};
+use crate::{
+    Error, FlowControl, HeaderField, MAX_BODY, NO_FLAGS, Request, Server, Stream, strip_padding,
+};
 
 const CONNECTION_STREAM_ID: StreamId = 0;
-const NO_FLAGS: u8 = 0;
 
 /// Initial headers for the connection's active request.
 #[derive(Debug)]
@@ -23,6 +24,11 @@ pub struct RequestHead {
 #[derive(Debug)]
 pub enum BodyFrame<'a> {
     Data(&'a [u8]),
+    Trailers(Vec<HeaderField>),
+}
+
+pub(super) enum ReceivedBody {
+    Data(Flags),
     Trailers(Vec<HeaderField>),
 }
 
@@ -50,6 +56,7 @@ impl<Io: Read + Write> Server<Io> {
                 send: FlowControl::new(i64::from(self.peer.initial_window_size)),
                 receive: FlowControl::default(),
                 remote_closed: end_stream,
+                response_started: false,
                 pending_receive_credit: 0,
             });
             return Ok(RequestHead {
@@ -78,37 +85,77 @@ impl<Io: Read + Write> Server<Io> {
         }
 
         loop {
-            let frame = self.read_frame().await?;
-            let end_stream = frame.flags.has(Flags::END_STREAM);
-            match FrameType::from_u8(frame.kind) {
-                Ok(FrameType::Headers) => {
-                    if frame.stream_id != stream_id || !end_stream {
-                        return Err(Error::Protocol);
-                    }
-                    let trailers = self.read_headers(&frame).await?;
-                    if trailers.iter().any(|field| field.name.starts_with(':')) {
-                        return Err(Error::Protocol);
-                    }
-                    self.stream.as_mut().ok_or(Error::Protocol)?.remote_closed = true;
-                    return Ok(Some(BodyFrame::Trailers(trailers)));
-                }
-                Ok(FrameType::Data) => {
-                    if frame.stream_id != stream_id {
-                        return Err(Error::Protocol);
-                    }
-                    let data = strip_padding(&self.payload, frame.flags).ok_or(Error::Protocol)?;
-                    let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
-                    // RFC 9113 §6.1 charges the whole DATA payload, including padding.
-                    let credit = self.payload.len() as u32;
-                    self.connection_receive.consume(credit)?;
-                    stream.receive.consume(credit)?;
-                    // The receive window bounds the accumulated credit.
-                    stream.pending_receive_credit += credit;
-                    stream.remote_closed = end_stream;
-                    return Ok(Some(BodyFrame::Data(data)));
-                }
-                _ => self.control(frame).await?,
+            if let Some(frame) = self.receive_body_frame(stream_id).await? {
+                return self.body_frame(frame).map(Some);
             }
+        }
+    }
+
+    // Process one inbound frame. Control frames may change send capacity.
+    pub(super) async fn receive_body_frame(
+        &mut self,
+        stream_id: StreamId,
+    ) -> Result<Option<ReceivedBody>, Error<Io::Error>> {
+        let frame = self.read_frame().await?;
+        let end_stream = frame.flags.has(Flags::END_STREAM);
+        match FrameType::from_u8(frame.kind) {
+            Ok(FrameType::Headers) => {
+                self.require_open_body(stream_id, frame.stream_id)?;
+                if !end_stream {
+                    return Err(Error::Protocol);
+                }
+                let trailers = self.read_headers(&frame).await?;
+                if trailers.iter().any(|field| field.name.starts_with(':')) {
+                    return Err(Error::Protocol);
+                }
+                self.stream.as_mut().ok_or(Error::Protocol)?.remote_closed = true;
+                Ok(Some(ReceivedBody::Trailers(trailers)))
+            }
+            Ok(FrameType::Data) => {
+                self.require_open_body(stream_id, frame.stream_id)?;
+                let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
+                // RFC 9113 §6.1 charges the whole DATA payload, including padding.
+                let credit = self.payload.len() as u32;
+                self.connection_receive.consume(credit)?;
+                stream.receive.consume(credit)?;
+                // The receive window bounds the accumulated credit.
+                stream.pending_receive_credit += credit;
+                stream.remote_closed = end_stream;
+                Ok(Some(ReceivedBody::Data(frame.flags)))
+            }
+            _ => {
+                self.control(frame).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    fn require_open_body(
+        &self,
+        stream_id: StreamId,
+        frame_id: StreamId,
+    ) -> Result<(), Error<Io::Error>> {
+        if frame_id == stream_id
+            && self
+                .stream
+                .as_ref()
+                .is_some_and(|stream| !stream.remote_closed)
+        {
+            Ok(())
+        } else {
+            Err(Error::Protocol)
+        }
+    }
+
+    pub(super) fn body_frame(
+        &self,
+        frame: ReceivedBody,
+    ) -> Result<BodyFrame<'_>, Error<Io::Error>> {
+        match frame {
+            ReceivedBody::Data(flags) => strip_padding(&self.payload, flags)
+                .map(BodyFrame::Data)
+                .ok_or(Error::Protocol),
+            ReceivedBody::Trailers(trailers) => Ok(BodyFrame::Trailers(trailers)),
         }
     }
 
