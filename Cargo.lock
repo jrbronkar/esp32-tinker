@@ -80,15 +80,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "arq-io-async"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba7d5a625ff31e8f9f178e9a778a4868c4c308008493c6bb440e824113d37fb9"
-dependencies = [
- "crc",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -248,12 +239,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
-name = "cobs-io-async"
-version = "0.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05a81af4aaaa353c37ef483bf7472797c1eedd774af44634afd1463363d526a0"
-
-[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -306,21 +291,6 @@ checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "crc"
-version = "3.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
-dependencies = [
- "crc-catalog",
-]
-
-[[package]]
-name = "crc-catalog"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "critical-section"
@@ -2238,11 +2208,7 @@ dependencies = [
 [[package]]
 name = "protolink"
 version = "0.0.5"
-source = "git+https://github.com/thives/protolink.rs.git?rev=62cc2c87a687ba65fc6885e7c9691cefacf2d064#62cc2c87a687ba65fc6885e7c9691cefacf2d064"
 dependencies = [
- "arq-io-async",
- "cobs-io-async",
- "crc",
  "embedded-io 0.7.1",
  "embedded-io-adapters",
  "embedded-io-async 0.7.0",
@@ -2253,7 +2219,6 @@ dependencies = [
 [[package]]
 name = "protolink-grpc"
 version = "0.0.5"
-source = "git+https://github.com/thives/protolink.rs.git?rev=62cc2c87a687ba65fc6885e7c9691cefacf2d064#62cc2c87a687ba65fc6885e7c9691cefacf2d064"
 dependencies = [
  "micropb",
  "protolink-http2",
@@ -2262,7 +2227,6 @@ dependencies = [
 [[package]]
 name = "protolink-grpc-gen"
 version = "0.0.4"
-source = "git+https://github.com/thives/protolink.rs.git?rev=62cc2c87a687ba65fc6885e7c9691cefacf2d064#62cc2c87a687ba65fc6885e7c9691cefacf2d064"
 dependencies = [
  "protobuf",
  "protobuf-parse",
@@ -2271,7 +2235,6 @@ dependencies = [
 [[package]]
 name = "protolink-http2"
 version = "0.0.4"
-source = "git+https://github.com/thives/protolink.rs.git?rev=62cc2c87a687ba65fc6885e7c9691cefacf2d064#62cc2c87a687ba65fc6885e7c9691cefacf2d064"
 dependencies = [
  "zerodds-hpack",
  "zerodds-http2",

@@ -1,0 +1,42 @@
+# Modified by esp32-tinker to remove the unused COBS and ARQ transport.
+
+[package]
+name = "protolink"
+version = "0.0.5"
+authors = [
+  "Thomas Ivesdal-Tronstad <>",
+]
+license = "MIT OR Apache-2.0"
+description = "Protolink is a gRPC framework that unifies embedded transports, framing, reliability, HTTP/2, gRPC bridging, and code generation."
+repository = "https://github.com/thives/protolink.rs"
+keywords = ["grpc", "embedded", "async", "protobuf", "proto"]
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+protolink-grpc = { version = "0", path = "../protolink-grpc", default-features = false }
+embedded-io-async = { version = "0.7", optional = true }
+embedded-io = { version = "0.7", optional = true }
+embedded-io-adapters = { version = "0.7", features = ["tokio-1"], optional = true }
+tokio = { version = "1", default-features = false, optional = true }
+
+[features]
+default = ["micropb"]
+# Message codec backends of the generated gRPC bindings.
+micropb = ["protolink-grpc/micropb"]
+prost = ["protolink-grpc/prost"]
+async = ["dep:embedded-io-async"]
+embedded-io = ["async"]
+blocking = ["dep:embedded-io"]
+tokio = ["std", "async", "dep:embedded-io-adapters", "dep:tokio", "tokio/time", "tokio/io-util"]
+# Stock DEFLATE backend and ready-made gzip codec, see `protolink::compression`.
+miniz-oxide = ["protolink-grpc/miniz-oxide"]
+std = [
+    "protolink-grpc/std",
+    "embedded-io-async?/std",
+    "embedded-io?/std",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
