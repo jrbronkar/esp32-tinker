@@ -6,8 +6,8 @@ pub(crate) const MAX_BLOCK: usize = 4096;
 pub(crate) const MAX_LIST: usize = 4096;
 const MAX_TABLE: usize = 4096;
 
-/// Decode one representation at a time so indexed fields cannot expand an
-/// entire block into a large intermediate allocation.
+/// Check the decoded size after each HPACK field. An index can reference a
+/// large table entry, so the compressed block size alone cannot bound memory.
 pub(crate) fn decode(decoder: &mut Decoder, mut block: &[u8]) -> Option<Vec<HeaderField>> {
     let mut fields = Vec::new();
     let mut size = 0;
