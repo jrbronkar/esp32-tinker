@@ -7,12 +7,11 @@ use zerodds_http2::{
 };
 
 use crate::{
-    Error, FlowControl, HeaderField, MAX_BODY, NO_FLAGS, Request, Server, Stream,
+    CONNECTION_STREAM_ID, Error, FlowControl, HeaderField, MAX_BODY, NO_FLAGS, Request, Server,
+    Stream,
     request_fields::{RequestLength, check_trailers},
     strip_padding,
 };
-
-const CONNECTION_STREAM_ID: StreamId = 0;
 
 /// Initial headers for the connection's active request.
 #[derive(Debug)]
@@ -152,8 +151,7 @@ impl<Io: Read + Write> Server<Io> {
         stream_id: StreamId,
     ) -> Result<T, Error<Io::Error>> {
         // RFC 9113 §8.1.1 specifies a stream error for malformed messages.
-        let code = (ErrorCode::ProtocolError as u32).to_be_bytes();
-        self.write_frame(FrameType::RstStream, stream_id, NO_FLAGS, &code)
+        self.write_reset(stream_id, ErrorCode::ProtocolError)
             .await?;
         Err(Error::MalformedRequest)
     }

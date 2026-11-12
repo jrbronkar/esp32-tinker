@@ -37,6 +37,7 @@ pub use zerodds_hpack::HeaderField;
 // The first server slice buffers complete bodies up to this local limit.
 const MAX_BODY: usize = 16 * 1024;
 const NO_FLAGS: u8 = 0;
+const CONNECTION_STREAM_ID: StreamId = 0;
 
 // RFC 9113 section 4.1 defines a 31-bit stream identifier.
 const STREAM_ID_MASK: u32 = 0x7fff_ffff;
@@ -163,6 +164,7 @@ impl<Io: Read + Write> Server<Io> {
         // Check it before allocating the payload buffer.
         let len = u32::from_be_bytes([0, header[0], header[1], header[2]]);
         if len > DEFAULT_MAX_FRAME_SIZE {
+            self.write_goaway(ErrorCode::FrameSizeError).await?;
             return Err(Http2Error::FrameTooLarge {
                 got: len,
                 max: DEFAULT_MAX_FRAME_SIZE,
@@ -219,6 +221,28 @@ impl<Io: Read + Write> Server<Io> {
         self.io.flush().await.map_err(Error::Write)
     }
 
+    async fn write_goaway(&mut self, code: ErrorCode) -> Result<(), Error<Io::Error>> {
+        // RFC 9113 §6.8 puts the last stream ID before the error code.
+        let payload =
+            ((u64::from(self.last_stream) << u32::BITS) | u64::from(code as u32)).to_be_bytes();
+        self.write_frame(FrameType::GoAway, CONNECTION_STREAM_ID, NO_FLAGS, &payload)
+            .await
+    }
+
+    async fn write_reset(
+        &mut self,
+        stream_id: StreamId,
+        code: ErrorCode,
+    ) -> Result<(), Error<Io::Error>> {
+        self.write_frame(
+            FrameType::RstStream,
+            stream_id,
+            NO_FLAGS,
+            &(code as u32).to_be_bytes(),
+        )
+        .await
+    }
+
     async fn read_headers(&mut self, first: &Frame) -> Result<Vec<HeaderField>, Error<Io::Error>> {
         let mut fragment = strip_padding(&self.payload, first.flags).ok_or(Error::Protocol)?;
         if first.flags.has(Flags::PRIORITY) {
@@ -236,6 +260,7 @@ impl<Io: Read + Write> Server<Io> {
         while !end {
             let frame = self.read_frame().await?;
             if frame.kind != FrameType::Continuation as u8 || frame.stream_id != first.stream_id {
+                self.write_goaway(ErrorCode::ProtocolError).await?;
                 return Err(Error::Protocol);
             }
             if block.len() + self.payload.len() > headers::MAX_BLOCK {
@@ -301,16 +326,25 @@ impl<Io: Read + Write> Server<Io> {
             }
             Ok(FrameType::WindowUpdate) => {
                 let increment = decode_window_update(&self.payload)?;
-                if frame.stream_id == 0 {
-                    self.connection_send.apply_window_update(increment)?;
+                let updated = if frame.stream_id == CONNECTION_STREAM_ID {
+                    self.connection_send.apply_window_update(increment)
                 } else if let Some(stream) =
                     self.stream.as_mut().filter(|s| s.id == frame.stream_id)
                 {
-                    stream.send.apply_window_update(increment)?;
+                    stream.send.apply_window_update(increment)
                 } else if frame.stream_id > self.last_stream {
                     return Err(Error::Protocol);
+                } else {
+                    return Ok(());
+                };
+                if let Err(Http2Error::Protocol(code)) = &updated {
+                    if frame.stream_id == CONNECTION_STREAM_ID {
+                        self.write_goaway(*code).await?;
+                    } else {
+                        self.write_reset(frame.stream_id, *code).await?;
+                    }
                 }
-                Ok(())
+                updated.map_err(Error::Wire)
             }
             Ok(FrameType::RstStream)
                 if frame.stream_id != 0 && self.payload.len() == RESET_CODE_LEN =>
@@ -339,6 +373,11 @@ impl<Io: Read + Write> Server<Io> {
                 if frame.stream_id != 0 && self.payload.len() == PRIORITY_FIELDS_LEN =>
             {
                 Ok(())
+            }
+            Ok(FrameType::Continuation) => {
+                let code = ErrorCode::ProtocolError;
+                self.write_goaway(code).await?;
+                Err(Http2Error::Protocol(code).into())
             }
             Err(Http2Error::UnknownFrameType(_)) => Ok(()),
             _ => Err(Http2Error::Protocol(ErrorCode::ProtocolError).into()),
