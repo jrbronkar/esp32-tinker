@@ -41,11 +41,11 @@ fn main() {
                 pub fn new(service: S) -> Self {{ Self {{ service }} }}
             }}
             impl<S: {name}> embedded_grpc::Service for {name}Server<S> {{
-                async fn call(&mut self, request: embedded_grpc::HttpRequest) -> embedded_grpc::HttpResponse {{
-                    let path = match embedded_grpc::rpc_path(&request) {{
-                        Ok(path) => path,
-                        Err(response) => return response,
-                    }};
+                async fn call(
+                    &mut self,
+                    path: &str,
+                    request: embedded_grpc::UnaryRequest<'_>,
+                ) -> Result<embedded_grpc::UnaryResponse, Status> {{
                     match path {{"
         )
         .unwrap();
@@ -56,16 +56,14 @@ fn main() {
             writeln!(
                 bindings,
                 "{path:?} => {{
-                    let message = match embedded_grpc::decode_unary::<{input}, {{ ota_protocol::MAX_FRAME }}>(&request) {{
-                        Ok(message) => message,
-                        Err(status) => return status.into_response(),
-                    }};
-                    embedded_grpc::unary_response::<_, {{ ota_protocol::MAX_FRAME }}>(self.service.{rpc}(message).await)
+                    let message = request.decode::<{input}, {{ ota_protocol::MAX_FRAME }}>()?;
+                    let reply = self.service.{rpc}(message).await?;
+                    embedded_grpc::UnaryResponse::encode::<_, {{ ota_protocol::MAX_FRAME }}>(reply)
                 }},"
             )
             .unwrap();
         }
-        bindings.push_str("_ => Status::Unimplemented.into_response(),\n}\n}\n}\n");
+        bindings.push_str("_ => Err(Status::Unimplemented),\n}\n}\n}\n");
     }
 
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));

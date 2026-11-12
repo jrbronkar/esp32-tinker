@@ -98,20 +98,13 @@ async fn embedded_unary_status_with_tonic_and_espctl() {
         let server = tokio::spawn(async move {
             for _ in 0..3 {
                 let (socket, _) = listener.accept().await.unwrap();
-                let mut connection = embedded_http2::Server::handshake(
+                let error = embedded_grpc::serve(
                     embedded_io_adapters::tokio_1::FromTokio::new(socket),
+                    &mut management_grpc::ManagementServer::new(EmbeddedManagement),
                 )
                 .await
-                .unwrap();
-                let result = connection
-                    .serve(&mut management_grpc::ManagementServer::new(
-                        EmbeddedManagement,
-                    ))
-                    .await;
-                assert!(matches!(
-                    result,
-                    Err(embedded_http2::Error::Read(_) | embedded_http2::Error::Closed)
-                ));
+                .unwrap_err();
+                assert!(error.is_disconnected(), "{error:?}");
             }
         });
 

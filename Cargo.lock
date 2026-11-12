@@ -830,6 +830,7 @@ name = "embedded-grpc"
 version = "0.1.0"
 dependencies = [
  "embedded-http2",
+ "embedded-io-async 0.7.0",
  "heapless 0.8.0",
  "micropb",
 ]
@@ -1368,7 +1369,7 @@ dependencies = [
  "device-grpc",
  "edge-mdns",
  "embassy-futures",
- "embedded-http2",
+ "embedded-grpc",
  "embedded-io-adapters",
  "hyper-util",
  "management-grpc",

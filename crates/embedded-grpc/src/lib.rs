@@ -8,10 +8,66 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
-use embedded_http2::HeaderField;
+use embedded_http2::{
+    HeaderField,
+    service::{Request as HttpRequest, Response as HttpResponse},
+};
+use embedded_io_async::{Read, ReadExactError, Write};
 use micropb::{MessageDecode, MessageEncode, PbEncoder};
 
-pub use embedded_http2::service::{Request as HttpRequest, Response as HttpResponse, Service};
+/// Dispatches a buffered unary RPC. Generated servers implement this trait.
+#[allow(async_fn_in_trait)]
+pub trait Service {
+    async fn call(
+        &mut self,
+        path: &str,
+        request: UnaryRequest<'_>,
+    ) -> Result<UnaryResponse, Status>;
+}
+
+/// Failure while accepting or serving a gRPC connection.
+#[derive(Debug)]
+pub struct ConnectionError<E>(embedded_http2::Error<E>);
+
+impl<E> ConnectionError<E> {
+    /// Whether the peer sent GOAWAY or the byte stream ended.
+    pub fn is_disconnected(&self) -> bool {
+        matches!(
+            self.0,
+            embedded_http2::Error::Read(ReadExactError::UnexpectedEof)
+                | embedded_http2::Error::Closed
+        )
+    }
+}
+
+/// Serve sequential gRPC calls on an accepted cleartext socket.
+pub async fn serve<Io: Read + Write, S: Service>(
+    io: Io,
+    service: &mut S,
+) -> Result<(), ConnectionError<Io::Error>> {
+    let mut connection = embedded_http2::Server::handshake(io)
+        .await
+        .map_err(ConnectionError)?;
+    connection
+        .serve(&mut HttpService(service))
+        .await
+        .map_err(ConnectionError)
+}
+
+struct HttpService<'a, S>(&'a mut S);
+
+impl<S: Service> embedded_http2::service::Service for HttpService<'_, S> {
+    async fn call(&mut self, request: HttpRequest) -> HttpResponse {
+        let path = match rpc_path(&request) {
+            Ok(path) => path,
+            Err(response) => return response,
+        };
+        match self.0.call(path, UnaryRequest(&request.body)).await {
+            Ok(response) => grpc_response(response.0, "0"),
+            Err(status) => status.into_response(),
+        }
+    }
+}
 
 const CONTENT_TYPE: &str = "application/grpc";
 const ENVELOPE_LEN: usize = 1 + size_of::<u32>();
@@ -36,13 +92,13 @@ impl Status {
         }
     }
 
-    pub fn into_response(self) -> HttpResponse {
+    fn into_response(self) -> HttpResponse {
         grpc_response(Vec::new(), self.wire_code())
     }
 }
 
 /// Check the gRPC HTTP headers and return the RPC path.
-pub fn rpc_path(request: &HttpRequest) -> Result<&str, HttpResponse> {
+fn rpc_path(request: &HttpRequest) -> Result<&str, HttpResponse> {
     let header = |name: &str| {
         request
             .headers
@@ -72,36 +128,40 @@ pub fn rpc_path(request: &HttpRequest) -> Result<&str, HttpResponse> {
     header(":path").ok_or_else(|| Status::InvalidArgument.into_response())
 }
 
-pub fn decode_unary<M: MessageDecode + Default, const MAX: usize>(
-    request: &HttpRequest,
-) -> Result<M, Status> {
-    let (head, body) = request
-        .body
-        .split_at_checked(ENVELOPE_LEN)
-        .ok_or(Status::InvalidArgument)?;
-    match head[0] {
-        0 => {}
-        1 => return Err(Status::Unimplemented),
-        _ => return Err(Status::InvalidArgument),
+/// A single buffered gRPC message awaiting typed decoding.
+pub struct UnaryRequest<'a>(&'a [u8]);
+
+impl UnaryRequest<'_> {
+    pub fn decode<M: MessageDecode + Default, const MAX: usize>(self) -> Result<M, Status> {
+        let (head, body) = self
+            .0
+            .split_at_checked(ENVELOPE_LEN)
+            .ok_or(Status::InvalidArgument)?;
+        match head[0] {
+            0 => {}
+            1 => return Err(Status::Unimplemented),
+            _ => return Err(Status::InvalidArgument),
+        }
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+        if len > MAX {
+            return Err(Status::ResourceExhausted);
+        }
+        if len != body.len() {
+            return Err(Status::InvalidArgument);
+        }
+        let mut message = M::default();
+        message
+            .decode_from_bytes(body)
+            .map_err(|_| Status::InvalidArgument)?;
+        Ok(message)
     }
-    let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
-    if len > MAX {
-        return Err(Status::ResourceExhausted);
-    }
-    if len != body.len() {
-        return Err(Status::InvalidArgument);
-    }
-    let mut message = M::default();
-    message
-        .decode_from_bytes(body)
-        .map_err(|_| Status::InvalidArgument)?;
-    Ok(message)
 }
 
-pub fn unary_response<M: MessageEncode, const MAX: usize>(
-    result: Result<M, Status>,
-) -> HttpResponse {
-    let encode = |message: M| {
+/// An encoded unary reply ready for the gRPC runtime.
+pub struct UnaryResponse(Vec<u8>);
+
+impl UnaryResponse {
+    pub fn encode<M: MessageEncode, const MAX: usize>(message: M) -> Result<Self, Status> {
         let mut encoder = PbEncoder::new(heapless::Vec::<u8, MAX>::new());
         message.encode(&mut encoder).map_err(|_| Status::Internal)?;
         let bytes = encoder.into_writer();
@@ -110,11 +170,7 @@ pub fn unary_response<M: MessageEncode, const MAX: usize>(
         body.push(0);
         body.extend_from_slice(&len.to_be_bytes());
         body.extend_from_slice(&bytes);
-        Ok(body)
-    };
-    match result.and_then(encode) {
-        Ok(body) => grpc_response(body, "0"),
-        Err(status) => status.into_response(),
+        Ok(Self(body))
     }
 }
 
