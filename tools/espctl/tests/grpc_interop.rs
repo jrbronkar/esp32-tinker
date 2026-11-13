@@ -198,6 +198,36 @@ async fn embedded_management_with_tonic_and_espctl() {
                 drop(requests);
                 drop(acks);
 
+                for (messages, expected) in [
+                    (
+                        vec![proto(&ota_protocol::UploadRequest {
+                            request_id: 3,
+                            ..Default::default()
+                        })],
+                        Ok(3),
+                    ),
+                    (vec![vec![0xff]], Err(tonic::Code::InvalidArgument)),
+                ] {
+                    client.ready().await.unwrap();
+                    let mut replies = client
+                        .streaming(
+                            tonic::Request::new(tokio_stream::iter(messages)),
+                            ota_protocol::UPLOAD_PATH.parse().unwrap(),
+                            RawCodec,
+                        )
+                        .await
+                        .unwrap()
+                        .into_inner();
+                    match expected {
+                        Ok(id) => {
+                            let ack = replies.message().await.unwrap().unwrap();
+                            assert_eq!(response(&ack).request_id, id);
+                            assert!(replies.message().await.unwrap().is_none());
+                        }
+                        Err(code) => assert_eq!(replies.message().await.unwrap_err().code(), code),
+                    }
+                }
+
                 client.ready().await.unwrap();
                 let request = ota_protocol::StatusRequest {
                     include_timings: true,
