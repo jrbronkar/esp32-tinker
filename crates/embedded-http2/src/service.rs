@@ -133,8 +133,19 @@ async fn serve_requests<E, Task: Future<Output = Result<(), Error<E>>>>(
     handlers_need_poll: impl Fn() -> bool,
     stream_limit: u32,
 ) -> Result<(), Error<E>> {
+    let mut inline = [pin!(None::<Task>), pin!(None::<Task>)];
     let mut exchanges: Vec<Pin<Box<Task>>> = Vec::new();
     poll_fn(|cx| {
+        let mut active = 0;
+        for slot in &mut inline {
+            if let Some(task) = slot.as_mut().as_pin_mut() {
+                match task.poll(cx) {
+                    Poll::Ready(Ok(())) => slot.set(None),
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => active += 1,
+                }
+            }
+        }
         let mut index = 0;
         while let Some(task) = exchanges.get_mut(index) {
             match task.as_mut().poll(cx) {
@@ -145,10 +156,15 @@ async fn serve_requests<E, Task: Future<Output = Result<(), Error<E>>>>(
                 Poll::Pending => index += 1,
             }
         }
-        if (exchanges.len() as u64) < u64::from(stream_limit) {
+        if ((active + exchanges.len()) as u64) < u64::from(stream_limit) {
             match incoming.poll_accept(cx) {
                 Poll::Ready(Some(request)) => {
-                    exchanges.push(Box::pin(handle(request)));
+                    let task = handle(request);
+                    if let Some(slot) = inline.iter_mut().find(|slot| slot.is_none()) {
+                        slot.set(Some(task));
+                    } else {
+                        exchanges.push(Box::pin(task));
+                    }
                     cx.waker().wake_by_ref();
                 }
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
