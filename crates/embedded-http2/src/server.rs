@@ -485,7 +485,16 @@ impl<Io: Read + Write> Connection<Io> {
                 Event::Control => {}
             }
             // Let local handlers run even when the socket already has more frames.
-            embassy_futures::yield_now().await;
+            let mut yielded = false;
+            poll_fn(|cx| {
+                if core::mem::replace(&mut yielded, true) {
+                    Poll::Ready(())
+                } else {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            })
+            .await;
         }
     }
 

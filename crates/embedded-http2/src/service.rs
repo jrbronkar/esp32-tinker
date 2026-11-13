@@ -2,15 +2,11 @@
 
 use alloc::{boxed::Box, vec::Vec};
 use core::{
+    cell::{Cell, RefCell},
     future::{Future, poll_fn},
-    pin::Pin,
+    pin::{Pin, pin},
     task::Poll,
 };
-use embassy_futures::{
-    join::join,
-    select::{Either, select},
-};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embedded_io_async::{Read, Write};
 
 use crate::{
@@ -44,15 +40,39 @@ pub async fn serve<Io: Read + Write, S: Service>(
     service: &mut S,
 ) -> Result<(), Error<Io::Error>> {
     let (connection, incoming) = server::handshake(io).await?;
-    let (transport, handlers) = join(connection.run(), serve_requests(incoming, service)).await;
-    handlers.and(transport)
+    let mut driver = pin!(connection.run());
+    let mut handlers = pin!(serve_requests(incoming, service));
+    let mut transport_result = None;
+    let mut handler_result = None;
+    poll_fn(|cx| {
+        if transport_result.is_none()
+            && let Poll::Ready(result) = driver.as_mut().poll(cx)
+        {
+            transport_result = Some(result);
+        }
+        if handler_result.is_none()
+            && let Poll::Ready(result) = handlers.as_mut().poll(cx)
+        {
+            handler_result = Some(result);
+        }
+        match (&mut transport_result, &mut handler_result) {
+            (Some(transport), Some(handlers)) => Poll::Ready(
+                core::mem::replace(handlers, Ok(())).and(core::mem::replace(transport, Ok(()))),
+            ),
+            _ => Poll::Pending,
+        }
+    })
+    .await
 }
 
 async fn serve_requests<E, S: Service>(
     mut incoming: server::Incoming,
     service: &mut S,
 ) -> Result<(), Error<E>> {
-    let service = Mutex::<NoopRawMutex, _>::new(service);
+    let service = ServiceSlot {
+        value: RefCell::new(Some(service)),
+        released: Cell::new(false),
+    };
     type ExchangeTask<'a, E> = Pin<Box<dyn Future<Output = Result<(), Error<E>>> + 'a>>;
     let mut exchanges: [Option<ExchangeTask<'_, E>>; MAX_STREAMS] = core::array::from_fn(|_| None);
     // There are at most two tasks, so polling both on a shared waker is bounded.
@@ -74,13 +94,34 @@ async fn serve_requests<E, S: Service>(
                 Poll::Pending => {}
             }
         }
+        if service.released.replace(false) {
+            // A slot visited earlier may be waiting for the service.
+            cx.waker().wake_by_ref();
+        }
         Poll::Pending
     })
     .await
 }
 
+struct ServiceSlot<'a, S> {
+    value: RefCell<Option<&'a mut S>>,
+    released: Cell<bool>,
+}
+
+struct ServiceLease<'a, 's, S> {
+    service: &'a ServiceSlot<'s, S>,
+    value: Option<&'s mut S>,
+}
+
+impl<S> Drop for ServiceLease<'_, '_, S> {
+    fn drop(&mut self) {
+        self.service.value.replace(self.value.take());
+        self.service.released.set(true);
+    }
+}
+
 async fn exchange<E, S: Service>(
-    service: &Mutex<NoopRawMutex, &mut S>,
+    service: &ServiceSlot<'_, S>,
     request: server::Request,
 ) -> Result<(), Error<E>> {
     match exchange_stream(service, request).await {
@@ -101,7 +142,7 @@ impl From<StreamError> for ExchangeError {
 }
 
 async fn exchange_stream<S: Service>(
-    service: &Mutex<NoopRawMutex, &mut S>,
+    service: &ServiceSlot<'_, S>,
     server::Request {
         head,
         mut body,
@@ -122,10 +163,33 @@ async fn exchange_stream<S: Service>(
         request.body.extend_from_slice(bytes);
     }
     request.trailers = body.trailers().unwrap_or_default();
-    let call = async { service.lock().await.call(request).await };
-    let response = match select(respond.closed(), call).await {
-        Either::First(()) => return Ok(()),
-        Either::Second(response) => response,
+    let response = {
+        let mut closed = pin!(respond.closed());
+        let mut call = pin!(async {
+            let mut lease = poll_fn(|_| match service.value.borrow_mut().take() {
+                Some(value) => Poll::Ready(ServiceLease {
+                    service,
+                    value: Some(value),
+                }),
+                None => Poll::Pending,
+            })
+            .await;
+            match lease.value.as_deref_mut() {
+                Some(service) => Some(service.call(request).await),
+                None => None,
+            }
+        });
+        poll_fn(|cx| {
+            if closed.as_mut().poll(cx).is_ready() {
+                Poll::Ready(None)
+            } else {
+                call.as_mut().poll(cx)
+            }
+        })
+        .await
+    };
+    let Some(response) = response else {
+        return Ok(());
     };
     if response.body.len() > MAX_BODY {
         return Err(ExchangeError::BodyLimit);

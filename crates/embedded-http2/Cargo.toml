@@ -5,8 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-embassy-futures = "0.1"
-embassy-sync = "0.8"
 embedded-io-async = "0.7"
 zerodds-http2 = { version = "=1.0.0-rc.7", default-features = false, features = ["alloc"] }
 zerodds-hpack = { version = "=1.0.0-rc.7", default-features = false, features = ["alloc"] }
