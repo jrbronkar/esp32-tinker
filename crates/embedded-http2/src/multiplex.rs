@@ -26,6 +26,13 @@ impl<Io: Read + Write> Server<Io> {
     /// advance other streams before reading another event.
     pub async fn next_event(&mut self) -> Result<Event<'_>, Error<Io::Error>> {
         let frame = self.read_inbound().await?;
+        self.dispatch(frame).await
+    }
+
+    pub(super) async fn dispatch(
+        &mut self,
+        frame: crate::Frame,
+    ) -> Result<Event<'_>, Error<Io::Error>> {
         let stream_id = frame.stream_id;
         let end_stream = frame.flags.has(Flags::END_STREAM);
         let result = match FrameType::from_u8(frame.kind) {
