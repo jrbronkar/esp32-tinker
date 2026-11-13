@@ -61,8 +61,8 @@ The check fails for unexpected failures, skipped cases, or incomplete runs.
 Known failures are listed by case in
 [`known-failures.txt`](tools/http2-conformance/known-failures.txt). Remove a
 case from the baseline when its fix lands.
-The check also reruns the valid CONTINUATION probe within the fixture's
-advertised header limit and requires it to pass.
+The gate counts the valid CONTINUATION probe using an input within the
+fixture's advertised header limit. The remaining probes use their default inputs.
 
 See the [host fixture and h2spec baseline](docs/device-management/embedded-http2.md#http2-conformance-baseline)
 for commands and known findings.

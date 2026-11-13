@@ -91,7 +91,7 @@ Stop the fixture with Ctrl-C. The suite exits nonzero when probes fail.
 
 The baseline on `e203612` plus the fixture used h2spec 2.6.0 over cleartext on
 macOS. It ran **146 probes, with 120 passing and 26 failing**. This baseline
-records the current implementation gaps.
+records the implementation gaps at that commit.
 
 | Failing area | Count | Observed behavior |
 | --- | ---: | --- |
@@ -105,6 +105,7 @@ h2spec targets RFC 7540 and RFC 7541. Use RFC 9113 to assess its HTTP/2
 findings. [Upstream RFC 9113 tracking issue](https://github.com/summerwind/h2spec/issues/128). The Rust `h2` and Tonic tests cover the transport and RPC behavior
 specific to this project.
 
-CI checks the default suite against the documented exceptions in
-[the case list](../../tools/http2-conformance/known-failures.txt). It also
-requires the valid CONTINUATION probe to pass within the advertised limit.
+CI checks all 146 probe results against the documented exceptions in
+[the case list](../../tools/http2-conformance/known-failures.txt). It uses
+`--max-header-length 512` for the valid CONTINUATION probe so its headers fit
+within the advertised limit. The remaining probes use their default inputs.

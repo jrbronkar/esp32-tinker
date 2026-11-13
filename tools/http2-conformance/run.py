@@ -72,7 +72,7 @@ def run_suite(fixture, report, *options):
                     server.wait()
 
 
-def check_report(report, exit_code, known_failures, expected_cases=EXPECTED_CASES):
+def read_report(report, exit_code, expected_cases):
     # h2spec can include raw peer bytes in XML error text. XML 1.0 excludes
     # these control characters even in text nodes.
     xml = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", report.read_text(errors="replace"))
@@ -92,6 +92,10 @@ def check_report(report, exit_code, known_failures, expected_cases=EXPECTED_CASE
         raise RuntimeError(f"h2spec ran {len(cases)} of {expected_cases} expected cases")
     if exit_code != int(bool(failed)):
         raise RuntimeError(f"h2spec exited with {exit_code}, inconsistent with its report")
+    return cases, failed
+
+
+def check_results(cases, failed, known_failures):
     unknown = known_failures - cases.keys()
     if unknown:
         raise RuntimeError(f"Unknown cases in the h2spec baseline: {', '.join(sorted(unknown))}")
@@ -114,21 +118,26 @@ def main():
         fixture = build_fixture()
         report = Path(directory) / "results.xml"
         result = run_suite(fixture, report)
-        try:
-            passed = check_report(report, result.returncode, known_failures)
-        except (OSError, RuntimeError, KeyError, ElementTree.ParseError) as error:
-            print(error, file=sys.stderr)
-            passed = False
-        if not passed:
-            print(result.stdout, file=sys.stderr)
-            return 1
+        cases, failed = read_report(report, result.returncode, EXPECTED_CASES)
         continuation = Path(directory) / "continuation.xml"
-        result = run_suite(
+        continuation_result = run_suite(
             fixture, continuation,
             "--max-header-length", str(CONTINUATION_HEADER_LENGTH), CONTINUATION_CASE,
         )
-        if not check_report(continuation, result.returncode, set(), expected_cases=1):
+        continuation_cases, continuation_failed = read_report(
+            continuation, continuation_result.returncode, expected_cases=1,
+        )
+        if continuation_cases != {CONTINUATION_CASE: cases[CONTINUATION_CASE]}:
+            raise RuntimeError("The within-limit run reported a different h2spec case")
+
+        # The default input for this case exceeds the fixture's header-list limit.
+        # Use its within-limit result and preserve the default inputs for every
+        # other case, including the oversized HEADERS frame probe.
+        failed.discard(CONTINUATION_CASE)
+        failed.update(continuation_failed)
+        if not check_results(cases, failed, known_failures):
             print(result.stdout, file=sys.stderr)
+            print(continuation_result.stdout, file=sys.stderr)
             return 1
         print(f"{CONTINUATION_CASE} passed within the advertised header limit")
         return 0
