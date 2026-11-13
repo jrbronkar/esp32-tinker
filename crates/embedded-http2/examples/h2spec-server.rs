@@ -4,8 +4,8 @@ use std::{
 };
 
 use embedded_http2::{
-    HeaderField, Server,
-    service::{Request, Response, Service},
+    HeaderField,
+    service::{Request, Response, Service, serve},
 };
 use embedded_io_adapters::tokio_1::FromTokio;
 use http::StatusCode;
@@ -32,13 +32,15 @@ async fn main() -> io::Result<()> {
     let address = listener.local_addr()?;
     writeln!(io::stdout(), "{address}")?;
 
-    loop {
-        let (socket, _) = listener.accept().await?;
-        tokio::spawn(async move {
-            if let Ok(mut server) = Server::handshake(FromTokio::new(socket)).await {
-                // Conformance probes deliberately terminate connections and send invalid frames.
-                let _ = server.serve(&mut Fixture).await;
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            loop {
+                let (socket, _) = listener.accept().await?;
+                tokio::task::spawn_local(async move {
+                    // Conformance probes deliberately terminate connections and send invalid frames.
+                    let _ = serve(FromTokio::new(socket), &mut Fixture).await;
+                });
             }
-        });
-    }
+        })
+        .await
 }

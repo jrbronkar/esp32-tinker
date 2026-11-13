@@ -1,10 +1,18 @@
 //! Buffered HTTP exchanges over a multiplexed HTTP/2 connection.
 
 use alloc::vec::Vec;
+use embassy_futures::{
+    join::join,
+    select::{Either, select},
+};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embedded_io_async::{Read, Write};
-use zerodds_http2::{ErrorCode, StreamId};
+use futures_util::{StreamExt, stream::FuturesUnordered};
 
-use crate::{BodyFrame, Error, Event, HeaderField, MAX_BODY, MAX_STREAMS, Server};
+use crate::{
+    Error, HeaderField, MAX_BODY, MAX_STREAMS,
+    server::{self, StreamError},
+};
 
 pub struct Request {
     pub headers: Vec<HeaderField>,
@@ -24,148 +32,105 @@ pub trait Service {
     async fn call(&mut self, request: Request) -> Response;
 }
 
-struct Exchange {
-    id: StreamId,
-    state: ExchangeState,
+/// Serve buffered exchanges while the connection driver advances the socket.
+/// The socket's reads must be cancellation-safe. Request handlers run one at a
+/// time, while body reads and response writes can progress on either stream.
+pub async fn serve<Io: Read + Write, S: Service>(
+    io: Io,
+    service: &mut S,
+) -> Result<(), Error<Io::Error>> {
+    let (connection, incoming) = server::handshake(io).await?;
+    let (transport, handlers) = join(connection.run(), serve_requests(incoming, service)).await;
+    handlers.and(transport)
 }
 
-enum ExchangeState {
-    Receiving(Request),
-    Sending { response: Response, sent: usize },
-}
-
-impl<Io: Read + Write> Server<Io> {
-    /// Serve buffered requests on the multiplexed connection. The adapter
-    /// calls one handler at a time and retains at most one bounded buffer
-    /// per active stream.
-    pub async fn serve<S: Service>(&mut self, service: &mut S) -> Result<(), Error<Io::Error>> {
-        let mut exchanges = Vec::with_capacity(MAX_STREAMS);
-        loop {
-            let mut progress = false;
-            let mut index = 0;
-            while let Some(exchange) = exchanges.get_mut(index) {
-                let Exchange { id, state } = exchange;
-                if let ExchangeState::Sending { response, sent } = state {
-                    let remaining = &response.body[*sent..];
-                    if !remaining.is_empty() {
-                        let count = self
-                            .send_data_frame(*id, remaining, response.trailers.is_empty())
-                            .await?;
-                        *sent += count;
-                        progress |= count > 0;
-                    }
-                    if *sent == response.body.len() {
-                        if response.trailers.is_empty() {
-                            self.remove_stream(*id);
-                        } else {
-                            self.finish_response(*id, &response.trailers).await?;
-                        }
-                        exchanges.swap_remove(index);
-                        continue;
-                    }
-                }
-                index += 1;
+async fn serve_requests<E, S: Service>(
+    mut incoming: server::Incoming,
+    service: &mut S,
+) -> Result<(), Error<E>> {
+    let service = Mutex::<NoopRawMutex, _>::new(service);
+    let mut exchanges = FuturesUnordered::new();
+    loop {
+        if exchanges.len() == MAX_STREAMS {
+            if let Some(result) = exchanges.next().await {
+                result?;
             }
-            if progress {
-                continue;
-            }
-
-            match self.next_event().await? {
-                Event::Request(head) => {
-                    let id = head.stream_id;
-                    let request = Request {
-                        headers: head.headers,
-                        body: Vec::new(),
-                        trailers: Vec::new(),
-                    };
-                    let state = if head.end_stream {
-                        self.call_buffered(id, service, request).await?
-                    } else {
-                        Some(ExchangeState::Receiving(request))
-                    };
-                    if let Some(state) = state {
-                        exchanges.push(Exchange { id, state });
-                    }
-                }
-                Event::Body {
-                    stream_id,
-                    frame,
-                    end_stream,
-                } => {
-                    let index = exchanges
-                        .iter()
-                        .position(|exchange| exchange.id == stream_id)
-                        .ok_or(Error::Protocol)?;
-                    let ExchangeState::Receiving(request) = &mut exchanges[index].state else {
-                        return Err(Error::Protocol);
-                    };
-                    let has_data = match frame {
-                        BodyFrame::Data(data) => {
-                            if request.body.len() + data.len() > MAX_BODY {
-                                exchanges.swap_remove(index);
-                                self.reset_stream(stream_id, ErrorCode::Cancel).await?;
-                                continue;
-                            }
-                            request.body.extend_from_slice(data);
-                            true
-                        }
-                        BodyFrame::Trailers(trailers) => {
-                            request.trailers = trailers;
-                            false
-                        }
-                    };
-                    if has_data {
-                        self.release_capacity(stream_id).await?;
-                    }
-                    if end_stream {
-                        let exchange = exchanges.swap_remove(index);
-                        let ExchangeState::Receiving(request) = exchange.state else {
-                            return Err(Error::Protocol);
-                        };
-                        let state = self.call_buffered(stream_id, service, request).await?;
-                        if let Some(state) = state {
-                            exchanges.push(Exchange {
-                                id: stream_id,
-                                state,
-                            });
-                        }
-                    }
-                }
-                Event::Reset { stream_id, .. } => {
-                    exchanges.retain(|exchange| exchange.id != stream_id);
-                }
-                Event::Control => {}
+        } else if exchanges.is_empty() {
+            let Some(request) = incoming.accept().await else {
+                return Ok(());
+            };
+            exchanges.push(exchange(&service, request));
+        } else {
+            match select(exchanges.next(), incoming.accept()).await {
+                Either::First(Some(result)) => result?,
+                Either::First(None) => {}
+                Either::Second(Some(request)) => exchanges.push(exchange(&service, request)),
+                Either::Second(None) => return Ok(()),
             }
         }
     }
+}
 
-    async fn call_buffered<S: Service>(
-        &mut self,
-        stream_id: StreamId,
-        service: &mut S,
-        request: Request,
-    ) -> Result<Option<ExchangeState>, Error<Io::Error>> {
-        let response = service.call(request).await;
-        if response.body.len() > MAX_BODY {
-            return Err(Error::BodyLimit);
-        }
-        if response.body.is_empty() && response.trailers.is_empty() {
-            self.respond(
-                stream_id,
-                crate::Response {
-                    headers: &response.headers,
-                    body: &[],
-                    trailers: &[],
-                },
-            )
-            .await?;
-            return Ok(None);
-        }
-        if !response.trailers.is_empty() {
-            crate::request_fields::check_trailers(&response.trailers)
-                .map_err(|_| Error::Protocol)?;
-        }
-        self.start_response(stream_id, &response.headers).await?;
-        Ok(Some(ExchangeState::Sending { response, sent: 0 }))
+async fn exchange<E, S: Service>(
+    service: &Mutex<NoopRawMutex, &mut S>,
+    request: server::Request,
+) -> Result<(), Error<E>> {
+    match exchange_stream(service, request).await {
+        Ok(()) | Err(ExchangeError::Stream) => Ok(()),
+        Err(ExchangeError::BodyLimit) => Err(Error::BodyLimit),
     }
+}
+
+enum ExchangeError {
+    Stream,
+    BodyLimit,
+}
+
+impl From<StreamError> for ExchangeError {
+    fn from(_: StreamError) -> Self {
+        Self::Stream
+    }
+}
+
+async fn exchange_stream<S: Service>(
+    service: &Mutex<NoopRawMutex, &mut S>,
+    server::Request {
+        head,
+        mut body,
+        respond,
+    }: server::Request,
+) -> Result<(), ExchangeError> {
+    let mut request = Request {
+        headers: head.headers,
+        body: Vec::new(),
+        trailers: Vec::new(),
+    };
+    while let Some(chunk) = body.data().await? {
+        let bytes = chunk.as_bytes();
+        if request.body.len() + bytes.len() > MAX_BODY {
+            // Dropping the unused response handle resets this stream.
+            return Ok(());
+        }
+        request.body.extend_from_slice(bytes);
+    }
+    request.trailers = body.trailers().unwrap_or_default();
+    let call = async { service.lock().await.call(request).await };
+    let response = match select(respond.closed(), call).await {
+        Either::First(()) => return Ok(()),
+        Either::Second(response) => response,
+    };
+    if response.body.len() > MAX_BODY {
+        return Err(ExchangeError::BodyLimit);
+    }
+
+    if response.body.is_empty() && response.trailers.is_empty() {
+        return Ok(respond.finish_headers(response.headers).await?);
+    }
+    let mut send = respond.send_response(response.headers)?;
+    let mut remaining = response.body.as_slice();
+    while !remaining.is_empty() {
+        let sent = send.send_data(remaining).await?;
+        remaining = &remaining[sent..];
+    }
+    Ok(send.finish(response.trailers).await?)
 }

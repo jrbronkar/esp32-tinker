@@ -92,58 +92,62 @@ impl management_grpc::Management for EmbeddedManagement {
 
 #[tokio::test]
 async fn embedded_unary_status_with_tonic_and_espctl() {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            for _ in 0..3 {
-                let (socket, _) = listener.accept().await.unwrap();
-                let error = embedded_grpc::serve(
-                    embedded_io_adapters::tokio_1::FromTokio::new(socket),
-                    &mut management_grpc::ManagementServer::new(EmbeddedManagement),
-                )
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = tokio::task::spawn_local(async move {
+                    for _ in 0..3 {
+                        let (socket, _) = listener.accept().await.unwrap();
+                        let error = embedded_grpc::serve(
+                            embedded_io_adapters::tokio_1::FromTokio::new(socket),
+                            &mut management_grpc::ManagementServer::new(EmbeddedManagement),
+                        )
+                        .await
+                        .unwrap_err();
+                        assert!(error.is_disconnected(), "{error:?}");
+                    }
+                });
+
+                check_status_exchanges(addr).await;
+
+                let mut client = tonic::client::Grpc::new(
+                    tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+                        .unwrap()
+                        .connect()
+                        .await
+                        .unwrap(),
+                );
+                client.ready().await.unwrap();
+                let request = ota_protocol::StatusRequest {
+                    include_timings: true,
+                    ..Default::default()
+                };
+                let error = client
+                    .unary(
+                        tonic::Request::new(proto(&request)),
+                        ota_protocol::STATUS_PATH.parse().unwrap(),
+                        RawCodec,
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code(), tonic::Code::Unavailable);
+                drop(client);
+
+                let status = tokio::task::spawn_blocking(move || {
+                    espctl::query_status_with_options(addr, Duration::from_secs(3), false, true)
+                })
                 .await
-                .unwrap_err();
-                assert!(error.is_disconnected(), "{error:?}");
-            }
-        });
-
-        check_status_exchanges(addr).await;
-
-        let mut client = tonic::client::Grpc::new(
-            tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
                 .unwrap()
-                .connect()
-                .await
-                .unwrap(),
-        );
-        client.ready().await.unwrap();
-        let request = ota_protocol::StatusRequest {
-            include_timings: true,
-            ..Default::default()
-        };
-        let error = client
-            .unary(
-                tonic::Request::new(proto(&request)),
-                ota_protocol::STATUS_PATH.parse().unwrap(),
-                RawCodec,
-            )
+                .unwrap()
+                .status;
+                assert_eq!(status.device_id, "test-board");
+                assert_eq!(status.boot.configured_flash_size_bytes, 16 * 1024 * 1024);
+                server.await.unwrap();
+            })
             .await
-            .unwrap_err();
-        assert_eq!(error.code(), tonic::Code::Unavailable);
-        drop(client);
-
-        let status = tokio::task::spawn_blocking(move || {
-            espctl::query_status_with_options(addr, Duration::from_secs(3), false, true)
+            .expect("embedded interop timed out");
         })
-        .await
-        .unwrap()
-        .unwrap()
-        .status;
-        assert_eq!(status.device_id, "test-board");
-        assert_eq!(status.boot.configured_flash_size_bytes, 16 * 1024 * 1024);
-        server.await.unwrap();
-    })
-    .await
-    .expect("embedded interop timed out");
+        .await;
 }

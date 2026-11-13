@@ -41,15 +41,13 @@ impl<E> ConnectionError<E> {
 }
 
 /// Serve sequential gRPC calls on an accepted cleartext socket.
+///
+/// Run on a local executor with cancellation-safe socket reads.
 pub async fn serve<Io: Read + Write, S: Service>(
     io: Io,
     service: &mut S,
 ) -> Result<(), ConnectionError<Io::Error>> {
-    let mut connection = embedded_http2::Server::handshake(io)
-        .await
-        .map_err(ConnectionError)?;
-    connection
-        .serve(&mut HttpService(service))
+    embedded_http2::service::serve(io, &mut HttpService(service))
         .await
         .map_err(ConnectionError)
 }

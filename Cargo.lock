@@ -870,8 +870,11 @@ name = "embedded-http2"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "embassy-futures",
+ "embassy-sync 0.8.0",
  "embedded-io-adapters",
  "embedded-io-async 0.7.0",
+ "futures-util",
  "h2",
  "http",
  "tokio",

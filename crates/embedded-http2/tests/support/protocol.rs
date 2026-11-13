@@ -1399,44 +1399,49 @@ impl embedded_http2::service::Service for EchoBuffered {
 }
 
 async fn serve_buffered_frames(
-    frames: &[Vec<u8>],
-) -> Result<DuplexStream, Box<dyn std::error::Error>> {
+    exchanges: &[(&[Vec<u8>], &[u32])],
+) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     let (socket, mut peer) = duplex(128 * 1024);
-    peer.write_all(CLIENT_PREFACE).await?;
-    peer.write_all(&frame(FrameType::Settings, 0, 0, &[]))
-        .await?;
-    for packet in frames {
-        peer.write_all(packet).await?;
-    }
-    peer.shutdown().await?;
-    let mut server = Server::handshake(FromTokio::new(socket))
-        .await
-        .map_err(describe_transport_error)?;
+    let client = async {
+        peer.write_all(CLIENT_PREFACE).await?;
+        peer.write_all(&frame(FrameType::Settings, 0, 0, &[]))
+            .await?;
+        let mut responses = Vec::new();
+        for (frames, completed_streams) in exchanges {
+            for packet in *frames {
+                peer.write_all(packet).await?;
+            }
+            let mut pending = completed_streams.to_vec();
+            while !pending.is_empty() {
+                let packet = read_wire_frame(&mut peer).await?;
+                if matches!(
+                    FrameType::from_u8(packet[3]),
+                    Ok(FrameType::Data | FrameType::Headers)
+                ) && packet[4] & END_STREAM != 0
+                {
+                    pending.retain(|stream| packet[5..9] != stream.to_be_bytes());
+                }
+                responses.push(packet);
+            }
+        }
+        peer.shutdown().await?;
+        Ok::<_, std::io::Error>(responses)
+    };
+    let (server, responses) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut service = EchoBuffered;
+        tokio::join!(
+            embedded_http2::service::serve(FromTokio::new(socket), &mut service),
+            client
+        )
+    })
+    .await?;
     assert!(matches!(
-        server.serve(&mut EchoBuffered).await,
+        server,
         Err(Error::Read(
             embedded_io_async::ReadExactError::UnexpectedEof
         ))
     ));
-    Ok(peer)
-}
-
-async fn collect_response_frames(
-    mut peer: DuplexStream,
-) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
-    let mut frames = Vec::new();
-    loop {
-        let mut header = [0; FRAME_HEADER_LEN];
-        if peer.read(&mut header[..1]).await? == 0 {
-            return Ok(frames);
-        }
-        peer.read_exact(&mut header[1..]).await?;
-        let length = u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize;
-        let mut packet = header.to_vec();
-        packet.resize(FRAME_HEADER_LEN + length, 0);
-        peer.read_exact(&mut packet[FRAME_HEADER_LEN..]).await?;
-        frames.push(packet);
-    }
+    Ok(responses?)
 }
 
 #[tokio::test]
@@ -1446,38 +1451,46 @@ async fn buffered_service_advances_other_streams_and_reuses_canceled_slot()
         id: SettingId::InitialWindowSize,
         value: 1,
     }]);
-    let peer = serve_buffered_frames(&[
-        frame(FrameType::Settings, 0, 0, &settings),
-        frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
-        frame(FrameType::Data, 1, END_STREAM, b"ab"),
-        frame(FrameType::Headers, 3, END_HEADERS, REQUEST),
-        frame(FrameType::Data, 3, END_STREAM, b"z"),
-        frame(FrameType::Headers, 5, END_HEADERS, REQUEST),
-        frame(
-            FrameType::RstStream,
-            1,
-            NO_FLAGS,
-            &(ErrorCode::Cancel as u32).to_be_bytes(),
+    let responses = serve_buffered_frames(&[
+        (
+            &[
+                frame(FrameType::Settings, 0, 0, &settings),
+                frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
+                frame(FrameType::Data, 1, END_STREAM, b"ab"),
+                frame(FrameType::Headers, 3, END_HEADERS, REQUEST),
+                frame(FrameType::Data, 3, END_STREAM, b"z"),
+            ],
+            &[3],
         ),
-        frame(FrameType::Headers, 7, END_HEADERS, REQUEST),
-        frame(FrameType::Data, 7, END_STREAM, b"q"),
-        frame(FrameType::Data, 5, END_STREAM, b"r"),
+        (
+            &[
+                frame(FrameType::Headers, 5, END_HEADERS, REQUEST),
+                frame(
+                    FrameType::RstStream,
+                    1,
+                    NO_FLAGS,
+                    &(ErrorCode::Cancel as u32).to_be_bytes(),
+                ),
+                frame(FrameType::Headers, 7, END_HEADERS, REQUEST),
+                frame(FrameType::Data, 7, END_STREAM, b"q"),
+                frame(FrameType::Data, 5, END_STREAM, b"r"),
+            ],
+            &[5, 7],
+        ),
     ])
     .await?;
-    let responses = collect_response_frames(peer).await?;
-    let data: Vec<_> = responses
-        .iter()
-        .filter(|packet| packet[3] == FrameType::Data as u8)
-        .collect();
-    assert_eq!(
-        data,
-        [
-            &frame(FrameType::Data, 1, NO_FLAGS, b"a"),
-            &frame(FrameType::Data, 3, END_STREAM, b"z"),
-            &frame(FrameType::Data, 7, END_STREAM, b"q"),
-            &frame(FrameType::Data, 5, END_STREAM, b"r"),
-        ]
-    );
+    for (id, bytes) in [(1_u32, b"a"), (3, b"z"), (5, b"r"), (7, b"q")] {
+        let data: Vec<_> = responses
+            .iter()
+            .filter(|packet| packet[3] == FrameType::Data as u8 && packet[5..9] == id.to_be_bytes())
+            .cloned()
+            .collect();
+        let mut expected = vec![frame(FrameType::Data, id, NO_FLAGS, bytes)];
+        if id != 1 {
+            expected.push(frame(FrameType::Data, id, END_STREAM, &[]));
+        }
+        assert_eq!(data, expected);
+    }
     Ok(())
 }
 
@@ -1485,22 +1498,24 @@ async fn buffered_service_advances_other_streams_and_reuses_canceled_slot()
 async fn buffered_service_resets_an_oversized_request_and_completes_its_peer()
 -> Result<(), Box<dyn std::error::Error>> {
     let full_frame = vec![0; DEFAULT_MAX_FRAME_SIZE as usize];
-    let peer = serve_buffered_frames(&[
-        frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
-        frame(FrameType::Headers, 3, END_HEADERS, REQUEST),
-        frame(FrameType::Data, 1, NO_FLAGS, &full_frame),
-        frame(FrameType::Data, 1, END_STREAM, b"extra"),
-        frame(FrameType::Data, 3, NO_FLAGS, b"ok"),
-        // HPACK literal without indexing, new name "x", value "y".
-        frame(
-            FrameType::Headers,
-            3,
-            END_HEADERS | END_STREAM,
-            &[0, 1, b'x', 1, b'y'],
-        ),
-    ])
+    let responses = serve_buffered_frames(&[(
+        &[
+            frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
+            frame(FrameType::Headers, 3, END_HEADERS, REQUEST),
+            frame(FrameType::Data, 1, NO_FLAGS, &full_frame),
+            frame(FrameType::Data, 1, END_STREAM, b"extra"),
+            frame(FrameType::Data, 3, NO_FLAGS, b"ok"),
+            // HPACK literal without indexing, new name "x", value "y".
+            frame(
+                FrameType::Headers,
+                3,
+                END_HEADERS | END_STREAM,
+                &[0, 1, b'x', 1, b'y'],
+            ),
+        ],
+        &[3],
+    )])
     .await?;
-    let responses = collect_response_frames(peer).await?;
     let reset = frame(
         FrameType::RstStream,
         1,
@@ -1821,9 +1836,18 @@ async fn receive_handles_deliver_trailers_cancel_dropped_requests_and_report_dis
                 &(ErrorCode::Cancel as u32).to_be_bytes(),
             );
             let credit = window_update(CONNECTION, 4);
-            let first = read_wire_frame(&mut peer).await?;
-            let second = read_wire_frame(&mut peer).await?;
-            assert!((first == reset && second == credit) || (first == credit && second == reset));
+            let mut saw_reset = false;
+            let mut saw_credit = false;
+            while !(saw_reset && saw_credit) {
+                let packet = read_wire_frame(&mut peer).await?;
+                if packet == reset {
+                    saw_reset = true;
+                } else if packet == credit {
+                    saw_credit = true;
+                } else {
+                    assert_eq!(packet, window_update(NEXT_STREAM, 4));
+                }
+            }
 
             let ping = [7; 8];
             peer.write_all(&frame(FrameType::Ping, CONNECTION, NO_FLAGS, &ping))
