@@ -84,10 +84,10 @@ impl StreamingCall {
             reply: core::marker::PhantomData,
         };
         let cancel = call.send.cancellation();
-        let code = match select(cancel, handler(&mut call)).await {
-            Either::First(()) => return Ok(()),
-            Either::Second(Ok(())) => GRPC_OK,
-            Either::Second(Err(status)) => status.wire_code(),
+        let code = match until_cancelled(cancel, handler(&mut call)).await {
+            None => return Ok(()),
+            Some(Ok(())) => GRPC_OK,
+            Some(Err(status)) => status.wire_code(),
         };
         // The handler may finish before the peer half-closes. Dropping the
         // receive handle discards unread data while the driver flushes trailers.
