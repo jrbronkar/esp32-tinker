@@ -127,6 +127,7 @@ async fn h2_client_reset_interrupts_a_blocked_response() {
     timeout(Duration::from_secs(5), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let (reset_seen, reset_received) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut server = Server::handshake(FromTokio::new(socket)).await.unwrap();
@@ -149,6 +150,7 @@ async fn h2_client_reset_interrupts_a_blocked_response() {
                     code: 8
                 })
             ));
+            reset_seen.send(()).unwrap();
             let request = server.accept().await.unwrap();
             assert_eq!(request.stream_id, 3);
             server
@@ -177,6 +179,7 @@ async fn h2_client_reset_interrupts_a_blocked_response() {
         let response = response.await.unwrap();
         assert_eq!(response.status(), 200);
         send.send_reset(h2::Reason::CANCEL);
+        reset_received.await.unwrap();
 
         client = client.ready().await.unwrap();
         let request = Request::get("http://localhost/next").body(()).unwrap();
@@ -312,4 +315,112 @@ async fn h2_client_receives_ack_before_request_closes() -> Result<(), Box<dyn st
 
 fn transport_error(error: Error<std::io::Error>) -> String {
     format!("{error:?}")
+}
+
+#[tokio::test]
+async fn stalled_stream_leaves_another_stream_free_to_progress()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    timeout(Duration::from_secs(5), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            use embedded_http2::Event;
+
+            let (socket, _) = listener.accept().await.map_err(|error| error.to_string())?;
+            let mut server = Server::handshake(FromTokio::new(socket))
+                .await
+                .map_err(|error| format!("{error:?}"))?;
+            let mut stalled = None;
+            loop {
+                match server
+                    .next_event()
+                    .await
+                    .map_err(|error| format!("{error:?}"))?
+                {
+                    Event::Request(head) if stalled.is_none() => {
+                        stalled = Some(head.stream_id);
+                        server
+                            .start_response(head.stream_id, &[field(":status", "200")])
+                            .await
+                            .map_err(|error| format!("{error:?}"))?;
+                        assert_eq!(
+                            server
+                                .send_data(head.stream_id, b"ab")
+                                .await
+                                .map_err(|error| format!("{error:?}"))?,
+                            1
+                        );
+                        assert_eq!(
+                            server
+                                .send_data(head.stream_id, b"b")
+                                .await
+                                .map_err(|error| format!("{error:?}"))?,
+                            0
+                        );
+                    }
+                    Event::Request(head) => {
+                        assert!(head.end_stream);
+                        server
+                            .start_response(head.stream_id, &[field(":status", "200")])
+                            .await
+                            .map_err(|error| format!("{error:?}"))?;
+                        assert_eq!(
+                            server
+                                .send_data(head.stream_id, b"z")
+                                .await
+                                .map_err(|error| format!("{error:?}"))?,
+                            1
+                        );
+                        server
+                            .finish_response(head.stream_id, &[field("x-result", "ok")])
+                            .await
+                            .map_err(|error| format!("{error:?}"))?;
+                    }
+                    Event::Reset { stream_id, code } => {
+                        assert_eq!(Some(stream_id), stalled);
+                        assert_eq!(code, 8);
+                        return Ok::<_, String>(());
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let socket = TcpStream::connect(addr).await?;
+        let (client, connection) = h2::client::Builder::new()
+            .initial_window_size(1)
+            .handshake::<_, Bytes>(socket)
+            .await?;
+        let driver = tokio::spawn(connection);
+        let mut client = client.ready().await?;
+        let (first, mut first_send) =
+            client.send_request(Request::get("http://localhost/first").body(())?, true)?;
+        let mut first = first.await?.into_body();
+        assert_eq!(
+            first.data().await.transpose()?,
+            Some(Bytes::from_static(b"a"))
+        );
+
+        let mut client = client.ready().await?;
+        let (second, _) =
+            client.send_request(Request::get("http://localhost/second").body(())?, true)?;
+        let mut second = second.await?.into_body();
+        assert_eq!(
+            second.data().await.transpose()?,
+            Some(Bytes::from_static(b"z"))
+        );
+        assert!(second.data().await.transpose()?.is_none());
+        assert_eq!(
+            second
+                .trailers()
+                .await?
+                .and_then(|trailers| trailers.get("x-result").cloned()),
+            Some(http::HeaderValue::from_static("ok"))
+        );
+        first_send.send_reset(h2::Reason::CANCEL);
+        server.await??;
+        driver.abort();
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await?
 }

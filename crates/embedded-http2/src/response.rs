@@ -61,9 +61,10 @@ impl<Io: Read + Write> Server<Io> {
         stream_id: StreamId,
         trailers: &[HeaderField],
     ) -> Result<(), Error<Io::Error>> {
-        if !self.stream.as_ref().is_some_and(|stream| {
-            stream.id == stream_id && stream.response_started && stream.remote_closed
-        }) {
+        if !self
+            .stream(stream_id)
+            .is_some_and(|stream| stream.response_started && stream.remote_closed)
+        {
             return Err(Error::Protocol);
         }
         let trailers = self.encode_response_trailers(trailers)?;
@@ -74,7 +75,7 @@ impl<Io: Read + Write> Server<Io> {
             self.write_frame(FrameType::Data, stream_id, Flags::END_STREAM, &[])
                 .await?;
         }
-        self.stream = None;
+        self.remove_stream(stream_id);
         Ok(())
     }
 
@@ -111,7 +112,7 @@ impl<Io: Read + Write> Server<Io> {
         if let Some(trailers) = trailers {
             self.write_response_trailers(stream_id, &trailers).await?;
         }
-        self.stream = None;
+        self.remove_stream(stream_id);
         Ok(())
     }
 
@@ -120,10 +121,8 @@ impl<Io: Read + Write> Server<Io> {
         stream_id: StreamId,
         require_remote_close: bool,
     ) -> Result<(), Error<Io::Error>> {
-        if self.stream.as_ref().is_some_and(|stream| {
-            stream.id == stream_id
-                && !stream.response_started
-                && (!require_remote_close || stream.remote_closed)
+        if self.stream(stream_id).is_some_and(|stream| {
+            !stream.response_started && (!require_remote_close || stream.remote_closed)
         }) {
             Ok(())
         } else {
@@ -145,8 +144,7 @@ impl<Io: Read + Write> Server<Io> {
             };
         self.write_frame(FrameType::Headers, stream_id, flags, head)
             .await?;
-        self.stream
-            .as_mut()
+        self.stream_mut(stream_id)
             .ok_or(Error::Protocol)?
             .response_started = true;
         Ok(())
@@ -180,15 +178,14 @@ impl<Io: Read + Write> Server<Io> {
 
     fn send_capacity(&self, stream_id: StreamId) -> Result<usize, Error<Io::Error>> {
         let stream = self
-            .stream
-            .as_ref()
-            .filter(|stream| stream.id == stream_id && stream.response_started)
+            .stream(stream_id)
+            .filter(|stream| stream.response_started)
             .ok_or(Error::Protocol)?;
         let window = self.connection_send.window().min(stream.send.window());
         Ok(window.clamp(0, i64::from(DEFAULT_MAX_FRAME_SIZE)) as usize)
     }
 
-    async fn send_data_frame(
+    pub(super) async fn send_data_frame(
         &mut self,
         stream_id: StreamId,
         bytes: &[u8],
@@ -204,8 +201,8 @@ impl<Io: Read + Write> Server<Io> {
             NO_FLAGS
         };
         let chunk = bytes.get(..len).ok_or(Error::Protocol)?;
-        let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
         self.connection_send.consume(len as u32)?;
+        let stream = self.stream_mut(stream_id).ok_or(Error::Protocol)?;
         stream.send.consume(len as u32)?;
         self.write_frame(FrameType::Data, stream_id, flags, chunk)
             .await?;
