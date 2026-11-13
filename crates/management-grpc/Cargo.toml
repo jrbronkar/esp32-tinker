@@ -9,4 +9,5 @@ embedded-grpc = { path = "../embedded-grpc" }
 ota-protocol = { path = "../ota-protocol" }
 
 [build-dependencies]
+embedded-grpc-build = { path = "../embedded-grpc-build" }
 protobuf-parse = "3.7"

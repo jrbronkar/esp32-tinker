@@ -19,11 +19,11 @@ and emits the `Management` trait, `ManagementServer<S>`, and path dispatch into
 `OUT_DIR`. The `no_std` crate includes that generated Rust at compile time.
 Message types come from the existing micropb generator in `ota-protocol`.
 
-The emitter is handwritten Rust and currently maps top-level `.ota` message
-descriptors to `ota_protocol` types with a shared message-size limit. An
-unsupported client-streaming/unary-response declaration fails the build.
-Firmware and tests supply the method bodies. Reusable generation for arbitrary
-proto packages would require a configurable Rust type and size-limit mapping.
+The host-only `embedded-grpc-build` crate emits bindings from a protobuf file
+descriptor. Callers supply the Rust type resolver and the message-size const
+expression. Management supplies its micropb mappings in its build script.
+An unsupported client-streaming/unary-response declaration fails the build.
+Firmware and tests implement the generated methods.
 
 ## Host coverage on the Upload branch
 
@@ -41,3 +41,9 @@ Both runtimes had 93.09% region coverage. The gRPC streaming module had
 88.83% line coverage. LLVM reported mismatched data for seven functions and
 reported no branch coverage. This run does not measure the firmware endpoint
 or exercise flash and reboot on hardware.
+
+The follow-up host run added streaming request validation cases for HTTP method,
+content type, and missing, truncated, or extra gRPC messages. Combined runtime
+line coverage rose to 96.37% (1,804 / 1,872), region coverage to 93.43%, and
+streaming module line coverage to 90.96% (171 / 188). LLVM reported the same
+seven mismatched functions.
