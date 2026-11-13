@@ -1519,3 +1519,103 @@ async fn buffered_service_resets_an_oversized_request_and_completes_its_peer()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn multiplexing_resets_a_half_closed_stream_without_interrupting_its_peer()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::Event;
+
+    for late_frame in [
+        frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, b"late"),
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            &[],
+        ),
+    ] {
+        let (mut server, mut peer) = connection(&[
+            frame(
+                FrameType::Headers,
+                FIRST_STREAM,
+                END_HEADERS | END_STREAM,
+                REQUEST,
+            ),
+            frame(FrameType::Headers, NEXT_STREAM, END_HEADERS, REQUEST),
+            late_frame,
+            frame(FrameType::Data, NEXT_STREAM, END_STREAM, b"ok"),
+        ])
+        .await;
+        for id in [FIRST_STREAM, NEXT_STREAM] {
+            assert!(
+                matches!(server.next_event().await, Ok(Event::Request(head)) if head.stream_id == id)
+            );
+        }
+        assert!(
+            matches!(server.next_event().await, Ok(Event::Reset { stream_id: FIRST_STREAM, code }) if code == ErrorCode::StreamClosed as u32)
+        );
+        assert!(matches!(
+            server.next_event().await,
+            Ok(Event::Body {
+                stream_id: NEXT_STREAM,
+                frame: BodyFrame::Data(b"ok"),
+                end_stream: true
+            })
+        ));
+        let _settings = read_wire_frame(&mut peer).await?;
+        let _ack = read_wire_frame(&mut peer).await?;
+        assert_eq!(
+            read_wire_frame(&mut peer).await?,
+            frame(
+                FrameType::RstStream,
+                FIRST_STREAM,
+                NO_FLAGS,
+                &(ErrorCode::StreamClosed as u32).to_be_bytes()
+            )
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn multiplexing_sends_goaway_for_headers_on_an_unavailable_stream()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::Event;
+
+    for (id, code) in [
+        (NEXT_STREAM, ErrorCode::StreamClosed),
+        (FIRST_STREAM, ErrorCode::ProtocolError),
+    ] {
+        let (mut server, mut peer) = connection(&[
+            frame(
+                FrameType::Headers,
+                NEXT_STREAM,
+                END_HEADERS | END_STREAM,
+                REQUEST,
+            ),
+            frame(
+                FrameType::RstStream,
+                NEXT_STREAM,
+                NO_FLAGS,
+                &(ErrorCode::Cancel as u32).to_be_bytes(),
+            ),
+            frame(FrameType::Headers, id, END_HEADERS | END_STREAM, REQUEST),
+        ])
+        .await;
+        assert!(
+            matches!(server.next_event().await, Ok(Event::Request(head)) if head.stream_id == NEXT_STREAM)
+        );
+        assert!(matches!(
+            server.next_event().await,
+            Ok(Event::Reset {
+                stream_id: NEXT_STREAM,
+                ..
+            })
+        ));
+        assert!(matches!(server.next_event().await, Err(Error::Protocol)));
+        let _settings = read_wire_frame(&mut peer).await?;
+        let _ack = read_wire_frame(&mut peer).await?;
+        assert_eq!(read_wire_frame(&mut peer).await?, goaway(NEXT_STREAM, code));
+    }
+    Ok(())
+}
