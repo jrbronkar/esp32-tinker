@@ -1423,6 +1423,109 @@ async fn configured_stream_limit_is_advertised_and_enforced()
     Ok(())
 }
 
+#[tokio::test]
+async fn inline_capacity_rejects_configuration_before_handshake() {
+    let (socket, _peer) = duplex(4096);
+    let serve = embedded_http2::service::serve_streams_with_config::<1, _, _>(
+        FromTokio::new(socket),
+        embedded_http2::Config::default(),
+        |_| async { Ok(()) },
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), serve).await;
+    assert!(matches!(
+        result,
+        Ok(Err(embedded_http2::Error::HandlerCapacity))
+    ));
+}
+
+#[tokio::test]
+async fn inline_handlers_enforce_limits_and_reuse_slots() -> Result<(), Box<dyn std::error::Error>>
+{
+    use core::num::NonZeroU32;
+    use embedded_http2::{Config, service::serve_streams_with_config};
+
+    for limit in [NonZeroU32::MIN, NonZeroU32::MIN.saturating_add(1)] {
+        let (socket, mut peer) = duplex(4096);
+        let server = serve_streams_with_config::<2, _, _>(
+            FromTokio::new(socket),
+            Config {
+                max_concurrent_streams: limit,
+            },
+            |mut request| async move {
+                if request.body.data().await.is_ok() {
+                    let _ = request
+                        .respond
+                        .finish_headers(vec![HeaderField {
+                            name: ":status".into(),
+                            value: "200".into(),
+                        }])
+                        .await;
+                }
+                Ok(())
+            },
+        );
+        let client = async move {
+            peer.write_all(CLIENT_PREFACE).await?;
+            peer.write_all(&frame(FrameType::Settings, 0, 0, &[]))
+                .await?;
+            let settings = read_wire_frame(&mut peer).await?;
+            assert!(settings[FRAME_HEADER_LEN..].chunks_exact(6).any(|setting| {
+                setting[..2] == (SettingId::MaxConcurrentStreams as u16).to_be_bytes()
+                    && setting[2..] == limit.get().to_be_bytes()
+            }));
+            let _ack = read_wire_frame(&mut peer).await?;
+            for id in (1..=2 * limit.get() + 1).step_by(2) {
+                peer.write_all(&frame(FrameType::Headers, id, END_HEADERS, REQUEST))
+                    .await?;
+            }
+            let refused = 2 * limit.get() + 1;
+            assert_eq!(
+                read_wire_frame(&mut peer).await?,
+                frame(
+                    FrameType::RstStream,
+                    refused,
+                    0,
+                    &(ErrorCode::RefusedStream as u32).to_be_bytes()
+                )
+            );
+            // At capacity two, complete stream 3 while stream 1 remains open.
+            let completed = refused - 2;
+            peer.write_all(&frame(FrameType::Data, completed, END_STREAM, &[]))
+                .await?;
+            assert_eq!(
+                read_wire_frame(&mut peer).await?,
+                frame(
+                    FrameType::Headers,
+                    completed,
+                    END_HEADERS | END_STREAM,
+                    &[0x20, 0x88]
+                )
+            );
+            let reused = refused + 2;
+            peer.write_all(&frame(
+                FrameType::Headers,
+                reused,
+                END_HEADERS | END_STREAM,
+                REQUEST,
+            ))
+            .await?;
+            assert_eq!(
+                read_wire_frame(&mut peer).await?,
+                frame(
+                    FrameType::Headers,
+                    reused,
+                    END_HEADERS | END_STREAM,
+                    &[0x20, 0x88]
+                )
+            );
+            Ok::<_, std::io::Error>(())
+        };
+        let (_, result) = tokio::join!(server, client);
+        result?;
+    }
+    Ok(())
+}
+
 struct EchoBuffered;
 
 impl embedded_http2::service::Service for EchoBuffered {

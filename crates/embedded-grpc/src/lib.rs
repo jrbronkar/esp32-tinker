@@ -9,10 +9,11 @@ extern crate alloc;
 mod framing;
 mod streaming;
 
-pub use embedded_http2::server::StreamError;
+pub use embedded_http2::{Config as Http2Config, server::StreamError};
 pub use futures_core::Stream;
 pub use streaming::{
     Bidirectional, ServerStreaming, StreamingCall, StreamingService, serve_streaming,
+    serve_streaming_with_config,
 };
 
 pub use framing::MessageDecoder;

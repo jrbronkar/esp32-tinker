@@ -1,9 +1,14 @@
 //! Two bounded HTTP/2 connections on the single management port.
-use core::time::Duration as CoreDuration;
+use core::{num::NonZeroU32, time::Duration as CoreDuration};
 use device_grpc::protolink;
 use device_grpc::{EmbeddedManagement, Environment, UploadEvent};
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
+
+const HANDLER_SLOTS: u32 = 2;
+const HTTP2_CONFIG: embedded_grpc::Http2Config = embedded_grpc::Http2Config {
+    max_concurrent_streams: NonZeroU32::MIN.saturating_add(HANDLER_SLOTS - 1),
+};
 
 struct EmbassyClock;
 impl protolink::Clock for EmbassyClock {
@@ -69,7 +74,11 @@ async fn serve_connection(
             {
                 let connection = with_timeout(
                     Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS),
-                    embedded_grpc::serve_streaming(&mut socket, &handler),
+                    embedded_grpc::serve_streaming_with_config::<{ HANDLER_SLOTS as usize }, _, _>(
+                        &mut socket,
+                        &handler,
+                        HTTP2_CONFIG,
+                    ),
                 );
                 let reboot = async {
                     connection_state.reboot.wait().await;

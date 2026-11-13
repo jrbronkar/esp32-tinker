@@ -1,5 +1,5 @@
 #![no_std]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 //! A cleartext HTTP/2 server connection for embedded async I/O.
 //!
@@ -74,6 +74,8 @@ pub enum Error<E> {
     /// Invalid request fields or body length. The server sent a stream reset.
     MalformedRequest,
     BodyLimit,
+    /// The configured concurrent stream limit exceeds inline handler capacity.
+    HandlerCapacity,
     /// A frame buffer could not be allocated. Close this connection.
     ResourceExhausted,
     Reset {

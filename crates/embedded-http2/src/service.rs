@@ -1,6 +1,6 @@
 //! Buffered HTTP exchanges over a multiplexed HTTP/2 connection.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     cell::{Cell, RefCell},
     future::{Future, poll_fn},
@@ -43,6 +43,7 @@ pub async fn serve<Io: Read + Write, S: Service>(
 }
 
 /// Serve buffered exchanges with the supplied per-connection stream limit.
+/// The buffered adapter reserves two inline handler slots.
 pub async fn serve_with_config<Io: Read + Write, S: Service>(
     io: Io,
     service: &mut S,
@@ -52,7 +53,7 @@ pub async fn serve_with_config<Io: Read + Write, S: Service>(
         value: RefCell::new(Some(service)),
         released: Cell::new(false),
     };
-    drive_streams(
+    drive_streams::<2, _, _>(
         io,
         config,
         |request| async { exchange(&service, request).await },
@@ -70,11 +71,14 @@ where
     Io: Read + Write,
     Task: Future<Output = Result<(), Error<Io::Error>>>,
 {
-    serve_streams_with_config(io, Config::default(), handle).await
+    serve_streams_with_config::<2, _, _>(io, Config::default(), handle).await
 }
 
 /// Drive streaming handlers with the supplied per-connection stream limit.
-pub async fn serve_streams_with_config<Io, Task>(
+///
+/// Reserves `SLOTS` inline futures per connection. The configured stream
+/// limit must fit in those slots, or the call fails before the handshake.
+pub async fn serve_streams_with_config<const SLOTS: usize, Io, Task>(
     io: Io,
     config: Config,
     handle: impl Fn(server::Request) -> Task,
@@ -83,10 +87,10 @@ where
     Io: Read + Write,
     Task: Future<Output = Result<(), Error<Io::Error>>>,
 {
-    drive_streams(io, config, handle, || false).await
+    drive_streams::<SLOTS, _, _>(io, config, handle, || false).await
 }
 
-async fn drive_streams<Io, Task>(
+async fn drive_streams<const SLOTS: usize, Io, Task>(
     io: Io,
     config: Config,
     handle: impl Fn(server::Request) -> Task,
@@ -96,13 +100,15 @@ where
     Io: Read + Write,
     Task: Future<Output = Result<(), Error<Io::Error>>>,
 {
+    if u64::from(config.max_concurrent_streams.get()) > SLOTS as u64 {
+        return Err(Error::HandlerCapacity);
+    }
     let (connection, incoming) = server::handshake_with_config(io, config).await?;
     let mut driver = pin!(connection.run());
-    let mut handlers = pin!(serve_requests(
+    let mut handlers = pin!(serve_requests::<SLOTS, _, _>(
         incoming,
         handle,
-        handlers_need_poll,
-        config.max_concurrent_streams.get()
+        handlers_need_poll
     ));
     let mut transport_result = None;
     let mut handler_result = None;
@@ -127,44 +133,25 @@ where
     .await
 }
 
-async fn serve_requests<E, Task: Future<Output = Result<(), Error<E>>>>(
+async fn serve_requests<const SLOTS: usize, E, Task: Future<Output = Result<(), Error<E>>>>(
     mut incoming: server::Incoming,
     handle: impl Fn(server::Request) -> Task,
     handlers_need_poll: impl Fn() -> bool,
-    stream_limit: u32,
 ) -> Result<(), Error<E>> {
-    let mut inline = [pin!(None::<Task>), pin!(None::<Task>)];
-    let mut exchanges: Vec<Pin<Box<Task>>> = Vec::new();
+    let mut slots = pin!([const { None::<Task> }; SLOTS]);
     poll_fn(|cx| {
-        let mut active = 0;
-        for slot in &mut inline {
+        for index in 0..SLOTS {
+            let mut slot = pin_slot(slots.as_mut(), index);
             if let Some(task) = slot.as_mut().as_pin_mut() {
                 match task.poll(cx) {
                     Poll::Ready(Ok(())) => slot.set(None),
                     Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                    Poll::Pending => active += 1,
+                    Poll::Pending => continue,
                 }
             }
-        }
-        let mut index = 0;
-        while let Some(task) = exchanges.get_mut(index) {
-            match task.as_mut().poll(cx) {
-                Poll::Ready(Ok(())) => {
-                    drop(exchanges.swap_remove(index));
-                }
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Pending => index += 1,
-            }
-        }
-        if ((active + exchanges.len()) as u64) < u64::from(stream_limit) {
             match incoming.poll_accept(cx) {
                 Poll::Ready(Some(request)) => {
-                    let task = handle(request);
-                    if let Some(slot) = inline.iter_mut().find(|slot| slot.is_none()) {
-                        slot.set(Some(task));
-                    } else {
-                        exchanges.push(Box::pin(task));
-                    }
+                    slot.set(Some(handle(request)));
                     cx.waker().wake_by_ref();
                 }
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
@@ -178,6 +165,16 @@ async fn serve_requests<E, Task: Future<Output = Result<(), Error<E>>>>(
         Poll::Pending
     })
     .await
+}
+
+#[allow(unsafe_code)]
+fn pin_slot<T, const SLOTS: usize>(
+    slots: Pin<&mut [Option<T>; SLOTS]>,
+    index: usize,
+) -> Pin<&mut Option<T>> {
+    // SAFETY: The element is stored in the pinned array itself. The array
+    // never moves its elements, and we expose the element only through Pin.
+    unsafe { slots.map_unchecked_mut(|slots| &mut slots[index]) }
 }
 
 struct ServiceSlot<'a, S> {

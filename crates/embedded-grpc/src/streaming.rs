@@ -10,8 +10,8 @@ use futures_core::Stream;
 use micropb::{MessageDecode, MessageEncode};
 
 use crate::{
-    CONTENT_TYPE, ConnectionError, GRPC_OK, HTTP_OK, MessageDecoder, Status, UnaryResponse, field,
-    rpc_path,
+    CONTENT_TYPE, ConnectionError, GRPC_OK, HTTP_OK, Http2Config, MessageDecoder, Status,
+    UnaryResponse, field, rpc_path,
 };
 
 /// A service that can handle multiple calls on the same local executor.
@@ -24,12 +24,30 @@ pub async fn serve_streaming<Io: Read + Write, S: StreamingService>(
     io: Io,
     service: &S,
 ) -> Result<(), ConnectionError<Io::Error>> {
-    embedded_http2::service::serve_streams(io, |request| async move {
-        // A reset or failed response ends its own RPC. The driver reports
-        // connection errors independently.
-        let _ = dispatch(service, request).await;
-        Ok(())
-    })
+    serve_streaming_with_config::<2, _, _>(io, service, Http2Config::default()).await
+}
+
+/// Serve gRPC with `SLOTS` inline handler futures per connection.
+/// The HTTP/2 stream limit must fit within that capacity.
+pub async fn serve_streaming_with_config<
+    const SLOTS: usize,
+    Io: Read + Write,
+    S: StreamingService,
+>(
+    io: Io,
+    service: &S,
+    config: Http2Config,
+) -> Result<(), ConnectionError<Io::Error>> {
+    embedded_http2::service::serve_streams_with_config::<SLOTS, _, _>(
+        io,
+        config,
+        |request| async move {
+            // A reset or failed response ends its own RPC. The driver reports
+            // connection errors independently.
+            let _ = dispatch(service, request).await;
+            Ok(())
+        },
+    )
     .await
     .map_err(ConnectionError)
 }
