@@ -65,6 +65,37 @@ pub struct StreamingCall {
 }
 
 impl StreamingCall {
+    /// Run a typed bidirectional handler until completion or peer reset.
+    pub async fn bidirectional<M, R, const MAX: usize>(
+        self,
+        handler: impl AsyncFnOnce(&mut Bidirectional<M, R, MAX>) -> Result<(), Status>,
+    ) -> Result<(), StreamError>
+    where
+        M: MessageDecode + Default,
+        R: MessageEncode,
+    {
+        let Self { body, respond } = self;
+        let mut call = Bidirectional {
+            body,
+            send: respond.send_response(response_headers())?,
+            chunk: None,
+            offset: 0,
+            decoder: MessageDecoder::default(),
+            reply: core::marker::PhantomData,
+        };
+        let cancel = call.send.cancellation();
+        let code = match select(cancel, handler(&mut call)).await {
+            Either::First(()) => return Ok(()),
+            Either::Second(Ok(())) => GRPC_OK,
+            Either::Second(Err(status)) => status.wire_code(),
+        };
+        // The handler may finish before the peer half-closes. Dropping the
+        // receive handle discards unread data while the driver flushes trailers.
+        drop(call.chunk);
+        drop(call.body);
+        call.send.finish(vec![field("grpc-status", code)]).await
+    }
+
     /// Receive exactly one request message, then expose the response stream.
     pub async fn unary<M: MessageDecode + Default, const MAX: usize>(
         self,
@@ -107,6 +138,63 @@ impl StreamingCall {
         while body.data().await?.is_some() {}
         ServerStreaming { respond }.reject(status).await
     }
+}
+
+/// One bidirectional RPC with bounded inbound framing and flushed replies.
+pub struct Bidirectional<M, R, const MAX: usize> {
+    body: server::RecvStream,
+    send: server::SendStream,
+    chunk: Option<server::Chunk>,
+    offset: usize,
+    decoder: MessageDecoder<M, MAX>,
+    reply: core::marker::PhantomData<fn(R)>,
+}
+
+impl<M: MessageDecode + Default, R: MessageEncode, const MAX: usize> Bidirectional<M, R, MAX> {
+    /// Read one message, retaining receive credit for any coalesced messages.
+    pub async fn message(&mut self) -> Result<Option<M>, Status> {
+        loop {
+            if let Some(chunk) = &self.chunk {
+                let bytes = chunk.as_bytes();
+                let mut remaining = &bytes[self.offset..];
+                let decoded = self.decoder.push(&mut remaining)?;
+                self.offset = bytes.len() - remaining.len();
+                if remaining.is_empty() {
+                    self.chunk = None;
+                }
+                if decoded.is_some() {
+                    return Ok(decoded);
+                }
+            }
+            self.chunk = self.body.data().await.map_err(|_| Status::Unavailable)?;
+            self.offset = 0;
+            if self.chunk.is_none() {
+                self.decoder.finish()?;
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Send and flush one reply before handling another request message.
+    pub async fn send(&mut self, message: R) -> Result<(), Status> {
+        let encoded = UnaryResponse::encode::<_, MAX>(message)?;
+        write_message(&mut self.send, &encoded)
+            .await
+            .map_err(|_| Status::Unavailable)?;
+        self.send.flush().await.map_err(|_| Status::Unavailable)
+    }
+}
+
+async fn write_message(
+    send: &mut server::SendStream,
+    message: &UnaryResponse,
+) -> Result<(), StreamError> {
+    let mut remaining = message.0.as_slice();
+    while !remaining.is_empty() {
+        let sent = send.send_data(remaining).await?;
+        remaining = &remaining[sent..];
+    }
+    Ok(())
 }
 
 pub struct ServerStreaming {
@@ -152,11 +240,7 @@ impl ServerStreaming {
                         Ok(response) => response,
                         Err(status) => break status.wire_code(),
                     };
-                    let mut remaining = response.0.as_slice();
-                    while !remaining.is_empty() {
-                        let sent = send.send_data(remaining).await?;
-                        remaining = &remaining[sent..];
-                    }
+                    write_message(&mut send, &response).await?;
                 }
             }
         };

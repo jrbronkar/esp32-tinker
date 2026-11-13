@@ -26,6 +26,10 @@ fn main() {
             .method
             .iter()
             .filter(|method| !method.client_streaming() && method.server_streaming());
+        let bidirectional = service
+            .method
+            .iter()
+            .filter(|method| method.client_streaming() && method.server_streaming());
         writeln!(bindings, "#[allow(async_fn_in_trait)]\npub trait {name} {{").unwrap();
         for method in methods.clone() {
             let rpc = rust_method(method.name());
@@ -44,6 +48,16 @@ fn main() {
             writeln!(
                 bindings,
                 "async fn {rpc}(&self, request: {input}) -> Result<impl embedded_grpc::Stream<Item = Result<{output}, Status>>, Status>;"
+            )
+            .unwrap();
+        }
+        for method in bidirectional.clone() {
+            let rpc = rust_method(method.name());
+            let input = ota_type(method.input_type());
+            let output = ota_type(method.output_type());
+            writeln!(
+                bindings,
+                "async fn {rpc}(&self, call: &mut embedded_grpc::Bidirectional<{input}, {output}, {{ ota_protocol::MAX_FRAME }}>) -> Result<(), Status>;"
             )
             .unwrap();
         }
@@ -110,6 +124,15 @@ fn main() {
                         None => Ok(()),
                     }}
                 }},"
+            )
+            .unwrap();
+        }
+        for method in bidirectional {
+            let rpc = rust_method(method.name());
+            let path = format!("/{}.{name}/{}", schema.package(), method.name());
+            writeln!(
+                bindings,
+                "{path:?} => call.bidirectional(async |rpc| self.service.{rpc}(rpc).await).await,"
             )
             .unwrap();
         }

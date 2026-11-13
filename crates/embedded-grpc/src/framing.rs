@@ -85,7 +85,7 @@ impl<M: MessageDecode + Default, const MAX: usize> MessageDecoder<M, MAX> {
     }
 
     /// Verify the request half-closed between messages.
-    pub fn finish(self) -> Result<(), Status> {
+    pub fn finish(&self) -> Result<(), Status> {
         if self.prefix_len == 0 {
             Ok(())
         } else {
