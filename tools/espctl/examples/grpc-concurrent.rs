@@ -26,13 +26,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client.ready().await?;
         let reply=client.unary(tonic::Request::new(proto(&ota_protocol::StatusRequest{include_boot:true,..Default::default()})),device_grpc::STATUS_PATH.parse()?,RawCodec).await?;
         let status=status_response(&reply.into_inner());
+        let application = &status.application;
         if status.device_id!="esp32s3-a4:cb:8f:d8:13:c8" {return Err(format!("unexpected board: {}",status.device_id).into())}
         println!("Verified identity {} running {}; ONE Tonic channel / HTTP2 connection",status.device_id,status.firmware_version);
         let mut logs=logs(&mut client,Default::default()).await?;
         logs.message().await?.ok_or("missing initial log snapshot")?;
         let (tx,mut replies)=upload(&mut client).await?;
         let mut id=(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32) & 0x7fff_ffff;
-        let ack = op(&tx, &mut replies, begin(&image, &args[3]), id).await?;
+        let ack = op(&tx, &mut replies, begin_for_application(&image, &args[3], application.as_str()), id).await?;
         let running = status.boot().and_then(|boot| boot.running()).ok_or("missing boot inventory")?.offset;
         let expected_target = if running == 0x10000 { 0x310000 } else if running == 0x310000 { 0x10000 } else { return Err("unexpected running slot".into()) };
         if ack.target_offset != expected_target { return Err("wrong inactive target offset".into()); }
