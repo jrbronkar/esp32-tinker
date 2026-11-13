@@ -14,12 +14,11 @@ fn main() {
         .iter()
         .find(|file| file.name() == "management.proto")
         .expect("management.proto descriptor");
-    let bindings = embedded_grpc_build::generate(schema, "ota_protocol::MAX_FRAME", |name| {
-        name.strip_prefix(".ota.")
-            .filter(|message| !message.contains('.'))
-            .map(|message| format!("ota_protocol::ota_::{message}"))
-            .ok_or_else(|| format!("no Rust type mapping for {name}"))
-    })
+    let bindings = embedded_grpc_build::generate_with_packages(
+        schema,
+        "ota_protocol::MAX_FRAME",
+        &[("ota", "ota_protocol::ota_")],
+    )
     .expect("generate Management bindings");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
     fs::write(out.join("management.rs"), bindings).expect("write Management bindings");

@@ -3,6 +3,25 @@
 use protobuf::descriptor::FileDescriptorProto;
 use std::fmt::Write as _;
 
+/// Generate bindings for top-level messages mapped by protobuf package.
+pub fn generate_with_packages(
+    schema: &FileDescriptorProto,
+    max_message_len: &str,
+    packages: &[(&str, &str)],
+) -> Result<String, String> {
+    generate(schema, max_message_len, |name| {
+        let (package, message) = name
+            .strip_prefix('.')
+            .and_then(|name| name.rsplit_once('.'))
+            .unwrap_or(("", name.trim_start_matches('.')));
+        packages
+            .iter()
+            .find(|(proto_package, _)| *proto_package == package)
+            .map(|(_, rust_module)| format!("{rust_module}::{message}"))
+            .ok_or_else(|| format!("no Rust type mapping for {name}"))
+    })
+}
+
 /// Generate traits and server dispatch for all services in a descriptor.
 /// Resolve fully qualified protobuf message names to Rust type paths. The
 /// message limit is a Rust const expression available to the generated code.
@@ -197,6 +216,16 @@ mod tests {
         assert!(bindings.contains("request: crate::nested::Request"));
         assert!(bindings.contains("Result<other::Reply, embedded_grpc::Status>"));
         assert!(bindings.contains("{ crate::LIMIT }"));
+
+        let packages = [
+            ("example.messages.Outer", "crate::nested"),
+            ("other", "other"),
+        ];
+        assert_eq!(
+            generate_with_packages(&schema, "crate::LIMIT", &packages)?,
+            bindings,
+        );
+        assert!(generate_with_packages(&schema, "crate::LIMIT", &packages[..1]).is_err());
 
         schema.clear_package();
         assert!(generate_bindings(&schema)?.contains("/Example/Watch"));
