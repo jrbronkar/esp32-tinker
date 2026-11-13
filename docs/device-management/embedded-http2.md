@@ -1,10 +1,29 @@
 # Embedded HTTP/2 streaming
 
-The replacement transport currently supports one active stream per connection.
-Requests and responses can transfer one frame at a time. The production
-endpoint still uses Protolink.
+The replacement transport supports two active streams per connection.
+The production endpoint still uses Protolink.
 
-## Reading a request
+## Multiplexed connections
+
+Use `Server::handshake` and call `next_event` to receive request headers,
+DATA, trailers, resets, and control events. Use each event's stream ID to
+route it to the corresponding handler. DATA borrows the connection's frame
+buffer. Consume it before reading another event and use `release_capacity`
+to return receive credit.
+
+Send responses with `start_response`, `send_data`, and `finish_response`.
+If a nonempty slice sends zero bytes, retain the unsent bytes in the handler
+and try other streams. Retry pending writes after a control event, which can
+update stream or connection credit. A reset ends only the identified stream.
+The transport keeps at most two stream states and does not queue bodies.
+
+## Sequential connections
+
+Use `Server::handshake_sequential` for the buffered service adapter or the
+single-stream read and wait helpers below. The conformance fixture and the
+unary gRPC adapter use this handshake.
+
+### Reading a request
 
 1. Call `accept_head` to receive the initial headers and stream ID without waiting
    for the body. `end_stream` is set when the request ends in those headers.
@@ -24,7 +43,7 @@ connection credit before reporting the reset so the next request can proceed.
 [RFC 9113 §6.1](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.1),
 [RFC 9113 §6.9](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.9).
 
-## Sending a response
+### Sending a response
 
 1. Call `start_response` to send response headers. The peer can keep sending
    request DATA while the server sends response DATA.
@@ -39,8 +58,8 @@ connection credit before reporting the reset so the next request can proceed.
 
 A DATA slice can contain part of a gRPC message or several messages. The gRPC
 layer will assemble messages across DATA boundaries. Incremental responses let
-`Upload` send ACKs while the request is open. Concurrent `Logs` and `Upload`
-on one connection require multiplexing.
+`Upload` send ACKs while the request is open. The streaming gRPC adapter will use the multiplexed API to run `Logs` and
+`Upload` on one connection.
 [RFC 9113 §5.1](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.1),
 [RFC 9113 §6.9](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.9),
 [gRPC over HTTP/2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md),

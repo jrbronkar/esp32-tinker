@@ -35,7 +35,7 @@ async fn main() -> io::Result<()> {
     loop {
         let (socket, _) = listener.accept().await?;
         tokio::spawn(async move {
-            if let Ok(mut server) = Server::handshake(FromTokio::new(socket)).await {
+            if let Ok(mut server) = Server::handshake_sequential(FromTokio::new(socket)).await {
                 // Conformance probes deliberately terminate connections and send invalid frames.
                 let _ = server.serve(&mut Fixture).await;
             }

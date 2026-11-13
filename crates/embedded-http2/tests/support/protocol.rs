@@ -31,7 +31,7 @@ async fn open(bytes: &[u8]) -> Result<(TestServer, DuplexStream), TestError> {
     let (socket, mut peer) = duplex(128 * 1024);
     peer.write_all(bytes).await.unwrap();
     peer.shutdown().await.unwrap();
-    let server = Server::handshake(FromTokio::new(socket)).await?;
+    let server = Server::handshake_sequential(FromTokio::new(socket)).await?;
     Ok((server, peer))
 }
 
@@ -84,7 +84,7 @@ async fn handshake_requires_the_preface_and_initial_settings() {
     peer.write_all(CLIENT_PREFACE).await.unwrap();
     drop(peer);
     assert!(matches!(
-        Server::handshake(FromTokio::new(socket)).await,
+        Server::handshake_sequential(FromTokio::new(socket)).await,
         Err(Error::Write(_))
     ));
 }
@@ -1291,6 +1291,82 @@ async fn stray_continuation_sends_connection_protocol_error()
     assert_eq!(
         read_wire_frame(&mut peer).await?,
         goaway(CONNECTION, ErrorCode::ProtocolError)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn multiplexing_refuses_excess_streams_and_isolates_flow_control_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::Event;
+
+    let (socket, mut peer) = duplex(4096);
+    peer.write_all(CLIENT_PREFACE).await?;
+    for packet in [
+        frame(FrameType::Settings, 0, 0, &[]),
+        frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
+        frame(FrameType::Headers, 3, END_HEADERS, REQUEST),
+        frame(FrameType::Headers, 5, END_HEADERS | END_STREAM, REQUEST),
+        frame(FrameType::Data, 1, 0, b"pending"),
+        window_update(1, i32::MAX as usize),
+        frame(FrameType::Data, 3, END_STREAM, b"healthy"),
+        frame(FrameType::Headers, 7, END_HEADERS | END_STREAM, REQUEST),
+    ] {
+        peer.write_all(&packet).await?;
+    }
+    let mut server = Server::handshake(FromTokio::new(socket))
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    for id in [1, 3] {
+        assert!(
+            matches!(server.next_event().await, Ok(Event::Request(head)) if head.stream_id == id)
+        );
+    }
+    assert!(matches!(
+        server.next_event().await,
+        Ok(Event::Reset { stream_id: 5, code }) if code == ErrorCode::RefusedStream as u32
+    ));
+    assert!(matches!(
+        server.next_event().await,
+        Ok(Event::Body {
+            stream_id: 1,
+            frame: BodyFrame::Data(b"pending"),
+            end_stream: false
+        })
+    ));
+    assert!(matches!(
+        server.next_event().await,
+        Ok(Event::Reset { stream_id: 1, code }) if code == ErrorCode::FlowControlError as u32
+    ));
+    assert!(matches!(
+        server.next_event().await,
+        Ok(Event::Body {
+            stream_id: 3,
+            frame: BodyFrame::Data(b"healthy"),
+            end_stream: true
+        })
+    ));
+    assert!(matches!(server.next_event().await, Ok(Event::Request(head)) if head.stream_id == 7));
+
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+    for (id, code) in [
+        (5, ErrorCode::RefusedStream),
+        (1, ErrorCode::FlowControlError),
+    ] {
+        assert_eq!(
+            read_wire_frame(&mut peer).await?,
+            frame(
+                FrameType::RstStream,
+                id,
+                NO_FLAGS,
+                &(code as u32).to_be_bytes()
+            )
+        );
+    }
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        window_update(CONNECTION, b"pending".len())
     );
     Ok(())
 }

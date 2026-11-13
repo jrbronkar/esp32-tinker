@@ -3,7 +3,7 @@
 
 //! A cleartext HTTP/2 server connection for embedded async I/O.
 //!
-//! Supports one active stream per connection. Requests can be read
+//! Supports sequential exchanges and opt-in bounded multiplexing. Requests can be read
 //! incrementally or buffered within a fixed limit. Responses can send DATA
 //! before the request half-closes and may include trailers.
 //! Drop the connection on an error other than a reported stream reset, or
@@ -12,11 +12,13 @@
 extern crate alloc;
 
 mod headers;
+mod multiplex;
 mod request;
 mod request_fields;
 mod response;
 pub mod service;
 
+pub use multiplex::Event;
 pub use request::{BodyFrame, RequestHead};
 pub use response::SendEvent;
 
@@ -107,13 +109,18 @@ pub struct Server<Io> {
     connection_send: FlowControl,
     connection_receive: FlowControl,
     payload: Vec<u8>,
-    stream: Option<Stream>,
+    streams: Vec<Stream>,
+    max_streams: usize,
     last_stream: StreamId,
 }
 
 impl<Io: Read + Write> Server<Io> {
-    /// Complete the cleartext, prior-knowledge handshake on an accepted socket.
-    pub async fn handshake(io: Io) -> Result<Self, Error<Io::Error>> {
+    /// Complete a cleartext handshake for the buffered or sequential APIs.
+    pub async fn handshake_sequential(io: Io) -> Result<Self, Error<Io::Error>> {
+        Self::handshake_with_limit(io, 1).await
+    }
+
+    async fn handshake_with_limit(io: Io, max_streams: usize) -> Result<Self, Error<Io::Error>> {
         let mut server = Self {
             io,
             peer: Settings::default(),
@@ -122,7 +129,8 @@ impl<Io: Read + Write> Server<Io> {
             connection_send: FlowControl::default(),
             connection_receive: FlowControl::default(),
             payload: Vec::new(),
-            stream: None,
+            streams: Vec::new(),
+            max_streams,
             last_stream: 0,
         };
         let mut preface = [0; CLIENT_PREFACE.len()];
@@ -137,7 +145,7 @@ impl<Io: Read + Write> Server<Io> {
         let settings = encode_settings(&[
             Setting {
                 id: SettingId::MaxConcurrentStreams,
-                value: 1,
+                value: max_streams as u32,
             },
             Setting {
                 id: SettingId::MaxHeaderListSize,
@@ -155,6 +163,19 @@ impl<Io: Read + Write> Server<Io> {
         }
         server.control(first).await?;
         Ok(server)
+    }
+
+    fn stream(&self, id: StreamId) -> Option<&Stream> {
+        self.streams.iter().find(|stream| stream.id == id)
+    }
+
+    fn stream_mut(&mut self, id: StreamId) -> Option<&mut Stream> {
+        self.streams.iter_mut().find(|stream| stream.id == id)
+    }
+
+    fn remove_stream(&mut self, id: StreamId) -> Option<Stream> {
+        let index = self.streams.iter().position(|stream| stream.id == id)?;
+        Some(self.streams.swap_remove(index))
     }
 
     async fn read_frame(&mut self) -> Result<Frame, Error<Io::Error>> {
@@ -303,7 +324,7 @@ impl<Io: Read + Write> Server<Io> {
                 for setting in decode_settings(&self.payload)? {
                     let old = self.peer.initial_window_size;
                     self.peer.apply(setting)?;
-                    if let Some(stream) = &mut self.stream {
+                    for stream in &mut self.streams {
                         stream.send.apply_initial_window_size_change(
                             i64::from(old),
                             i64::from(self.peer.initial_window_size),
@@ -328,9 +349,7 @@ impl<Io: Read + Write> Server<Io> {
                 let increment = decode_window_update(&self.payload)?;
                 let updated = if frame.stream_id == CONNECTION_STREAM_ID {
                     self.connection_send.apply_window_update(increment)
-                } else if let Some(stream) =
-                    self.stream.as_mut().filter(|s| s.id == frame.stream_id)
-                {
+                } else if let Some(stream) = self.stream_mut(frame.stream_id) {
                     stream.send.apply_window_update(increment)
                 } else if frame.stream_id > self.last_stream {
                     return Err(Error::Protocol);
@@ -341,7 +360,13 @@ impl<Io: Read + Write> Server<Io> {
                     if frame.stream_id == CONNECTION_STREAM_ID {
                         self.write_goaway(*code).await?;
                     } else {
-                        self.write_reset(frame.stream_id, *code).await?;
+                        self.reset_stream(frame.stream_id, *code).await?;
+                        if self.max_streams > 1 {
+                            return Err(Error::Reset {
+                                stream_id: frame.stream_id,
+                                code: *code as u32,
+                            });
+                        }
                     }
                 }
                 updated.map_err(Error::Wire)
@@ -351,7 +376,7 @@ impl<Io: Read + Write> Server<Io> {
             {
                 let code =
                     u32::from_be_bytes(self.payload[..].try_into().map_err(|_| Error::Protocol)?);
-                if let Some(stream) = self.stream.take_if(|stream| stream.id == frame.stream_id) {
+                if let Some(stream) = self.remove_stream(frame.stream_id) {
                     self.release_connection_capacity(stream.pending_receive_credit)
                         .await?;
                     return Err(Error::Reset {

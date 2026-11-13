@@ -36,41 +36,55 @@ pub(super) enum ReceivedBody {
 impl<Io: Read + Write> Server<Io> {
     /// Receive the initial headers without waiting for the request body.
     pub async fn accept_head(&mut self) -> Result<RequestHead, Error<Io::Error>> {
-        if self.stream.is_some() {
+        self.require_sequential()?;
+        if !self.streams.is_empty() {
             return Err(Error::Protocol);
         }
         loop {
             let frame = self.read_frame().await?;
-            if frame.kind != FrameType::Headers as u8 {
-                self.control(frame).await?;
-                continue;
+            if frame.kind == FrameType::Headers as u8 {
+                return self.open_request(&frame).await;
             }
-            if !is_client_initiated(frame.stream_id) || frame.stream_id <= self.last_stream {
-                return Err(Error::Protocol);
-            }
+            self.control(frame).await?;
+        }
+    }
 
-            let headers = self.read_headers(&frame).await?;
-            let end_stream = frame.flags.has(Flags::END_STREAM);
-            let request_length = match RequestLength::parse(&headers) {
-                Ok(length) if !end_stream || length.finish().is_ok() => length,
-                _ => return self.reject_malformed_request(frame.stream_id).await,
-            };
-            self.last_stream = frame.stream_id;
-            self.stream = Some(Stream {
-                id: frame.stream_id,
-                send: FlowControl::new(i64::from(self.peer.initial_window_size)),
-                receive: FlowControl::default(),
-                remote_closed: end_stream,
-                response_started: false,
-                pending_receive_credit: 0,
-                request_length,
-            });
-            return Ok(RequestHead {
+    pub(super) async fn open_request(
+        &mut self,
+        frame: &crate::Frame,
+    ) -> Result<RequestHead, Error<Io::Error>> {
+        if !is_client_initiated(frame.stream_id) || frame.stream_id <= self.last_stream {
+            return Err(Error::Protocol);
+        }
+        let headers = self.read_headers(frame).await?;
+        self.last_stream = frame.stream_id;
+        if self.streams.len() == self.max_streams {
+            let code = ErrorCode::RefusedStream;
+            self.write_reset(frame.stream_id, code).await?;
+            return Err(Error::Reset {
                 stream_id: frame.stream_id,
-                headers,
-                end_stream,
+                code: code as u32,
             });
         }
+        let end_stream = frame.flags.has(Flags::END_STREAM);
+        let request_length = match RequestLength::parse(&headers) {
+            Ok(length) if !end_stream || length.finish().is_ok() => length,
+            _ => return self.reject_malformed_request(frame.stream_id).await,
+        };
+        self.streams.push(Stream {
+            id: frame.stream_id,
+            send: FlowControl::new(i64::from(self.peer.initial_window_size)),
+            receive: FlowControl::default(),
+            remote_closed: end_stream,
+            response_started: false,
+            pending_receive_credit: 0,
+            request_length,
+        });
+        Ok(RequestHead {
+            stream_id: frame.stream_id,
+            headers,
+            end_stream,
+        })
     }
 
     /// Read the next request body frame. Returns `None` after the remote half closes.
@@ -81,11 +95,8 @@ impl<Io: Read + Write> Server<Io> {
         &mut self,
         stream_id: StreamId,
     ) -> Result<Option<BodyFrame<'_>>, Error<Io::Error>> {
-        let stream = self
-            .stream
-            .as_ref()
-            .filter(|stream| stream.id == stream_id)
-            .ok_or(Error::Protocol)?;
+        self.require_sequential()?;
+        let stream = self.stream(stream_id).ok_or(Error::Protocol)?;
         if stream.remote_closed {
             return Ok(None);
         }
@@ -103,16 +114,29 @@ impl<Io: Read + Write> Server<Io> {
         stream_id: StreamId,
     ) -> Result<Option<ReceivedBody>, Error<Io::Error>> {
         let frame = self.read_frame().await?;
+        self.process_body_frame(stream_id, frame).await
+    }
+
+    pub(super) async fn process_body_frame(
+        &mut self,
+        stream_id: StreamId,
+        frame: crate::Frame,
+    ) -> Result<Option<ReceivedBody>, Error<Io::Error>> {
         let end_stream = frame.flags.has(Flags::END_STREAM);
         match FrameType::from_u8(frame.kind) {
             Ok(FrameType::Headers) => {
                 self.require_open_body(stream_id, frame.stream_id)?;
-                if !end_stream {
+                if !end_stream && self.max_streams == 1 {
                     return Err(Error::Protocol);
                 }
                 let trailers = self.read_headers(&frame).await?;
-                check_trailers(&trailers).map_err(|_| Error::Protocol)?;
-                let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
+                if !end_stream || check_trailers(&trailers).is_err() {
+                    if self.max_streams == 1 {
+                        return Err(Error::Protocol);
+                    }
+                    return self.reject_malformed_request(stream_id).await;
+                }
+                let stream = self.stream_mut(stream_id).ok_or(Error::Protocol)?;
                 if stream.request_length.finish().is_err() {
                     return self.reject_malformed_request(stream_id).await;
                 }
@@ -124,14 +148,27 @@ impl<Io: Read + Write> Server<Io> {
                 let data = strip_padding(&self.payload, frame.flags).ok_or(Error::Protocol)?;
                 let data_start = usize::from(frame.flags.has(Flags::PADDED));
                 let data_range = data_start..data_start + data.len();
-                let stream = self.stream.as_mut().ok_or(Error::Protocol)?;
                 // RFC 9113 §6.1 charges the whole DATA payload, including padding.
                 let credit = self.payload.len() as u32;
+                let data_len = data.len();
                 self.connection_receive.consume(credit)?;
-                stream.receive.consume(credit)?;
+                let sequential = self.max_streams == 1;
+                let stream = self.stream_mut(stream_id).ok_or(Error::Protocol)?;
+                if let Err(error) = stream.receive.consume(credit) {
+                    if sequential {
+                        return Err(error.into());
+                    }
+                    stream.pending_receive_credit += credit;
+                    let code = ErrorCode::FlowControlError;
+                    self.reset_stream(stream_id, code).await?;
+                    return Err(Error::Reset {
+                        stream_id,
+                        code: code as u32,
+                    });
+                }
                 // The receive window bounds the accumulated credit.
                 stream.pending_receive_credit += credit;
-                if stream.request_length.consume(data.len()).is_err()
+                if stream.request_length.consume(data_len).is_err()
                     || (end_stream && stream.request_length.finish().is_err())
                 {
                     return self.reject_malformed_request(stream_id).await;
@@ -151,7 +188,7 @@ impl<Io: Read + Write> Server<Io> {
         stream_id: StreamId,
     ) -> Result<T, Error<Io::Error>> {
         // RFC 9113 §8.1.1 specifies a stream error for malformed messages.
-        self.write_reset(stream_id, ErrorCode::ProtocolError)
+        self.reset_stream(stream_id, ErrorCode::ProtocolError)
             .await?;
         Err(Error::MalformedRequest)
     }
@@ -163,8 +200,7 @@ impl<Io: Read + Write> Server<Io> {
     ) -> Result<(), Error<Io::Error>> {
         if frame_id == stream_id
             && self
-                .stream
-                .as_ref()
+                .stream(stream_id)
                 .is_some_and(|stream| !stream.remote_closed)
         {
             Ok(())
@@ -192,11 +228,7 @@ impl<Io: Read + Write> Server<Io> {
     /// Releasing after the remote half closes restores only connection credit.
     /// [Self::respond] also releases any credit still pending when it answers.
     pub async fn release_capacity(&mut self, stream_id: StreamId) -> Result<(), Error<Io::Error>> {
-        let stream = self
-            .stream
-            .as_mut()
-            .filter(|stream| stream.id == stream_id)
-            .ok_or(Error::Protocol)?;
+        let stream = self.stream_mut(stream_id).ok_or(Error::Protocol)?;
         let credit = mem::take(&mut stream.pending_receive_credit);
         if credit > 0 && !stream.remote_closed {
             stream.receive.apply_window_update(credit)?;
