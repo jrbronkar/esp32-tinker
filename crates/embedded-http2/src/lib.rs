@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+mod frame_reader;
 mod headers;
 mod multiplex;
 mod request;
@@ -28,7 +29,7 @@ use embedded_io_async::{Read, ReadExactError, Write};
 use zerodds_hpack::{Decoder, Encoder};
 use zerodds_http2::{
     CLIENT_PREFACE, ErrorCode, Flags, FrameHeader, FrameType, Http2Error, Settings, StreamId,
-    decode_frame, encode_frame,
+    encode_frame,
     flow::{FlowControl, decode_window_update},
     frame::{DEFAULT_MAX_FRAME_SIZE, FRAME_HEADER_LEN},
     settings::{Setting, SettingId, decode_settings, encode_settings},
@@ -42,8 +43,6 @@ const MAX_BODY: usize = 16 * 1024;
 const NO_FLAGS: u8 = 0;
 const CONNECTION_STREAM_ID: StreamId = 0;
 
-// RFC 9113 section 4.1 defines a 31-bit stream identifier.
-const STREAM_ID_MASK: u32 = 0x7fff_ffff;
 const PRIORITY_FIELDS_LEN: usize = size_of::<u32>() + size_of::<u8>();
 const RESET_CODE_LEN: usize = size_of::<u32>();
 const PING_PAYLOAD_LEN: usize = 8;
@@ -86,6 +85,11 @@ pub struct Response<'a> {
     pub trailers: &'a [HeaderField],
 }
 
+struct HeaderBlock {
+    first: Frame,
+    bytes: Vec<u8>,
+}
+
 struct Frame {
     kind: u8,
     flags: Flags,
@@ -110,6 +114,8 @@ pub struct Server<Io> {
     connection_send: FlowControl,
     connection_receive: FlowControl,
     payload: Vec<u8>,
+    frame_reader: frame_reader::FrameReader,
+    header_block: Option<HeaderBlock>,
     streams: Vec<Stream>,
     last_stream: StreamId,
 }
@@ -125,6 +131,8 @@ impl<Io: Read + Write> Server<Io> {
             connection_send: FlowControl::default(),
             connection_receive: FlowControl::default(),
             payload: Vec::new(),
+            frame_reader: frame_reader::FrameReader::default(),
+            header_block: None,
             streams: Vec::new(),
             last_stream: 0,
         };
@@ -174,45 +182,14 @@ impl<Io: Read + Write> Server<Io> {
     }
 
     async fn read_frame(&mut self) -> Result<Frame, Error<Io::Error>> {
-        let mut header = [0; FRAME_HEADER_LEN];
-        self.io.read_exact(&mut header).await.map_err(Error::Read)?;
-        // The first three bytes are a 24-bit payload length (RFC 9113 §4.1).
-        // Check it before allocating the payload buffer.
-        let len = u32::from_be_bytes([0, header[0], header[1], header[2]]);
-        if len > DEFAULT_MAX_FRAME_SIZE {
+        let result = self
+            .frame_reader
+            .read(&mut self.io, &mut self.payload)
+            .await;
+        if matches!(result, Err(Error::Wire(Http2Error::FrameTooLarge { .. }))) {
             self.write_goaway(ErrorCode::FrameSizeError).await?;
-            return Err(Http2Error::FrameTooLarge {
-                got: len,
-                max: DEFAULT_MAX_FRAME_SIZE,
-            }
-            .into());
         }
-        self.payload.resize(FRAME_HEADER_LEN + len as usize, 0);
-        self.payload[..FRAME_HEADER_LEN].copy_from_slice(&header);
-        self.io
-            .read_exact(&mut self.payload[FRAME_HEADER_LEN..])
-            .await
-            .map_err(Error::Read)?;
-        let (kind, flags, stream_id) = match decode_frame(&self.payload, DEFAULT_MAX_FRAME_SIZE) {
-            Ok((frame, _)) => (
-                frame.header.frame_type as u8,
-                frame.header.flags,
-                frame.header.stream_id,
-            ),
-            // An unknown extension frame still consumes its complete payload.
-            Err(Http2Error::UnknownFrameType(kind)) => {
-                let id = u32::from_be_bytes([header[5], header[6], header[7], header[8]])
-                    & STREAM_ID_MASK;
-                (kind, Flags(header[4]), id)
-            }
-            Err(error) => return Err(error.into()),
-        };
-        self.payload.drain(..FRAME_HEADER_LEN);
-        Ok(Frame {
-            kind,
-            flags,
-            stream_id,
-        })
+        result
     }
 
     async fn write_frame(
@@ -259,33 +236,62 @@ impl<Io: Read + Write> Server<Io> {
         .await
     }
 
-    async fn read_headers(&mut self, first: &Frame) -> Result<Vec<HeaderField>, Error<Io::Error>> {
-        let mut fragment = strip_padding(&self.payload, first.flags).ok_or(Error::Protocol)?;
-        if first.flags.has(Flags::PRIORITY) {
-            // The optional stream dependency and weight precede the
-            // header block fragment (RFC 9113 §6.2).
-            fragment = fragment.get(PRIORITY_FIELDS_LEN..).ok_or(Error::Protocol)?;
+    // Read an inbound frame or an entire compressed header block. The first
+    // HEADERS frame and completed fragments survive an interrupted read.
+    async fn read_inbound(&mut self) -> Result<Frame, Error<Io::Error>> {
+        if self.header_block.is_none() {
+            let first = self.read_frame().await?;
+            if first.kind != FrameType::Headers as u8 {
+                return Ok(first);
+            }
+            let mut fragment = strip_padding(&self.payload, first.flags).ok_or(Error::Protocol)?;
+            if first.flags.has(Flags::PRIORITY) {
+                fragment = fragment.get(PRIORITY_FIELDS_LEN..).ok_or(Error::Protocol)?;
+            }
+            if fragment.len() > headers::MAX_BLOCK {
+                return Err(Error::HeaderBlock);
+            }
+            if first.flags.has(Flags::END_HEADERS) {
+                let start = usize::from(first.flags.has(Flags::PADDED))
+                    + if first.flags.has(Flags::PRIORITY) {
+                        PRIORITY_FIELDS_LEN
+                    } else {
+                        0
+                    };
+                self.payload.truncate(start + fragment.len());
+                self.payload.drain(..start);
+                return Ok(first);
+            }
+            self.header_block = Some(HeaderBlock {
+                first,
+                bytes: fragment.to_vec(),
+            });
         }
-        if fragment.len() > headers::MAX_BLOCK {
-            return Err(Error::HeaderBlock);
-        }
-        let mut block = fragment.to_vec();
-        let mut end = first.flags.has(Flags::END_HEADERS);
-        // Only CONTINUATION frames on the same stream may follow until
-        // END_HEADERS is set (RFC 9113 §6.10).
-        while !end {
+
+        loop {
             let frame = self.read_frame().await?;
-            if frame.kind != FrameType::Continuation as u8 || frame.stream_id != first.stream_id {
+            let block = self.header_block.as_mut().ok_or(Error::Protocol)?;
+            if frame.kind != FrameType::Continuation as u8
+                || frame.stream_id != block.first.stream_id
+            {
                 self.write_goaway(ErrorCode::ProtocolError).await?;
                 return Err(Error::Protocol);
             }
-            if block.len() + self.payload.len() > headers::MAX_BLOCK {
+            if block.bytes.len() + self.payload.len() > headers::MAX_BLOCK {
                 return Err(Error::HeaderBlock);
             }
-            block.extend_from_slice(&self.payload);
-            end = frame.flags.has(Flags::END_HEADERS);
+            block.bytes.extend_from_slice(&self.payload);
+            if frame.flags.has(Flags::END_HEADERS) {
+                let block = self.header_block.take().ok_or(Error::Protocol)?;
+                self.payload.clear();
+                self.payload.extend_from_slice(&block.bytes);
+                return Ok(block.first);
+            }
         }
-        headers::decode(&mut self.decoder, &block).ok_or(Error::HeaderBlock)
+    }
+
+    fn decode_headers(&mut self) -> Result<Vec<HeaderField>, Error<Io::Error>> {
+        headers::decode(&mut self.decoder, &self.payload).ok_or(Error::HeaderBlock)
     }
 
     fn encode_headers(&mut self, fields: &[HeaderField]) -> Result<Vec<u8>, Error<Io::Error>> {

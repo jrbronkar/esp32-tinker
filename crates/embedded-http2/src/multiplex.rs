@@ -25,7 +25,7 @@ impl<Io: Read + Write> Server<Io> {
     /// on any active stream. A zero-byte send leaves the caller free to
     /// advance other streams before reading another event.
     pub async fn next_event(&mut self) -> Result<Event<'_>, Error<Io::Error>> {
-        let frame = self.read_frame().await?;
+        let frame = self.read_inbound().await?;
         let stream_id = frame.stream_id;
         let end_stream = frame.flags.has(Flags::END_STREAM);
         let result = match FrameType::from_u8(frame.kind) {
@@ -94,7 +94,7 @@ impl<Io: Read + Write> Server<Io> {
         }
         let credit = if frame.kind == FrameType::Headers as u8 {
             // Keep the connection-wide HPACK decoder in sync.
-            self.read_headers(&frame).await?;
+            self.decode_headers()?;
             0
         } else {
             let credit = self.payload.len() as u32;
