@@ -57,7 +57,7 @@ impl<Io: Read + Write> Server<Io> {
         }
         let headers = self.decode_headers()?;
         self.last_stream = frame.stream_id;
-        if self.streams.len() == crate::MAX_STREAMS {
+        if self.streams.len() as u64 >= u64::from(self.max_concurrent_streams) {
             let code = ErrorCode::RefusedStream;
             self.write_reset(frame.stream_id, code).await?;
             return Err(Error::Reset {

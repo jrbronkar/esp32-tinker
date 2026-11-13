@@ -1380,6 +1380,49 @@ async fn multiplexing_refuses_excess_streams_and_isolates_flow_control_errors()
     Ok(())
 }
 
+#[tokio::test]
+async fn configured_stream_limit_is_advertised_and_enforced()
+-> Result<(), Box<dyn std::error::Error>> {
+    use core::num::NonZeroU32;
+    use embedded_http2::{Config, Event};
+
+    for limit in [NonZeroU32::MIN, NonZeroU32::MIN.saturating_add(2)] {
+        let (socket, mut peer) = duplex(4096);
+        peer.write_all(CLIENT_PREFACE).await?;
+        peer.write_all(&frame(FrameType::Settings, 0, 0, &[]))
+            .await?;
+        for id in (1..=2 * limit.get() + 1).step_by(2) {
+            peer.write_all(&frame(FrameType::Headers, id, END_HEADERS, REQUEST))
+                .await?;
+        }
+
+        let mut server = Server::handshake_with_config(
+            FromTokio::new(socket),
+            Config {
+                max_concurrent_streams: limit,
+            },
+        )
+        .await
+        .map_err(describe_transport_error)?;
+        let settings = read_wire_frame(&mut peer).await?;
+        assert!(settings[FRAME_HEADER_LEN..].chunks_exact(6).any(|setting| {
+            setting[..2] == (SettingId::MaxConcurrentStreams as u16).to_be_bytes()
+                && setting[2..] == limit.get().to_be_bytes()
+        }));
+        let _ack = read_wire_frame(&mut peer).await?;
+
+        for id in (1..2 * limit.get()).step_by(2) {
+            assert!(
+                matches!(server.next_event().await, Ok(Event::Request(head)) if head.stream_id == id)
+            );
+        }
+        assert!(matches!(server.next_event().await,
+            Ok(Event::Reset { stream_id, code })
+                if stream_id == 2 * limit.get() + 1 && code == ErrorCode::RefusedStream as u32));
+    }
+    Ok(())
+}
+
 struct EchoBuffered;
 
 impl embedded_http2::service::Service for EchoBuffered {
