@@ -18,6 +18,13 @@ fn main() {
 
     for service in &schema.service {
         let name = service.name();
+        for method in &service.method {
+            assert!(
+                !method.client_streaming() || method.server_streaming(),
+                "{name}.{} uses client streaming with a unary response, which the embedded gRPC generator does not support",
+                method.name(),
+            );
+        }
         let methods = service
             .method
             .iter()
