@@ -1780,3 +1780,92 @@ async fn receive_handles_release_credit_and_report_reset() -> Result<(), Box<dyn
         Ok::<_, Box<dyn std::error::Error>>(())
     }).await?
 }
+
+#[tokio::test]
+async fn receive_handles_deliver_trailers_cancel_dropped_requests_and_report_disconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::server::{self, StreamError};
+    use tokio::time::{Duration, timeout};
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, mut peer) = duplex(4096);
+        peer.write_all(CLIENT_PREFACE).await?;
+        peer.write_all(&frame(FrameType::Settings, 0, NO_FLAGS, &[]))
+            .await?;
+        let (connection, mut incoming) = server::handshake(FromTokio::new(socket))
+            .await
+            .map_err(describe_transport_error)?;
+        let client = async {
+            let _settings = read_wire_frame(&mut peer).await?;
+            let _ack = read_wire_frame(&mut peer).await?;
+            for id in [FIRST_STREAM, NEXT_STREAM] {
+                peer.write_all(&frame(FrameType::Headers, id, END_HEADERS, REQUEST))
+                    .await?;
+            }
+            peer.write_all(&frame(FrameType::Data, NEXT_STREAM, NO_FLAGS, b"body"))
+                .await?;
+            // HPACK literal without indexing, new name "x", value "y".
+            peer.write_all(&frame(
+                FrameType::Headers,
+                NEXT_STREAM,
+                END_HEADERS | END_STREAM,
+                &[0, 1, b'x', 1, b'y'],
+            ))
+            .await?;
+            let reset = frame(
+                FrameType::RstStream,
+                FIRST_STREAM,
+                NO_FLAGS,
+                &(ErrorCode::Cancel as u32).to_be_bytes(),
+            );
+            let credit = window_update(CONNECTION, 4);
+            let first = read_wire_frame(&mut peer).await?;
+            let second = read_wire_frame(&mut peer).await?;
+            assert!((first == reset && second == credit) || (first == credit && second == reset));
+
+            let ping = [7; 8];
+            peer.write_all(&frame(FrameType::Ping, CONNECTION, NO_FLAGS, &ping))
+                .await?;
+            assert_eq!(
+                read_wire_frame(&mut peer).await?,
+                frame(FrameType::Ping, CONNECTION, Flags::ACK, &ping)
+            );
+            peer.shutdown().await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let handler = async {
+            let first = incoming.accept().await.ok_or("missing first request")?;
+            assert_eq!(first.head.stream_id, FIRST_STREAM);
+            drop(first);
+            let mut next = incoming.accept().await.ok_or("missing next request")?.body;
+            assert!(next.trailers().is_none());
+            let chunk = next
+                .data()
+                .await
+                .map_err(|error| format!("{error:?}"))?
+                .ok_or("missing chunk")?;
+            assert_eq!(chunk.as_bytes(), b"body");
+            drop(chunk);
+            assert!(matches!(next.data().await, Ok(None)));
+            let trailers = next.trailers().ok_or("missing trailers")?;
+            assert_eq!(trailers.len(), 1);
+            assert_eq!(trailers[0].name, "x");
+            assert_eq!(trailers[0].value, "y");
+            assert!(next.trailers().is_none());
+            assert!(incoming.accept().await.is_none());
+            assert!(matches!(next.data().await, Err(StreamError::Disconnected)));
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (driver, client, handler) = tokio::join!(connection.run(), client, handler);
+        client?;
+        handler?;
+        assert!(matches!(
+            driver,
+            Err(Error::Read(
+                embedded_io_async::ReadExactError::UnexpectedEof
+            ))
+        ));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?
+}
