@@ -170,7 +170,7 @@ async fn invalid_preface_is_reported_as_a_connection_failure() {
 }
 
 #[tokio::test]
-async fn stalled_response_stops_polling_and_reset_drops_the_producer() {
+async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
     use embedded_grpc::{Stream, StreamError, StreamingCall, StreamingService, serve_streaming};
     use std::{
         cell::Cell,
@@ -180,6 +180,7 @@ async fn stalled_response_stops_polling_and_reset_drops_the_producer() {
 
     #[derive(Default)]
     struct ProducerState {
+        pending: bool,
         polls: Cell<usize>,
         dropped: Cell<bool>,
     }
@@ -191,7 +192,11 @@ async fn stalled_response_stops_polling_and_reset_drops_the_producer() {
 
         fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             self.0.polls.set(self.0.polls.get() + 1);
-            Poll::Ready(Some(Ok(StatusRequest::default())))
+            if self.0.pending {
+                Poll::Pending
+            } else {
+                Poll::Ready(Some(Ok(StatusRequest::default())))
+            }
         }
     }
 
@@ -214,62 +219,186 @@ async fn stalled_response_stops_polling_and_reset_drops_the_producer() {
         }
     }
 
+    for (reset, pending) in [(true, false), (false, false), (true, true)] {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (peer, socket) = duplex(8192);
+            let service = ProducerState {
+                pending,
+                ..Default::default()
+            };
+            let client = async {
+                let (mut client, driver) = h2::client::Builder::new()
+                    .initial_window_size(1)
+                    .handshake(peer)
+                    .await
+                    .unwrap();
+                let driver = tokio::spawn(driver);
+                std::future::poll_fn(|cx| client.poll_ready(cx))
+                    .await
+                    .unwrap();
+                let (reply, mut request_body) = client
+                    .send_request(request(Method::POST, PATH, "application/grpc"), false)
+                    .unwrap();
+                request_body
+                    .send_data(Bytes::from_static(EMPTY_MESSAGE), true)
+                    .unwrap();
+                let mut body = reply.await.unwrap().into_body();
+                if pending {
+                    while service.polls.get() == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                } else {
+                    assert_eq!(body.data().await.unwrap().unwrap().len(), 1);
+                    assert_eq!(service.polls.get(), 1);
+                }
+
+                let mut sibling = send(
+                    &mut client,
+                    request(Method::POST, "/test.Echo/Unary", "application/grpc"),
+                    EMPTY_MESSAGE,
+                )
+                .await
+                .into_body();
+                let mut received = Vec::new();
+                while let Some(chunk) = sibling.data().await {
+                    let chunk = chunk.unwrap();
+                    sibling
+                        .flow_control()
+                        .release_capacity(chunk.len())
+                        .unwrap();
+                    received.extend_from_slice(&chunk);
+                }
+                assert_eq!(received, EMPTY_MESSAGE);
+                assert_eq!(
+                    sibling.trailers().await.unwrap().unwrap()["grpc-status"],
+                    "0"
+                );
+                if !pending {
+                    assert_eq!(service.polls.get(), 1);
+                }
+
+                if reset {
+                    request_body.send_reset(h2::Reason::CANCEL);
+                } else {
+                    driver.abort();
+                }
+                while !service.dropped.get() {
+                    tokio::task::yield_now().await;
+                }
+                if !pending {
+                    assert_eq!(service.polls.get(), 1);
+                }
+                driver.abort();
+            };
+            let (server, ()) =
+                tokio::join!(serve_streaming(FromTokio::new(socket), &service), client);
+            assert!(server.unwrap_err().is_disconnected());
+        })
+        .await
+        .expect("streaming cancellation timed out");
+    }
+}
+
+#[tokio::test]
+async fn streaming_rejects_bad_requests_and_reports_producer_errors() {
+    use embedded_grpc::{Stream, StreamError, StreamingCall, StreamingService, serve_streaming};
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    struct Once(Option<Result<StatusRequest, Status>>);
+    impl Stream for Once {
+        type Item = Result<StatusRequest, Status>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(self.0.take())
+        }
+    }
+
+    struct Streaming;
+    impl StreamingService for Streaming {
+        async fn call(&self, path: &str, call: StreamingCall) -> Result<(), StreamError> {
+            let Some((message, response)) = call.unary::<StatusRequest, 2>().await? else {
+                return Ok(());
+            };
+            match path {
+                PATH => {
+                    response
+                        .stream::<_, 2>(Once(Some(Err(Status::Unavailable))))
+                        .await
+                }
+                OVERFLOW_PATH => response.stream::<_, 1>(Once(Some(Ok(message)))).await,
+                _ => response.reply::<_, 2>(message).await,
+            }
+        }
+    }
+
     tokio::time::timeout(Duration::from_secs(5), async {
         let (peer, socket) = duplex(8192);
-        let service = ProducerState::default();
         let client = async {
-            let (mut client, driver) = h2::client::Builder::new()
-                .initial_window_size(1)
-                .handshake(peer)
-                .await
-                .unwrap();
-            let driver = tokio::spawn(driver);
-            std::future::poll_fn(|cx| client.poll_ready(cx))
-                .await
-                .unwrap();
-            let (reply, mut request_body) = client
-                .send_request(request(Method::POST, PATH, "application/grpc"), false)
-                .unwrap();
-            request_body
-                .send_data(Bytes::from_static(EMPTY_MESSAGE), true)
-                .unwrap();
-            let mut body = reply.await.unwrap().into_body();
-            assert_eq!(body.data().await.unwrap().unwrap().len(), 1);
-            assert_eq!(service.polls.get(), 1);
-
-            let mut sibling = send(
+            let (mut client, connection) = h2::client::handshake(peer).await.unwrap();
+            let driver = tokio::spawn(connection);
+            for (method, content_type, expected) in [
+                (
+                    Method::GET,
+                    "application/grpc",
+                    StatusCode::METHOD_NOT_ALLOWED,
+                ),
+                (
+                    Method::POST,
+                    "application/grpc-web",
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                ),
+            ] {
+                let response = send(
+                    &mut client,
+                    request(method, PATH, content_type),
+                    EMPTY_MESSAGE,
+                )
+                .await;
+                assert_eq!(response.status(), expected);
+                assert!(response.into_body().data().await.is_none());
+            }
+            let mut compressed = request(Method::POST, PATH, "application/grpc");
+            compressed
+                .headers_mut()
+                .insert("grpc-encoding", "gzip".parse().unwrap());
+            assert_grpc_reply(
+                send(&mut client, compressed, EMPTY_MESSAGE).await,
+                "12",
+                &[],
+            )
+            .await;
+            for (path, bytes, status) in [
+                (PATH, &[][..], "3"),
+                (PATH, &[0, 0], "3"),
+                (PATH, &[0; 10], "3"),
+                (PATH, &[0, 0, 0, 0, 3], "8"),
+                (PATH, EMPTY_MESSAGE, "14"),
+                (OVERFLOW_PATH, VALID_MESSAGE, "13"),
+            ] {
+                let response = send(
+                    &mut client,
+                    request(Method::POST, path, "application/grpc"),
+                    bytes,
+                )
+                .await;
+                assert_grpc_reply(response, status, &[]).await;
+            }
+            let response = send(
                 &mut client,
                 request(Method::POST, "/test.Echo/Unary", "application/grpc"),
-                EMPTY_MESSAGE,
+                VALID_MESSAGE,
             )
-            .await
-            .into_body();
-            let mut received = Vec::new();
-            while let Some(chunk) = sibling.data().await {
-                let chunk = chunk.unwrap();
-                sibling
-                    .flow_control()
-                    .release_capacity(chunk.len())
-                    .unwrap();
-                received.extend_from_slice(&chunk);
-            }
-            assert_eq!(received, EMPTY_MESSAGE);
-            assert_eq!(
-                sibling.trailers().await.unwrap().unwrap()["grpc-status"],
-                "0"
-            );
-            assert_eq!(service.polls.get(), 1);
-
-            request_body.send_reset(h2::Reason::CANCEL);
-            while !service.dropped.get() {
-                tokio::task::yield_now().await;
-            }
-            assert_eq!(service.polls.get(), 1);
+            .await;
+            assert_grpc_reply(response, "0", VALID_MESSAGE).await;
             driver.abort();
         };
-        let (server, ()) = tokio::join!(serve_streaming(FromTokio::new(socket), &service), client);
+        let (server, ()) =
+            tokio::join!(serve_streaming(FromTokio::new(socket), &Streaming), client);
         assert!(server.unwrap_err().is_disconnected());
     })
     .await
-    .expect("streaming cancellation timed out");
+    .expect("streaming validation timed out");
 }
