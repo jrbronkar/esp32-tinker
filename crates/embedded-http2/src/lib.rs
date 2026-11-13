@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+mod frame_reader;
 mod headers;
 mod multiplex;
 mod request;
@@ -28,7 +29,7 @@ use embedded_io_async::{Read, ReadExactError, Write};
 use zerodds_hpack::{Decoder, Encoder};
 use zerodds_http2::{
     CLIENT_PREFACE, ErrorCode, Flags, FrameHeader, FrameType, Http2Error, Settings, StreamId,
-    decode_frame, encode_frame,
+    encode_frame,
     flow::{FlowControl, decode_window_update},
     frame::{DEFAULT_MAX_FRAME_SIZE, FRAME_HEADER_LEN},
     settings::{Setting, SettingId, decode_settings, encode_settings},
@@ -42,8 +43,6 @@ const MAX_BODY: usize = 16 * 1024;
 const NO_FLAGS: u8 = 0;
 const CONNECTION_STREAM_ID: StreamId = 0;
 
-// RFC 9113 section 4.1 defines a 31-bit stream identifier.
-const STREAM_ID_MASK: u32 = 0x7fff_ffff;
 const PRIORITY_FIELDS_LEN: usize = size_of::<u32>() + size_of::<u8>();
 const RESET_CODE_LEN: usize = size_of::<u32>();
 const PING_PAYLOAD_LEN: usize = 8;
@@ -110,6 +109,7 @@ pub struct Server<Io> {
     connection_send: FlowControl,
     connection_receive: FlowControl,
     payload: Vec<u8>,
+    frame_reader: frame_reader::FrameReader,
     streams: Vec<Stream>,
     last_stream: StreamId,
 }
@@ -125,6 +125,7 @@ impl<Io: Read + Write> Server<Io> {
             connection_send: FlowControl::default(),
             connection_receive: FlowControl::default(),
             payload: Vec::new(),
+            frame_reader: frame_reader::FrameReader::default(),
             streams: Vec::new(),
             last_stream: 0,
         };
@@ -174,45 +175,14 @@ impl<Io: Read + Write> Server<Io> {
     }
 
     async fn read_frame(&mut self) -> Result<Frame, Error<Io::Error>> {
-        let mut header = [0; FRAME_HEADER_LEN];
-        self.io.read_exact(&mut header).await.map_err(Error::Read)?;
-        // The first three bytes are a 24-bit payload length (RFC 9113 §4.1).
-        // Check it before allocating the payload buffer.
-        let len = u32::from_be_bytes([0, header[0], header[1], header[2]]);
-        if len > DEFAULT_MAX_FRAME_SIZE {
+        let result = self
+            .frame_reader
+            .read(&mut self.io, &mut self.payload)
+            .await;
+        if matches!(result, Err(Error::Wire(Http2Error::FrameTooLarge { .. }))) {
             self.write_goaway(ErrorCode::FrameSizeError).await?;
-            return Err(Http2Error::FrameTooLarge {
-                got: len,
-                max: DEFAULT_MAX_FRAME_SIZE,
-            }
-            .into());
         }
-        self.payload.resize(FRAME_HEADER_LEN + len as usize, 0);
-        self.payload[..FRAME_HEADER_LEN].copy_from_slice(&header);
-        self.io
-            .read_exact(&mut self.payload[FRAME_HEADER_LEN..])
-            .await
-            .map_err(Error::Read)?;
-        let (kind, flags, stream_id) = match decode_frame(&self.payload, DEFAULT_MAX_FRAME_SIZE) {
-            Ok((frame, _)) => (
-                frame.header.frame_type as u8,
-                frame.header.flags,
-                frame.header.stream_id,
-            ),
-            // An unknown extension frame still consumes its complete payload.
-            Err(Http2Error::UnknownFrameType(kind)) => {
-                let id = u32::from_be_bytes([header[5], header[6], header[7], header[8]])
-                    & STREAM_ID_MASK;
-                (kind, Flags(header[4]), id)
-            }
-            Err(error) => return Err(error.into()),
-        };
-        self.payload.drain(..FRAME_HEADER_LEN);
-        Ok(Frame {
-            kind,
-            flags,
-            stream_id,
-        })
+        result
     }
 
     async fn write_frame(
