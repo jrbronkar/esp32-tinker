@@ -75,6 +75,9 @@ impl<M: MessageDecode + Default, const MAX: usize> MessageDecoder<M, MAX> {
 
         let count = (length - self.payload.len()).min(input.len());
         let (prefix, rest) = input.split_at(count);
+        self.payload
+            .try_reserve_exact(count)
+            .map_err(|_| Status::ResourceExhausted)?;
         self.payload.extend_from_slice(prefix);
         *input = rest;
         if self.payload.len() < length {

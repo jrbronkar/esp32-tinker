@@ -18,6 +18,7 @@ pub enum StreamError {
     Reset(u32),
     Disconnected,
     HeaderLimit,
+    ResourceExhausted,
 }
 
 #[derive(Default)]
@@ -252,7 +253,11 @@ impl SendStream {
             return Ok(0);
         }
         Self::wait_for_slot(stream).await?;
-        stream.send.borrow_mut().command = Some(WriteCommand::Data(bytes[..count].to_vec(), 0));
+        let mut data = Vec::new();
+        data.try_reserve_exact(count)
+            .map_err(|_| StreamError::ResourceExhausted)?;
+        data.extend_from_slice(&bytes[..count]);
+        stream.send.borrow_mut().command = Some(WriteCommand::Data(data, 0));
         stream.driver.wake();
         Ok(count)
     }
@@ -505,6 +510,10 @@ impl<Io: Read + Write> Connection<Io> {
                         match frame {
                             BodyFrame::Data(bytes) => {
                                 if !state.dropped {
+                                    state
+                                        .bytes
+                                        .try_reserve(bytes.len())
+                                        .map_err(|_| Error::ResourceExhausted)?;
                                     state.bytes.extend_from_slice(bytes);
                                 }
                                 state.needs_credit = true;

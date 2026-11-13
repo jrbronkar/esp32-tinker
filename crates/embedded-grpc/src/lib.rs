@@ -169,7 +169,9 @@ impl UnaryResponse {
         let written = MAX - encoder.into_writer().len();
         let bytes = &buffer[..written];
         let len = u32::try_from(written).map_err(|_| Status::Internal)?;
-        let mut body = Vec::with_capacity(ENVELOPE_LEN + bytes.len());
+        let mut body = Vec::new();
+        body.try_reserve_exact(ENVELOPE_LEN + bytes.len())
+            .map_err(|_| Status::ResourceExhausted)?;
         body.push(UNCOMPRESSED);
         body.extend_from_slice(&len.to_be_bytes());
         body.extend_from_slice(bytes);

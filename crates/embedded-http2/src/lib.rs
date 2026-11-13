@@ -74,6 +74,8 @@ pub enum Error<E> {
     /// Invalid request fields or body length. The server sent a stream reset.
     MalformedRequest,
     BodyLimit,
+    /// A frame buffer could not be allocated. Close this connection.
+    ResourceExhausted,
     Reset {
         stream_id: StreamId,
         code: u32,
@@ -228,7 +230,12 @@ impl<Io: Read + Write> Server<Io> {
             flags: Flags(flags),
             stream_id,
         };
-        let mut output = vec![0; FRAME_HEADER_LEN + payload.len()];
+        let output_len = FRAME_HEADER_LEN + payload.len();
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(output_len)
+            .map_err(|_| Error::ResourceExhausted)?;
+        output.resize(output_len, 0);
         let len = encode_frame(&header, payload, &mut output, DEFAULT_MAX_FRAME_SIZE)?;
         self.io
             .write_all(&output[..len])
