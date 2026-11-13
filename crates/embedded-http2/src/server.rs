@@ -80,6 +80,7 @@ struct Receive {
     reader: Signal,
     send: RefCell<SendState>,
     writer: Signal,
+    cancellation: Signal,
     driver: Rc<Signal>,
 }
 
@@ -97,9 +98,9 @@ pub struct Incoming(Rc<Shared>);
 pub struct RecvStream(Rc<Receive>);
 
 /// Bytes whose receive credit remains outstanding until the chunk is dropped.
-pub struct Chunk<'a> {
+pub struct Chunk {
     bytes: Vec<u8>,
-    receive: &'a Receive,
+    receive: Rc<Receive>,
 }
 
 pub struct Connection<Io> {
@@ -217,6 +218,16 @@ impl SendStream {
         }
     }
 
+    /// Observe cancellation independently of an in-flight send or receive.
+    pub fn cancellation(&self) -> impl Future<Output = ()> + use<> {
+        let stream = self.0.clone();
+        async move {
+            if let Some(stream) = stream {
+                wait_for_close(&stream).await;
+            }
+        }
+    }
+
     /// Wait until all previously queued response bytes have been flushed.
     pub async fn flush(&mut self) -> Result<(), StreamError> {
         let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
@@ -238,7 +249,7 @@ impl SendStream {
         Ok(count)
     }
 
-    /// Write the final trailers after the request half-closes.
+    /// Write final trailers after the request half-closes or its receive handle drops.
     ///
     /// Success means the final frame has been flushed to the transport.
     pub async fn finish(mut self, trailers: Vec<HeaderField>) -> Result<(), StreamError> {
@@ -273,7 +284,7 @@ async fn wait_for_close(stream: &Receive) {
         if stream.state.borrow().error.is_some() {
             Poll::Ready(())
         } else {
-            stream.writer.register(cx.waker());
+            stream.cancellation.register(cx.waker());
             Poll::Pending
         }
     })
@@ -315,20 +326,20 @@ impl Drop for SendStream {
 
 impl RecvStream {
     /// Receive a chunk. A chunk may combine several DATA frames.
-    pub async fn data(&mut self) -> Result<Option<Chunk<'_>>, StreamError> {
+    pub async fn data(&mut self) -> Result<Option<Chunk>, StreamError> {
         poll_fn(|cx| {
             let mut state = self.0.state.borrow_mut();
             if let Some(error) = state.error {
                 return Poll::Ready(Err(error));
             }
-            if !state.bytes.is_empty() {
+            if !state.held && !state.bytes.is_empty() {
                 state.held = true;
                 return Poll::Ready(Ok(Some(Chunk {
                     bytes: mem::take(&mut state.bytes),
-                    receive: &self.0,
+                    receive: self.0.clone(),
                 })));
             }
-            if state.ended {
+            if state.ended && state.bytes.is_empty() {
                 return Poll::Ready(Ok(None));
             }
             self.0.reader.register(cx.waker());
@@ -358,16 +369,17 @@ impl Drop for RecvStream {
     }
 }
 
-impl Chunk<'_> {
+impl Chunk {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 }
 
-impl Drop for Chunk<'_> {
+impl Drop for Chunk {
     fn drop(&mut self) {
         self.receive.state.borrow_mut().held = false;
         self.receive.driver.wake();
+        self.receive.reader.wake();
     }
 }
 
@@ -392,6 +404,7 @@ fn fail(receive: &Receive, error: StreamError) {
     receive.send.borrow_mut().command = None;
     receive.reader.wake();
     receive.writer.wake();
+    receive.cancellation.wake();
 }
 
 impl<Io: Read + Write> Connection<Io> {
@@ -429,7 +442,12 @@ impl<Io: Read + Write> Connection<Io> {
                                 let send = receive.send.borrow();
                                 send.canceled
                                     || (state.needs_credit && state.bytes.is_empty() && !state.held)
-                                    || command_ready(&send, state.ended, send_capacity[index])
+                                    || command_ready(
+                                        &send,
+                                        state.ended,
+                                        state.dropped,
+                                        send_capacity[index],
+                                    )
                             })
                     {
                         return Poll::Ready(None);
@@ -449,6 +467,7 @@ impl<Io: Read + Write> Connection<Io> {
                         reader: Signal::default(),
                         send: RefCell::new(SendState::default()),
                         writer: Signal::default(),
+                        cancellation: Signal::default(),
                         driver: self.shared.driver.clone(),
                     });
                     self.streams.push((head.stream_id, receive.clone()));
@@ -535,9 +554,11 @@ impl<Io: Read + Write> Connection<Io> {
     }
 
     fn send_ready(&self, id: StreamId, stream: &Receive) -> bool {
+        let receive = stream.state.borrow();
         command_ready(
             &stream.send.borrow(),
-            stream.state.borrow().ended,
+            receive.ended,
+            receive.dropped,
             self.transport.send_capacity(id).is_ok_and(|n| n > 0),
         )
     }
@@ -573,7 +594,7 @@ impl<Io: Read + Write> Connection<Io> {
                     Ok(())
                 }
                 WriteCommand::Finish(trailers) => {
-                    self.transport.finish_response(id, &trailers).await
+                    self.transport.finish_stream_response(id, &trailers).await
                 }
                 WriteCommand::HeadersOnly(headers) => {
                     self.transport
@@ -614,11 +635,12 @@ impl<Io: Read + Write> Connection<Io> {
     }
 }
 
-fn command_ready(send: &SendState, ended: bool, capacity: bool) -> bool {
+fn command_ready(send: &SendState, ended: bool, dropped: bool, capacity: bool) -> bool {
     match &send.command {
         Some(WriteCommand::Head(_)) => true,
         Some(WriteCommand::Data(..)) => capacity,
-        Some(WriteCommand::Finish(_) | WriteCommand::HeadersOnly(_)) => ended,
+        Some(WriteCommand::Finish(_)) => ended || dropped,
+        Some(WriteCommand::HeadersOnly(_)) => ended,
         None => false,
     }
 }

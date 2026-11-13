@@ -11,6 +11,7 @@ members = [
     "crates/imu-demo",
     "crates/embedded-http2",
     "crates/embedded-grpc",
+    "crates/embedded-grpc-build",
     "crates/management-grpc",
     "crates/mpu6050",
     "crates/onboard-rgb",
@@ -31,6 +32,7 @@ members = [
 default-members = [
     "crates/embedded-http2",
     "crates/embedded-grpc",
+    "crates/embedded-grpc-build",
     "crates/management-grpc",
     "crates/mpu6050",
     "crates/soil-sensor",

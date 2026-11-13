@@ -1,9 +1,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-//! Buffered unary gRPC over the embedded HTTP service boundary.
-//! Supports identity encoding. Streaming and deadlines require an
-//! independently driven connection and are outside this unary adapter.
+//! Identity-encoded unary and streaming gRPC over embedded HTTP/2.
+//! The streaming runtime uses an independently driven local connection.
 
 extern crate alloc;
 
@@ -12,7 +11,9 @@ mod streaming;
 
 pub use embedded_http2::server::StreamError;
 pub use futures_core::Stream;
-pub use streaming::{ServerStreaming, StreamingCall, StreamingService, serve_streaming};
+pub use streaming::{
+    Bidirectional, ServerStreaming, StreamingCall, StreamingService, serve_streaming,
+};
 
 pub use framing::MessageDecoder;
 

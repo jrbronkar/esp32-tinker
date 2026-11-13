@@ -3,6 +3,17 @@
 The replacement transport supports two active streams per connection.
 The production endpoint still uses Protolink.
 
+## Stream handles
+
+New handlers use `server::handshake` and run `Connection::run` alongside
+`Incoming::accept` on a local executor. Socket reads must be cancellation-safe.
+Each request carries headers, a `RecvStream`, and a `SendResponse`.
+The receive stream returns DATA chunks and trailers. Dropping a chunk returns
+credit after the outstanding buffered bytes drain. The response handle queues
+headers, then exposes a `SendStream` with bounded writes, flush, cancellation,
+and final trailers. `service::serve_streams` drives this setup for per-stream
+handlers. The buffered adapter and h2spec fixture use the same driver.
+
 ## Multiplexed connections
 
 Use `Server::handshake` and call `next_event` to receive request headers,
@@ -19,9 +30,8 @@ The transport keeps at most two stream states and does not queue bodies.
 
 ## Buffered services and single-stream helpers
 
-The conformance fixture and unary gRPC adapter use the same handshake and
-event loop. The buffered service calls one handler at a time and keeps up
-to two bounded exchanges in flight. The helpers below are for callers
+The buffered service calls one handler at a time and keeps up to two bounded
+exchanges in flight. The lower-level helpers below are for callers
 that control the peer and exchange only one request at a time.
 
 ### Reading a request
@@ -58,9 +68,9 @@ connection credit before reporting the reset so the next request can proceed.
    empty DATA frame with `END_STREAM`.
 
 A DATA slice can contain part of a gRPC message or several messages. The gRPC
-layer will assemble messages across DATA boundaries. Incremental responses let
-`Upload` send ACKs while the request is open. The streaming gRPC adapter will use the multiplexed API to run `Logs` and
-`Upload` on one connection.
+layer assembles messages across DATA boundaries. Incremental responses let
+`Upload` send ACKs while the request is open. The streaming gRPC adapter uses
+the stream handles to run concurrent calls on one connection.
 [RFC 9113 §5.1](https://www.rfc-editor.org/rfc/rfc9113.html#section-5.1),
 [RFC 9113 §6.9](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.9),
 [gRPC over HTTP/2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md),

@@ -86,6 +86,27 @@ impl management_grpc::Management for EmbeddedManagement {
         )]))
     }
 
+    async fn upload(
+        &self,
+        call: &mut embedded_grpc::Bidirectional<
+            ota_protocol::UploadRequest,
+            ota_protocol::UploadAck,
+            { ota_protocol::MAX_FRAME },
+        >,
+    ) -> Result<(), management_grpc::Status> {
+        while let Some(request) = call.message().await? {
+            call.send(ota_protocol::UploadAck {
+                request_id: request.request_id,
+                ..Default::default()
+            })
+            .await?;
+            if request.request_id == 2 {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
     async fn status(
         &self,
         request: ota_protocol::StatusRequest,
@@ -105,7 +126,7 @@ impl management_grpc::Management for EmbeddedManagement {
 }
 
 #[tokio::test]
-async fn embedded_unary_status_with_tonic_and_espctl() {
+async fn embedded_management_with_tonic_and_espctl() {
     tokio::task::LocalSet::new()
         .run_until(async {
             tokio::time::timeout(Duration::from_secs(10), async {
@@ -150,6 +171,63 @@ async fn embedded_unary_status_with_tonic_and_espctl() {
                 );
                 assert!(logs.message().await.unwrap().is_none());
                 drop(logs);
+
+                let (requests, inbound) = tokio::sync::mpsc::channel(1);
+                client.ready().await.unwrap();
+                let mut acks = client
+                    .streaming(
+                        tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(inbound)),
+                        ota_protocol::UPLOAD_PATH.parse().unwrap(),
+                        RawCodec,
+                    )
+                    .await
+                    .unwrap()
+                    .into_inner();
+                for request_id in [1, 2] {
+                    requests
+                        .send(proto(&ota_protocol::UploadRequest {
+                            request_id,
+                            ..Default::default()
+                        }))
+                        .await
+                        .unwrap();
+                    let reply = acks.message().await.unwrap().unwrap();
+                    assert_eq!(response(&reply).request_id, request_id);
+                }
+                assert!(acks.message().await.unwrap().is_none());
+                drop(requests);
+                drop(acks);
+
+                for (messages, expected) in [
+                    (
+                        vec![proto(&ota_protocol::UploadRequest {
+                            request_id: 3,
+                            ..Default::default()
+                        })],
+                        Ok(3),
+                    ),
+                    (vec![vec![0xff]], Err(tonic::Code::InvalidArgument)),
+                ] {
+                    client.ready().await.unwrap();
+                    let mut replies = client
+                        .streaming(
+                            tonic::Request::new(tokio_stream::iter(messages)),
+                            ota_protocol::UPLOAD_PATH.parse().unwrap(),
+                            RawCodec,
+                        )
+                        .await
+                        .unwrap()
+                        .into_inner();
+                    match expected {
+                        Ok(id) => {
+                            let ack = replies.message().await.unwrap().unwrap();
+                            assert_eq!(response(&ack).request_id, id);
+                            assert!(replies.message().await.unwrap().is_none());
+                        }
+                        Err(code) => assert_eq!(replies.message().await.unwrap_err().code(), code),
+                    }
+                }
+
                 client.ready().await.unwrap();
                 let request = ota_protocol::StatusRequest {
                     include_timings: true,

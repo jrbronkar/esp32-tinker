@@ -842,6 +842,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-grpc-build"
+version = "0.1.0"
+dependencies = [
+ "protobuf",
+]
+
+[[package]]
 name = "embedded-hal"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1914,6 +1921,7 @@ name = "management-grpc"
 version = "0.1.0"
 dependencies = [
  "embedded-grpc",
+ "embedded-grpc-build",
  "ota-protocol",
  "protobuf-parse",
 ]

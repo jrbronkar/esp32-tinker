@@ -67,6 +67,19 @@ impl<Io: Read + Write> Server<Io> {
         {
             return Err(Error::Protocol);
         }
+        self.finish_stream_response(stream_id, trailers).await
+    }
+
+    pub(super) async fn finish_stream_response(
+        &mut self,
+        stream_id: StreamId,
+        trailers: &[HeaderField],
+    ) -> Result<(), Error<Io::Error>> {
+        let stream = self.stream(stream_id).ok_or(Error::Protocol)?;
+        if !stream.response_started {
+            return Err(Error::Protocol);
+        }
+        let remote_closed = stream.remote_closed;
         let trailers = self.encode_response_trailers(trailers)?;
         self.release_capacity(stream_id).await?;
         if let Some(trailers) = trailers {
@@ -75,7 +88,12 @@ impl<Io: Read + Write> Server<Io> {
             self.write_frame(FrameType::Data, stream_id, Flags::END_STREAM, &[])
                 .await?;
         }
-        self.remove_stream(stream_id);
+        if remote_closed {
+            self.remove_stream(stream_id);
+        } else {
+            self.reset_stream(stream_id, zerodds_http2::ErrorCode::NoError)
+                .await?;
+        }
         Ok(())
     }
 
