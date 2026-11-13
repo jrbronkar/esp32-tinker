@@ -424,3 +424,122 @@ async fn stalled_stream_leaves_another_stream_free_to_progress()
     })
     .await?
 }
+
+#[tokio::test]
+async fn buffered_service_cancels_a_pending_handler_and_releases_the_next_call() {
+    use embedded_http2::service;
+    use std::future::pending;
+    use tokio::{io::duplex, sync::oneshot};
+
+    struct Handler {
+        started: Option<oneshot::Sender<()>>,
+        canceled: Option<oneshot::Sender<()>>,
+    }
+
+    struct CancelOnDrop(Option<oneshot::Sender<()>>);
+
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    impl service::Service for Handler {
+        async fn call(&mut self, request: service::Request) -> service::Response {
+            if request.headers.contains(&field(":path", "/slow")) {
+                let _guard = CancelOnDrop(self.canceled.take());
+                if let Some(started) = self.started.take() {
+                    let _ = started.send(());
+                }
+                pending::<()>().await;
+            }
+            service::Response {
+                headers: vec![field(":status", "204")],
+                body: Vec::new(),
+                trailers: Vec::new(),
+            }
+        }
+    }
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, peer) = duplex(8192);
+        let (started, running) = oneshot::channel();
+        let (canceled, dropped) = oneshot::channel();
+        let mut handler = Handler {
+            started: Some(started),
+            canceled: Some(canceled),
+        };
+        let client = async {
+            let (mut client, connection) = h2::client::handshake(peer).await.unwrap();
+            let driver = tokio::spawn(connection);
+            let request = |path| {
+                Request::builder()
+                    .uri(format!("http://localhost{path}"))
+                    .body(())
+                    .unwrap()
+            };
+            client = client.ready().await.unwrap();
+            let (_response, mut slow) = client.send_request(request("/slow"), true).unwrap();
+            running.await.unwrap();
+            client = client.ready().await.unwrap();
+            let (next, _) = client.send_request(request("/next"), true).unwrap();
+            slow.send_reset(h2::Reason::CANCEL);
+            dropped.await.unwrap();
+            let next = next.await.unwrap();
+            assert_eq!(next.status(), http::StatusCode::NO_CONTENT);
+            assert!(next.body().is_end_stream());
+            driver.abort();
+        };
+        let (server, ()) =
+            tokio::join!(service::serve(FromTokio::new(socket), &mut handler), client);
+        assert!(matches!(
+            server,
+            Err(Error::Read(
+                embedded_io_async::ReadExactError::UnexpectedEof
+            ))
+        ));
+    })
+    .await
+    .expect("buffered cancellation timed out");
+}
+
+#[tokio::test]
+async fn buffered_service_reports_oversized_responses() {
+    use embedded_http2::service;
+
+    struct Oversized;
+
+    impl service::Service for Oversized {
+        async fn call(&mut self, _: service::Request) -> service::Response {
+            service::Response {
+                headers: vec![field(":status", "200")],
+                body: vec![0; 16 * 1024 + 1],
+                trailers: Vec::new(),
+            }
+        }
+    }
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, peer) = tokio::io::duplex(8192);
+        let mut handler = Oversized;
+        let client = async {
+            let (client, connection) = h2::client::handshake(peer).await.unwrap();
+            let driver = tokio::spawn(connection);
+            let mut client = client.ready().await.unwrap();
+            let request = Request::builder()
+                .uri("http://localhost/")
+                .body(())
+                .unwrap();
+            let (reply, _) = client.send_request(request, true).unwrap();
+            assert!(reply.await.is_err());
+            driver.abort();
+        };
+        let (server, ()) =
+            tokio::join!(service::serve(FromTokio::new(socket), &mut handler), client);
+        assert!(matches!(server, Err(Error::BodyLimit)));
+    })
+    .await
+    .expect("buffered response limit timed out");
+}
