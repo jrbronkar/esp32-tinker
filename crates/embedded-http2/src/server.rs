@@ -1,4 +1,4 @@
-//! Request handles driven by a single connection task on a local executor.
+//! Request and response handles driven by a single connection task on a local executor.
 
 use alloc::{rc::Rc, vec::Vec};
 use core::{
@@ -17,6 +17,7 @@ use crate::{BodyFrame, Error, Event, HeaderField, MAX_STREAMS, RequestHead, Serv
 pub enum StreamError {
     Reset(u32),
     Disconnected,
+    HeaderLimit,
 }
 
 #[derive(Default)]
@@ -59,16 +60,36 @@ struct ReceiveState {
     error: Option<StreamError>,
 }
 
+enum WriteCommand {
+    Head(Vec<HeaderField>),
+    Data(Vec<u8>, usize),
+    Finish(Vec<HeaderField>),
+}
+
+#[derive(Default)]
+struct SendState {
+    command: Option<WriteCommand>,
+    writing: bool,
+    finished: bool,
+    canceled: bool,
+}
+
 struct Receive {
     state: RefCell<ReceiveState>,
     reader: Signal,
+    send: RefCell<SendState>,
+    writer: Signal,
     driver: Rc<Signal>,
 }
 
 pub struct Request {
     pub head: RequestHead,
     pub body: RecvStream,
+    pub respond: SendResponse,
 }
+
+pub struct SendResponse(Option<Rc<Receive>>);
+pub struct SendStream(Option<Rc<Receive>>);
 
 pub struct Incoming(Rc<Shared>);
 
@@ -138,6 +159,106 @@ impl Drop for Incoming {
     }
 }
 
+impl SendResponse {
+    /// Queue the response head and obtain a handle for DATA and trailers.
+    pub fn send_response(mut self, headers: Vec<HeaderField>) -> Result<SendStream, StreamError> {
+        let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
+        if let Some(error) = stream.state.borrow().error {
+            return Err(error);
+        }
+        check_header_size(&headers)?;
+        stream.send.borrow_mut().command = Some(WriteCommand::Head(headers));
+        stream.driver.wake();
+        Ok(SendStream(self.0.take()))
+    }
+}
+
+fn check_header_size(headers: &[HeaderField]) -> Result<(), StreamError> {
+    let size = headers
+        .iter()
+        .fold(0usize, |size, field| size.saturating_add(field.size()));
+    if size > crate::headers::MAX_LIST {
+        Err(StreamError::HeaderLimit)
+    } else {
+        Ok(())
+    }
+}
+
+impl SendStream {
+    /// Wait for the outbound slot and enqueue up to one frame of DATA.
+    pub async fn send_data(&mut self, bytes: &[u8]) -> Result<usize, StreamError> {
+        let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
+        let count = bytes
+            .len()
+            .min(zerodds_http2::frame::DEFAULT_MAX_FRAME_SIZE as usize);
+        if count == 0 {
+            return Ok(0);
+        }
+        Self::wait_for_slot(stream).await?;
+        stream.send.borrow_mut().command = Some(WriteCommand::Data(bytes[..count].to_vec(), 0));
+        stream.driver.wake();
+        Ok(count)
+    }
+
+    /// Write the final trailers after the request half-closes.
+    ///
+    /// Success means the final frame has been flushed to the transport.
+    pub async fn finish(mut self, trailers: Vec<HeaderField>) -> Result<(), StreamError> {
+        let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
+        check_header_size(&trailers)?;
+        Self::wait_for_slot(stream).await?;
+        stream.send.borrow_mut().command = Some(WriteCommand::Finish(trailers));
+        stream.driver.wake();
+        poll_fn(|cx| {
+            if stream.send.borrow().finished {
+                Poll::Ready(Ok(()))
+            } else if let Some(error) = stream.state.borrow().error {
+                Poll::Ready(Err(error))
+            } else {
+                stream.writer.register(cx.waker());
+                Poll::Pending
+            }
+        })
+        .await?;
+        self.0.take();
+        Ok(())
+    }
+
+    async fn wait_for_slot(stream: &Receive) -> Result<(), StreamError> {
+        poll_fn(|cx| {
+            let send = stream.send.borrow();
+            if let Some(error) = stream.state.borrow().error {
+                Poll::Ready(Err(error))
+            } else if send.command.is_none() && !send.writing {
+                Poll::Ready(Ok(()))
+            } else {
+                stream.writer.register(cx.waker());
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
+fn cancel(stream: Option<&Rc<Receive>>) {
+    if let Some(stream) = stream {
+        stream.send.borrow_mut().canceled = true;
+        stream.driver.wake();
+    }
+}
+
+impl Drop for SendResponse {
+    fn drop(&mut self) {
+        cancel(self.0.as_ref());
+    }
+}
+
+impl Drop for SendStream {
+    fn drop(&mut self) {
+        cancel(self.0.as_ref());
+    }
+}
+
 impl RecvStream {
     /// Receive a chunk. A chunk may combine several DATA frames.
     pub async fn data(&mut self) -> Result<Option<Chunk<'_>>, StreamError> {
@@ -175,7 +296,10 @@ impl RecvStream {
 
 impl Drop for RecvStream {
     fn drop(&mut self) {
-        self.0.state.borrow_mut().dropped = true;
+        let mut state = self.0.state.borrow_mut();
+        state.dropped = true;
+        state.bytes.clear();
+        drop(state);
         self.0.driver.wake();
     }
 }
@@ -211,7 +335,9 @@ fn fail(receive: &Receive, error: StreamError) {
         state.bytes = Vec::new();
         state.trailers = None;
     }
+    receive.send.borrow_mut().command = None;
     receive.reader.wake();
+    receive.writer.wake();
 }
 
 impl<Io: Read + Write> Connection<Io> {
@@ -222,16 +348,35 @@ impl<Io: Read + Write> Connection<Io> {
                 return Ok(());
             }
             self.apply_receive_work().await?;
+            self.apply_send_work().await?;
+            let ready = self
+                .streams
+                .iter()
+                .any(|(id, stream)| self.send_ready(*id, stream));
+            if ready {
+                continue;
+            }
             let frame = {
+                let send_capacity: [_; MAX_STREAMS] = core::array::from_fn(|index| {
+                    self.streams.get(index).is_some_and(|(id, _)| {
+                        self.transport.send_capacity(*id).is_ok_and(|n| n > 0)
+                    })
+                });
                 let mut read = pin!(self.transport.read_inbound());
                 poll_fn(|cx| {
                     self.shared.driver.register(cx.waker());
                     if self.shared.abandoned.get()
-                        || self.streams.iter().any(|(_, receive)| {
-                            let state = receive.state.borrow();
-                            state.dropped
-                                || (state.needs_credit && state.bytes.is_empty() && !state.held)
-                        })
+                        || self
+                            .streams
+                            .iter()
+                            .enumerate()
+                            .any(|(index, (_, receive))| {
+                                let state = receive.state.borrow();
+                                let send = receive.send.borrow();
+                                send.canceled
+                                    || (state.needs_credit && state.bytes.is_empty() && !state.held)
+                                    || command_ready(&send, state.ended, send_capacity[index])
+                            })
                     {
                         return Poll::Ready(None);
                     }
@@ -248,12 +393,15 @@ impl<Io: Read + Write> Connection<Io> {
                             ..ReceiveState::default()
                         }),
                         reader: Signal::default(),
+                        send: RefCell::new(SendState::default()),
+                        writer: Signal::default(),
                         driver: self.shared.driver.clone(),
                     });
                     self.streams.push((head.stream_id, receive.clone()));
                     self.shared.pending.borrow_mut().push(Request {
                         head,
-                        body: RecvStream(receive),
+                        body: RecvStream(receive.clone()),
+                        respond: SendResponse(Some(receive)),
                     });
                     self.shared.incoming.wake();
                 }
@@ -273,7 +421,9 @@ impl<Io: Read + Write> Connection<Io> {
                         // bytes together. Credit is returned after both drain.
                         match frame {
                             BodyFrame::Data(bytes) => {
-                                state.bytes.extend_from_slice(bytes);
+                                if !state.dropped {
+                                    state.bytes.extend_from_slice(bytes);
+                                }
                                 state.needs_credit = true;
                             }
                             BodyFrame::Trailers(trailers) => state.trailers = Some(trailers),
@@ -301,9 +451,10 @@ impl<Io: Read + Write> Connection<Io> {
         let mut index = 0;
         while let Some((id, receive)) = self.streams.get(index) {
             let id = *id;
-            if receive.state.borrow().dropped {
+            if receive.send.borrow().canceled {
                 self.transport.reset_stream(id, ErrorCode::Cancel).await?;
-                self.streams.swap_remove(index);
+                let (_, receive) = self.streams.swap_remove(index);
+                fail(&receive, StreamError::Reset(ErrorCode::Cancel as u32));
                 continue;
             }
             let release = {
@@ -316,5 +467,78 @@ impl<Io: Read + Write> Connection<Io> {
             index += 1;
         }
         Ok(())
+    }
+
+    fn send_ready(&self, id: StreamId, stream: &Receive) -> bool {
+        command_ready(
+            &stream.send.borrow(),
+            stream.state.borrow().ended,
+            self.transport.send_capacity(id).is_ok_and(|n| n > 0),
+        )
+    }
+
+    async fn apply_send_work(&mut self) -> Result<(), Error<Io::Error>> {
+        let mut index = 0;
+        while let Some((id, stream)) = self.streams.get(index) {
+            let id = *id;
+            if !self.send_ready(id, stream) {
+                index += 1;
+                continue;
+            }
+            let command = {
+                let mut send = stream.send.borrow_mut();
+                send.writing = true;
+                send.command.take().ok_or(Error::Protocol)?
+            };
+            let result = match command {
+                WriteCommand::Head(headers) => self.transport.start_response(id, &headers).await,
+                WriteCommand::Data(bytes, offset) => {
+                    let sent = self.transport.send_data(id, &bytes[offset..]).await?;
+                    if offset + sent < bytes.len() {
+                        stream.send.borrow_mut().writing = false;
+                        stream.send.borrow_mut().command =
+                            Some(WriteCommand::Data(bytes, offset + sent));
+                        index += 1;
+                        continue;
+                    }
+                    Ok(())
+                }
+                WriteCommand::Finish(trailers) => {
+                    match self.transport.finish_response(id, &trailers).await {
+                        Ok(()) => {
+                            stream.send.borrow_mut().finished = true;
+                            stream.writer.wake();
+                            self.streams.swap_remove(index);
+                            continue;
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+            };
+            if let Err(error) = result {
+                if !matches!(error, Error::HeaderBlock | Error::Protocol) {
+                    return Err(error);
+                }
+                self.transport
+                    .reset_stream(id, ErrorCode::InternalError)
+                    .await?;
+                let (_, stream) = self.streams.swap_remove(index);
+                fail(&stream, StreamError::Reset(ErrorCode::InternalError as u32));
+                continue;
+            }
+            stream.send.borrow_mut().writing = false;
+            stream.writer.wake();
+            index += 1;
+        }
+        Ok(())
+    }
+}
+
+fn command_ready(send: &SendState, ended: bool, capacity: bool) -> bool {
+    match &send.command {
+        Some(WriteCommand::Head(_)) => true,
+        Some(WriteCommand::Data(..)) => capacity,
+        Some(WriteCommand::Finish(_)) => ended,
+        None => false,
     }
 }
