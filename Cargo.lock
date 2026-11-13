@@ -830,7 +830,6 @@ name = "embedded-grpc"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "embassy-futures",
  "embedded-http2",
  "embedded-io-adapters",
  "embedded-io-async 0.7.0",

@@ -1,6 +1,9 @@
 use alloc::vec;
-use core::{future::poll_fn, pin::pin};
-use embassy_futures::select::{Either, select};
+use core::{
+    future::{Future, poll_fn},
+    pin::pin,
+    task::Poll,
+};
 use embedded_http2::server::{self, StreamError};
 use embedded_io_async::{Read, Write};
 use futures_core::Stream;
@@ -112,10 +115,7 @@ pub struct ServerStreaming {
 
 impl ServerStreaming {
     pub async fn start<T>(&self, setup: impl core::future::Future<Output = T>) -> Option<T> {
-        match select(self.respond.closed(), setup).await {
-            Either::First(()) => None,
-            Either::Second(value) => Some(value),
-        }
+        until_cancelled(self.respond.closed(), setup).await
     }
 
     pub async fn reject(self, status: Status) -> Result<(), StreamError> {
@@ -143,11 +143,11 @@ impl ServerStreaming {
         let mut send = self.respond.send_response(response_headers())?;
         let code = loop {
             send.flush().await?;
-            match select(send.closed(), poll_fn(|cx| items.as_mut().poll_next(cx))).await {
-                Either::First(()) => return Ok(()),
-                Either::Second(None) => break GRPC_OK,
-                Either::Second(Some(Err(status))) => break status.wire_code(),
-                Either::Second(Some(Ok(message))) => {
+            match until_cancelled(send.closed(), poll_fn(|cx| items.as_mut().poll_next(cx))).await {
+                None => return Ok(()),
+                Some(None) => break GRPC_OK,
+                Some(Some(Err(status))) => break status.wire_code(),
+                Some(Some(Ok(message))) => {
                     let response = match UnaryResponse::encode::<_, MAX>(message) {
                         Ok(response) => response,
                         Err(status) => break status.wire_code(),
@@ -182,4 +182,21 @@ fn response_headers() -> alloc::vec::Vec<embedded_http2::HeaderField> {
         field(":status", HTTP_OK),
         field("content-type", CONTENT_TYPE),
     ]
+}
+
+// Poll cancellation first so a reset wins when both futures are ready.
+async fn until_cancelled<T>(
+    cancelled: impl Future<Output = ()>,
+    work: impl Future<Output = T>,
+) -> Option<T> {
+    let mut cancelled = pin!(cancelled);
+    let mut work = pin!(work);
+    poll_fn(|cx| {
+        if cancelled.as_mut().poll(cx).is_ready() {
+            Poll::Ready(None)
+        } else {
+            work.as_mut().poll(cx).map(Some)
+        }
+    })
+    .await
 }
