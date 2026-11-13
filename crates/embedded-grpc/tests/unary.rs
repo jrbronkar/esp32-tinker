@@ -185,6 +185,14 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
         dropped: Cell<bool>,
     }
 
+    struct SetupGuard<'a>(&'a Cell<bool>);
+
+    impl Drop for SetupGuard<'_> {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+
     struct Producer<'a>(&'a ProducerState);
 
     impl Stream for Producer<'_> {
@@ -211,6 +219,15 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
             let Some((request, response)) = call.unary::<StatusRequest, 2>().await? else {
                 return Ok(());
             };
+            if path == "/test.Echo/Setup" {
+                let setup = async {
+                    let _guard = SetupGuard(&self.dropped);
+                    self.polls.set(self.polls.get() + 1);
+                    std::future::pending::<()>().await;
+                };
+                assert!(response.start(setup).await.is_none());
+                return Ok(());
+            }
             if path == PATH {
                 response.stream::<_, 2>(Producer(self)).await
             } else {
@@ -219,7 +236,12 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
         }
     }
 
-    for (reset, pending) in [(true, false), (false, false), (true, true)] {
+    for (reset, pending, setup) in [
+        (true, false, false),
+        (false, false, false),
+        (true, true, false),
+        (true, false, true),
+    ] {
         tokio::time::timeout(Duration::from_secs(5), async {
             let (peer, socket) = duplex(8192);
             let service = ProducerState {
@@ -237,18 +259,32 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
                     .await
                     .unwrap();
                 let (reply, mut request_body) = client
-                    .send_request(request(Method::POST, PATH, "application/grpc"), false)
+                    .send_request(
+                        request(
+                            Method::POST,
+                            if setup { "/test.Echo/Setup" } else { PATH },
+                            "application/grpc",
+                        ),
+                        false,
+                    )
                     .unwrap();
                 request_body
                     .send_data(Bytes::from_static(EMPTY_MESSAGE), true)
                     .unwrap();
-                let mut body = reply.await.unwrap().into_body();
-                if pending {
+                let mut body = if setup {
+                    None
+                } else {
+                    Some(reply.await.unwrap().into_body())
+                };
+                if pending || setup {
                     while service.polls.get() == 0 {
                         tokio::task::yield_now().await;
                     }
                 } else {
-                    assert_eq!(body.data().await.unwrap().unwrap().len(), 1);
+                    assert_eq!(
+                        body.as_mut().unwrap().data().await.unwrap().unwrap().len(),
+                        1
+                    );
                     assert_eq!(service.polls.get(), 1);
                 }
 
@@ -273,7 +309,7 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
                     sibling.trailers().await.unwrap().unwrap()["grpc-status"],
                     "0"
                 );
-                if !pending {
+                if !pending && !setup {
                     assert_eq!(service.polls.get(), 1);
                 }
 
@@ -285,7 +321,7 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
                 while !service.dropped.get() {
                     tokio::task::yield_now().await;
                 }
-                if !pending {
+                if !pending && !setup {
                     assert_eq!(service.polls.get(), 1);
                 }
                 driver.abort();
