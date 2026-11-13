@@ -1,13 +1,17 @@
 //! Buffered HTTP exchanges over a multiplexed HTTP/2 connection.
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
+use core::{
+    future::{Future, poll_fn},
+    pin::Pin,
+    task::Poll,
+};
 use embassy_futures::{
     join::join,
     select::{Either, select},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embedded_io_async::{Read, Write};
-use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use crate::{
     Error, HeaderField, MAX_BODY, MAX_STREAMS,
@@ -49,26 +53,30 @@ async fn serve_requests<E, S: Service>(
     service: &mut S,
 ) -> Result<(), Error<E>> {
     let service = Mutex::<NoopRawMutex, _>::new(service);
-    let mut exchanges = FuturesUnordered::new();
-    loop {
-        if exchanges.len() == MAX_STREAMS {
-            if let Some(result) = exchanges.next().await {
-                result?;
+    type ExchangeTask<'a, E> = Pin<Box<dyn Future<Output = Result<(), Error<E>>> + 'a>>;
+    let mut exchanges: [Option<ExchangeTask<'_, E>>; MAX_STREAMS] = core::array::from_fn(|_| None);
+    // There are at most two tasks, so polling both on a shared waker is bounded.
+    poll_fn(|cx| {
+        for slot in &mut exchanges {
+            if let Some(task) = slot {
+                match Future::poll(task.as_mut(), cx) {
+                    Poll::Ready(Ok(())) => *slot = None,
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => continue,
+                }
             }
-        } else if exchanges.is_empty() {
-            let Some(request) = incoming.accept().await else {
-                return Ok(());
-            };
-            exchanges.push(exchange(&service, request));
-        } else {
-            match select(exchanges.next(), incoming.accept()).await {
-                Either::First(Some(result)) => result?,
-                Either::First(None) => {}
-                Either::Second(Some(request)) => exchanges.push(exchange(&service, request)),
-                Either::Second(None) => return Ok(()),
+            match incoming.poll_accept(cx) {
+                Poll::Ready(Some(request)) => {
+                    *slot = Some(Box::pin(exchange::<E, S>(&service, request)));
+                    cx.waker().wake_by_ref();
+                }
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Pending => {}
             }
         }
-    }
+        Poll::Pending
+    })
+    .await
 }
 
 async fn exchange<E, S: Service>(

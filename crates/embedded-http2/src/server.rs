@@ -136,19 +136,23 @@ pub async fn handshake<Io: Read + Write>(
 
 impl Incoming {
     pub async fn accept(&mut self) -> Option<Request> {
-        poll_fn(|cx| {
-            if self.0.closed.get() {
-                return Poll::Ready(None);
-            }
-            let mut pending = self.0.pending.borrow_mut();
-            if pending.is_empty() {
-                self.0.incoming.register(cx.waker());
-                Poll::Pending
-            } else {
-                Poll::Ready(Some(pending.remove(0)))
-            }
-        })
-        .await
+        poll_fn(|cx| self.poll_accept(cx)).await
+    }
+
+    pub(crate) fn poll_accept(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Option<Request>> {
+        if self.0.closed.get() {
+            return Poll::Ready(None);
+        }
+        let mut pending = self.0.pending.borrow_mut();
+        if pending.is_empty() {
+            self.0.incoming.register(cx.waker());
+            Poll::Pending
+        } else {
+            Poll::Ready(Some(pending.remove(0)))
+        }
     }
 }
 
