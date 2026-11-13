@@ -91,7 +91,7 @@ impl management_grpc::Management for EmbeddedManagement {
         call: &mut embedded_grpc::Bidirectional<
             ota_protocol::UploadRequest,
             ota_protocol::UploadAck,
-            { ota_protocol::MAX_FRAME },
+            { ota_protocol::UPLOAD_FRAME },
         >,
     ) -> Result<(), management_grpc::Status> {
         while let Some(request) = call.message().await? {

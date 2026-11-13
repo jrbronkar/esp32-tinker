@@ -1,5 +1,7 @@
 #![no_std]
 extern crate alloc;
+mod embedded;
+pub use embedded::EmbeddedManagement;
 pub mod logs;
 pub mod watchdog;
 pub use ota_protocol::{LOGS_PATH, STATUS_PATH, UPLOAD_PATH};
@@ -217,11 +219,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             self.env.event(UploadEvent::Released);
         }
     }
-    fn process_upload(
-        &mut self,
-        ctx: &mut CallContext<'_>,
-        request: UploadRequest,
-    ) -> Result<(), Status> {
+    fn process_upload(&mut self, id: CallId, request: UploadRequest) -> Result<(), Status> {
         if self.activation_pending || self.env.activation_pending() {
             return Err(Status::failed_precondition(
                 "activation pending; reconnect after reboot",
@@ -231,7 +229,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             .payload
             .ok_or_else(|| Status::invalid_argument("missing upload operation"))?;
         let (phase, offset) = if let Some(upload) = self.upload.as_mut() {
-            if upload.id != ctx.id {
+            if upload.id != id {
                 return Err(Status::resource_exhausted("flash owned by another upload"));
             }
             if upload.ended
@@ -312,7 +310,7 @@ impl<'a, T: ota_core::Target, E: Environment> StreamingManagement<'a, T, E> {
             )
             .map_err(upload_error)?;
             self.upload = Some(Upload {
-                id: ctx.id,
+                id,
                 last_id: request.request_id,
                 target,
                 update,
@@ -399,7 +397,7 @@ impl<T: ota_core::Target, E: Environment> ManagementRpc for StreamingManagement<
     }
 
     fn upload(&mut self, ctx: &mut CallContext<'_>, request: UploadRequest) -> Result<(), Status> {
-        self.process_upload(ctx, request)
+        self.process_upload(ctx.id, request)
     }
 
     fn end_upload(&mut self, ctx: &mut CallContext<'_>) -> Result<(), Status> {

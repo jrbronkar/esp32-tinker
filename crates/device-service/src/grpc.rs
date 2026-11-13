@@ -1,7 +1,7 @@
 //! Two bounded HTTP/2 connections on the single management port.
 use core::time::Duration as CoreDuration;
 use device_grpc::protolink;
-use device_grpc::{Environment, StreamingManagement, UploadEvent};
+use device_grpc::{EmbeddedManagement, Environment, UploadEvent};
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 
@@ -57,7 +57,7 @@ async fn serve_connection(
                 reboot: Default::default(),
                 activation_started: core::cell::Cell::new(false),
             };
-            let mut handler = device_grpc::ManagementServer::new(StreamingManagement::new(
+            let handler = management_grpc::ManagementServer::new(EmbeddedManagement::new(
                 target,
                 target_offset,
                 DeviceEnvironment {
@@ -67,14 +67,9 @@ async fn serve_connection(
                 },
             ));
             {
-                let (reader, writer) = socket.split();
                 let connection = with_timeout(
                     Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS),
-                    protolink::server_split(reader, writer)
-                        .with_config(device_grpc::config())
-                        .with_deadline_timer(EmbassyClock)
-                        .build()
-                        .serve(&mut handler),
+                    embedded_grpc::serve_streaming(&mut socket, &handler),
                 );
                 let reboot = async {
                     connection_state.reboot.wait().await;
@@ -96,7 +91,6 @@ async fn serve_connection(
                     );
                 }
             }
-            drop(handler);
             if connection_state.activation_started.get() {
                 // Flush bytes already handed to TCP before reset. This is best
                 // effort: a lost ACK still leaves commit outcome uncertain.

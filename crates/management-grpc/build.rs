@@ -16,7 +16,7 @@ fn main() {
         .expect("management.proto descriptor");
     let bindings = embedded_grpc_build::generate_with_packages(
         schema,
-        "ota_protocol::MAX_FRAME",
+        "ota_protocol::UPLOAD_FRAME",
         &[("ota", "ota_protocol::ota_")],
     )
     .expect("generate Management bindings");

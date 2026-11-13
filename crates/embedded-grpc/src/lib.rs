@@ -88,6 +88,7 @@ const GRPC_OK: &str = "0";
 pub enum Status {
     InvalidArgument,
     ResourceExhausted,
+    FailedPrecondition,
     Unimplemented,
     Internal,
     Unavailable,
@@ -98,6 +99,7 @@ impl Status {
         match self {
             Self::InvalidArgument => "3",
             Self::ResourceExhausted => "8",
+            Self::FailedPrecondition => "9",
             Self::Unimplemented => "12",
             Self::Internal => "13",
             Self::Unavailable => "14",
