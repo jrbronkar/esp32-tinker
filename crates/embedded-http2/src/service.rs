@@ -10,7 +10,7 @@ use core::{
 use embedded_io_async::{Read, Write};
 
 use crate::{
-    Error, HeaderField, MAX_BODY, MAX_STREAMS,
+    Config, Error, HeaderField, MAX_BODY,
     server::{self, StreamError},
 };
 
@@ -39,12 +39,22 @@ pub async fn serve<Io: Read + Write, S: Service>(
     io: Io,
     service: &mut S,
 ) -> Result<(), Error<Io::Error>> {
+    serve_with_config(io, service, Config::default()).await
+}
+
+/// Serve buffered exchanges with the supplied per-connection stream limit.
+pub async fn serve_with_config<Io: Read + Write, S: Service>(
+    io: Io,
+    service: &mut S,
+    config: Config,
+) -> Result<(), Error<Io::Error>> {
     let service = ServiceSlot {
         value: RefCell::new(Some(service)),
         released: Cell::new(false),
     };
     drive_streams(
         io,
+        config,
         |request| async { exchange(&service, request).await },
         || service.released.replace(false),
     )
@@ -60,11 +70,25 @@ where
     Io: Read + Write,
     Task: Future<Output = Result<(), Error<Io::Error>>>,
 {
-    drive_streams(io, handle, || false).await
+    serve_streams_with_config(io, Config::default(), handle).await
+}
+
+/// Drive streaming handlers with the supplied per-connection stream limit.
+pub async fn serve_streams_with_config<Io, Task>(
+    io: Io,
+    config: Config,
+    handle: impl Fn(server::Request) -> Task,
+) -> Result<(), Error<Io::Error>>
+where
+    Io: Read + Write,
+    Task: Future<Output = Result<(), Error<Io::Error>>>,
+{
+    drive_streams(io, config, handle, || false).await
 }
 
 async fn drive_streams<Io, Task>(
     io: Io,
+    config: Config,
     handle: impl Fn(server::Request) -> Task,
     handlers_need_poll: impl Fn() -> bool,
 ) -> Result<(), Error<Io::Error>>
@@ -72,9 +96,14 @@ where
     Io: Read + Write,
     Task: Future<Output = Result<(), Error<Io::Error>>>,
 {
-    let (connection, incoming) = server::handshake(io).await?;
+    let (connection, incoming) = server::handshake_with_config(io, config).await?;
     let mut driver = pin!(connection.run());
-    let mut handlers = pin!(serve_requests(incoming, handle, handlers_need_poll));
+    let mut handlers = pin!(serve_requests(
+        incoming,
+        handle,
+        handlers_need_poll,
+        config.max_concurrent_streams.get()
+    ));
     let mut transport_result = None;
     let mut handler_result = None;
     poll_fn(|cx| {
@@ -102,21 +131,24 @@ async fn serve_requests<E, Task: Future<Output = Result<(), Error<E>>>>(
     mut incoming: server::Incoming,
     handle: impl Fn(server::Request) -> Task,
     handlers_need_poll: impl Fn() -> bool,
+    stream_limit: u32,
 ) -> Result<(), Error<E>> {
-    let mut exchanges: [Option<Pin<Box<Task>>>; MAX_STREAMS] = core::array::from_fn(|_| None);
-    // There are at most two tasks, so polling both on a shared waker is bounded.
+    let mut exchanges: Vec<Pin<Box<Task>>> = Vec::new();
     poll_fn(|cx| {
-        for slot in &mut exchanges {
-            if let Some(task) = slot {
-                match Future::poll(task.as_mut(), cx) {
-                    Poll::Ready(Ok(())) => *slot = None,
-                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                    Poll::Pending => continue,
+        let mut index = 0;
+        while let Some(task) = exchanges.get_mut(index) {
+            match task.as_mut().poll(cx) {
+                Poll::Ready(Ok(())) => {
+                    drop(exchanges.swap_remove(index));
                 }
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => index += 1,
             }
+        }
+        if (exchanges.len() as u64) < u64::from(stream_limit) {
             match incoming.poll_accept(cx) {
                 Poll::Ready(Some(request)) => {
-                    *slot = Some(Box::pin(handle(request)));
+                    exchanges.push(Box::pin(handle(request)));
                     cx.waker().wake_by_ref();
                 }
                 Poll::Ready(None) => return Poll::Ready(Ok(())),

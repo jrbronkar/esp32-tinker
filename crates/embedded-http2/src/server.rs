@@ -11,7 +11,7 @@ use core::{
 use embedded_io_async::{Read, Write};
 use zerodds_http2::{ErrorCode, StreamId};
 
-use crate::{BodyFrame, Error, Event, HeaderField, MAX_STREAMS, RequestHead, Server};
+use crate::{BodyFrame, Config, Error, Event, HeaderField, RequestHead, Server};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamError {
@@ -116,9 +116,17 @@ pub struct Connection<Io> {
 pub async fn handshake<Io: Read + Write>(
     io: Io,
 ) -> Result<(Connection<Io>, Incoming), Error<Io::Error>> {
-    let transport = Server::handshake(io).await?;
+    handshake_with_config(io, Config::default()).await
+}
+
+/// Start a local connection driver with the supplied stream limit.
+pub async fn handshake_with_config<Io: Read + Write>(
+    io: Io,
+    config: Config,
+) -> Result<(Connection<Io>, Incoming), Error<Io::Error>> {
+    let transport = Server::handshake_with_config(io, config).await?;
     let shared = Rc::new(Shared {
-        pending: RefCell::new(Vec::with_capacity(MAX_STREAMS)),
+        pending: RefCell::new(Vec::new()),
         incoming: Signal::default(),
         driver: Rc::new(Signal::default()),
         closed: Cell::new(false),
@@ -128,7 +136,7 @@ pub async fn handshake<Io: Read + Write>(
         Connection {
             transport,
             shared: shared.clone(),
-            streams: Vec::with_capacity(MAX_STREAMS),
+            streams: Vec::new(),
         },
         Incoming(shared),
     ))
@@ -397,6 +405,7 @@ fn fail(receive: &Receive, error: StreamError) {
 impl<Io: Read + Write> Connection<Io> {
     /// Advance the socket until the peer disconnects or the acceptor drops.
     pub async fn run(mut self) -> Result<(), Error<Io::Error>> {
+        let mut send_capacity = Vec::new();
         loop {
             if self.shared.abandoned.get() {
                 return Ok(());
@@ -411,11 +420,12 @@ impl<Io: Read + Write> Connection<Io> {
                 continue;
             }
             let frame = {
-                let send_capacity: [_; MAX_STREAMS] = core::array::from_fn(|index| {
-                    self.streams.get(index).is_some_and(|(id, _)| {
-                        self.transport.send_capacity(*id).is_ok_and(|n| n > 0)
-                    })
-                });
+                send_capacity.clear();
+                send_capacity.extend(
+                    self.streams
+                        .iter()
+                        .map(|(id, _)| self.transport.send_capacity(*id).is_ok_and(|n| n > 0)),
+                );
                 let mut read = pin!(self.transport.read_inbound());
                 poll_fn(|cx| {
                     self.shared.driver.register(cx.waker());

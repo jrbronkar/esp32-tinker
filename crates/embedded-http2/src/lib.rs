@@ -38,8 +38,23 @@ use zerodds_http2::{
 
 pub use zerodds_hpack::HeaderField;
 
-// The first server slice buffers complete bodies up to this local limit.
-const MAX_STREAMS: usize = 2;
+/// Per-connection HTTP/2 server settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Config {
+    /// Maximum number of concurrent peer-initiated streams. Defaults to two.
+    /// Memory usage grows with the number of active streams.
+    pub max_concurrent_streams: core::num::NonZeroU32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            max_concurrent_streams: core::num::NonZeroU32::new(2)
+                .unwrap_or(core::num::NonZeroU32::MIN),
+        }
+    }
+}
+// Maximum complete body size for buffered exchanges.
 const MAX_BODY: usize = 16 * 1024;
 const NO_FLAGS: u8 = 0;
 const CONNECTION_STREAM_ID: StreamId = 0;
@@ -119,11 +134,17 @@ pub struct Server<Io> {
     header_block: Option<HeaderBlock>,
     streams: Vec<Stream>,
     last_stream: StreamId,
+    max_concurrent_streams: u32,
 }
 
 impl<Io: Read + Write> Server<Io> {
     /// Complete a cleartext handshake and advertise a two-stream limit.
     pub async fn handshake(io: Io) -> Result<Self, Error<Io::Error>> {
+        Self::handshake_with_config(io, Config::default()).await
+    }
+
+    /// Complete a cleartext handshake with the supplied stream limit.
+    pub async fn handshake_with_config(io: Io, config: Config) -> Result<Self, Error<Io::Error>> {
         let mut server = Self {
             io,
             peer: Settings::default(),
@@ -136,6 +157,7 @@ impl<Io: Read + Write> Server<Io> {
             header_block: None,
             streams: Vec::new(),
             last_stream: 0,
+            max_concurrent_streams: config.max_concurrent_streams.get(),
         };
         let mut preface = [0; CLIENT_PREFACE.len()];
         server
@@ -149,7 +171,7 @@ impl<Io: Read + Write> Server<Io> {
         let settings = encode_settings(&[
             Setting {
                 id: SettingId::MaxConcurrentStreams,
-                value: MAX_STREAMS as u32,
+                value: server.max_concurrent_streams,
             },
             Setting {
                 id: SettingId::MaxHeaderListSize,
