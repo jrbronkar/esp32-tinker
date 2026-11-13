@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             1,
         )
         .await?;
+        let started = Instant::now();
         let mut second = connect(&args[1]).await?;
         tokio::time::timeout(Duration::from_secs(2), identity(&mut second)).await??;
         let (other_tx, mut other) = upload(&mut second).await?;
@@ -81,7 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "PASS: another client can query status while upload owns flash; second upload rejected"
         );
-        let started = Instant::now();
         // HTTP/2 keepalive PINGs keep TCP active, while the upload sends no ops.
         match tokio::time::timeout(Duration::from_secs(8), replies.message()).await? {
             Err(_) | Ok(None) => {}
