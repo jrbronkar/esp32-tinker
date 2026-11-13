@@ -78,79 +78,83 @@ async fn assert_grpc_reply(
 
 #[tokio::test]
 async fn rejects_invalid_requests_and_keeps_the_connection_usable() {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        let (peer, socket) = duplex(8192);
-        let server = tokio::spawn(async move {
-            let mut service = Echo::default();
-            let error = serve(FromTokio::new(socket), &mut service)
-                .await
-                .unwrap_err();
-            assert!(error.is_disconnected(), "{error:?}");
-            service.decoded
-        });
-        let (mut client, connection) = h2::client::handshake(peer).await.unwrap();
-        let driver = tokio::spawn(connection);
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (peer, socket) = duplex(8192);
+                let server = tokio::task::spawn_local(async move {
+                    let mut service = Echo::default();
+                    let error = serve(FromTokio::new(socket), &mut service)
+                        .await
+                        .unwrap_err();
+                    assert!(error.is_disconnected(), "{error:?}");
+                    service.decoded
+                });
+                let (mut client, connection) = h2::client::handshake(peer).await.unwrap();
+                let driver = tokio::spawn(connection);
 
-        let invalid_type = request(Method::POST, PATH, "application/grpc-web");
-        let response = send(&mut client, invalid_type, EMPTY_MESSAGE).await;
-        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        assert!(response.into_body().data().await.is_none());
+                let invalid_type = request(Method::POST, PATH, "application/grpc-web");
+                let response = send(&mut client, invalid_type, EMPTY_MESSAGE).await;
+                assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+                assert!(response.into_body().data().await.is_none());
 
-        let invalid_method = request(Method::GET, PATH, "application/grpc");
-        let response = send(&mut client, invalid_method, EMPTY_MESSAGE).await;
-        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(response.headers()["allow"], "POST");
-        assert!(response.into_body().data().await.is_none());
+                let invalid_method = request(Method::GET, PATH, "application/grpc");
+                let response = send(&mut client, invalid_method, EMPTY_MESSAGE).await;
+                assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+                assert_eq!(response.headers()["allow"], "POST");
+                assert!(response.into_body().data().await.is_none());
 
-        let mut compressed = request(Method::POST, PATH, "application/grpc");
-        compressed
-            .headers_mut()
-            .insert("grpc-encoding", "gzip".parse().unwrap());
-        let response = send(&mut client, compressed, EMPTY_MESSAGE).await;
-        assert_eq!(response.headers()["grpc-accept-encoding"], "identity");
-        assert_grpc_reply(response, "12", &[]).await;
+                let mut compressed = request(Method::POST, PATH, "application/grpc");
+                compressed
+                    .headers_mut()
+                    .insert("grpc-encoding", "gzip".parse().unwrap());
+                let response = send(&mut client, compressed, EMPTY_MESSAGE).await;
+                assert_eq!(response.headers()["grpc-accept-encoding"], "identity");
+                assert_grpc_reply(response, "12", &[]).await;
 
-        for (name, body, status) in [
-            ("empty body", &[][..], "3"),
-            ("short header", &[0, 0, 0, 0], "3"),
-            ("compressed envelope", &[1, 0, 0, 0, 0], "12"),
-            ("invalid compression flag", &[2, 0, 0, 0, 0], "3"),
-            ("oversized payload", &[0, 0, 0, 0, 3, 8, 1, 0], "8"),
-            ("truncated payload", &[0, 0, 0, 0, 1], "3"),
-            ("extra envelope", &[0; 10], "3"),
-            ("malformed protobuf", &[0, 0, 0, 0, 1, 0xff], "3"),
-        ] {
-            let response = send(
-                &mut client,
-                request(Method::POST, PATH, "application/grpc"),
-                body,
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::OK, "{name}");
-            assert_grpc_reply(response, status, &[]).await;
-        }
+                for (name, body, status) in [
+                    ("empty body", &[][..], "3"),
+                    ("short header", &[0, 0, 0, 0], "3"),
+                    ("compressed envelope", &[1, 0, 0, 0, 0], "12"),
+                    ("invalid compression flag", &[2, 0, 0, 0, 0], "3"),
+                    ("oversized payload", &[0, 0, 0, 0, 3, 8, 1, 0], "8"),
+                    ("truncated payload", &[0, 0, 0, 0, 1], "3"),
+                    ("extra envelope", &[0; 10], "3"),
+                    ("malformed protobuf", &[0, 0, 0, 0, 1, 0xff], "3"),
+                ] {
+                    let response = send(
+                        &mut client,
+                        request(Method::POST, PATH, "application/grpc"),
+                        body,
+                    )
+                    .await;
+                    assert_eq!(response.status(), StatusCode::OK, "{name}");
+                    assert_grpc_reply(response, status, &[]).await;
+                }
 
-        let response = send(
-            &mut client,
-            request(Method::POST, OVERFLOW_PATH, "application/grpc+proto"),
-            VALID_MESSAGE,
-        )
+                let response = send(
+                    &mut client,
+                    request(Method::POST, OVERFLOW_PATH, "application/grpc+proto"),
+                    VALID_MESSAGE,
+                )
+                .await;
+                assert_grpc_reply(response, "13", &[]).await;
+
+                let mut identity = request(Method::POST, PATH, "application/grpc; charset=utf-8");
+                identity
+                    .headers_mut()
+                    .insert("grpc-encoding", "identity".parse().unwrap());
+                let response = send(&mut client, identity, VALID_MESSAGE).await;
+                assert_grpc_reply(response, "0", VALID_MESSAGE).await;
+
+                drop(client);
+                driver.abort();
+                assert_eq!(server.await.unwrap(), 2);
+            })
+            .await
+            .expect("gRPC exchanges timed out");
+        })
         .await;
-        assert_grpc_reply(response, "13", &[]).await;
-
-        let mut identity = request(Method::POST, PATH, "application/grpc; charset=utf-8");
-        identity
-            .headers_mut()
-            .insert("grpc-encoding", "identity".parse().unwrap());
-        let response = send(&mut client, identity, VALID_MESSAGE).await;
-        assert_grpc_reply(response, "0", VALID_MESSAGE).await;
-
-        drop(client);
-        driver.abort();
-        assert_eq!(server.await.unwrap(), 2);
-    })
-    .await
-    .expect("gRPC exchanges timed out");
 }
 
 #[tokio::test]

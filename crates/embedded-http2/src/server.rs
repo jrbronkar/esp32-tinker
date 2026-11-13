@@ -62,6 +62,7 @@ struct ReceiveState {
 
 enum WriteCommand {
     Head(Vec<HeaderField>),
+    HeadersOnly(Vec<HeaderField>),
     Data(Vec<u8>, usize),
     Finish(Vec<HeaderField>),
 }
@@ -135,19 +136,23 @@ pub async fn handshake<Io: Read + Write>(
 
 impl Incoming {
     pub async fn accept(&mut self) -> Option<Request> {
-        poll_fn(|cx| {
-            if self.0.closed.get() {
-                return Poll::Ready(None);
-            }
-            let mut pending = self.0.pending.borrow_mut();
-            if pending.is_empty() {
-                self.0.incoming.register(cx.waker());
-                Poll::Pending
-            } else {
-                Poll::Ready(Some(pending.remove(0)))
-            }
-        })
-        .await
+        poll_fn(|cx| self.poll_accept(cx)).await
+    }
+
+    pub(crate) fn poll_accept(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+    ) -> Poll<Option<Request>> {
+        if self.0.closed.get() {
+            return Poll::Ready(None);
+        }
+        let mut pending = self.0.pending.borrow_mut();
+        if pending.is_empty() {
+            self.0.incoming.register(cx.waker());
+            Poll::Pending
+        } else {
+            Poll::Ready(Some(pending.remove(0)))
+        }
     }
 }
 
@@ -160,6 +165,37 @@ impl Drop for Incoming {
 }
 
 impl SendResponse {
+    /// Wait for the peer to reset this stream or disconnect before responding.
+    pub async fn closed(&self) {
+        let Some(stream) = &self.0 else { return };
+        poll_fn(|cx| {
+            if stream.state.borrow().error.is_some() {
+                Poll::Ready(())
+            } else {
+                stream.writer.register(cx.waker());
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    /// Send a headers-only response after the request half-closes.
+    pub(crate) async fn finish_headers(
+        mut self,
+        headers: Vec<HeaderField>,
+    ) -> Result<(), StreamError> {
+        let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
+        check_header_size(&headers)?;
+        if let Some(error) = stream.state.borrow().error {
+            return Err(error);
+        }
+        stream.send.borrow_mut().command = Some(WriteCommand::HeadersOnly(headers));
+        stream.driver.wake();
+        wait_for_finish(stream).await?;
+        self.0.take();
+        Ok(())
+    }
+
     /// Queue the response head and obtain a handle for DATA and trailers.
     pub fn send_response(mut self, headers: Vec<HeaderField>) -> Result<SendStream, StreamError> {
         let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
@@ -209,17 +245,7 @@ impl SendStream {
         Self::wait_for_slot(stream).await?;
         stream.send.borrow_mut().command = Some(WriteCommand::Finish(trailers));
         stream.driver.wake();
-        poll_fn(|cx| {
-            if stream.send.borrow().finished {
-                Poll::Ready(Ok(()))
-            } else if let Some(error) = stream.state.borrow().error {
-                Poll::Ready(Err(error))
-            } else {
-                stream.writer.register(cx.waker());
-                Poll::Pending
-            }
-        })
-        .await?;
+        wait_for_finish(stream).await?;
         self.0.take();
         Ok(())
     }
@@ -238,6 +264,20 @@ impl SendStream {
         })
         .await
     }
+}
+
+async fn wait_for_finish(stream: &Receive) -> Result<(), StreamError> {
+    poll_fn(|cx| {
+        if stream.send.borrow().finished {
+            Poll::Ready(Ok(()))
+        } else if let Some(error) = stream.state.borrow().error {
+            Poll::Ready(Err(error))
+        } else {
+            stream.writer.register(cx.waker());
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 fn cancel(stream: Option<&Rc<Receive>>) {
@@ -444,6 +484,17 @@ impl<Io: Read + Write> Connection<Io> {
                 }
                 Event::Control => {}
             }
+            // Let local handlers run even when the socket already has more frames.
+            let mut yielded = false;
+            poll_fn(|cx| {
+                if core::mem::replace(&mut yielded, true) {
+                    Poll::Ready(())
+                } else {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            })
+            .await;
         }
     }
 
@@ -490,6 +541,10 @@ impl<Io: Read + Write> Connection<Io> {
                 send.writing = true;
                 send.command.take().ok_or(Error::Protocol)?
             };
+            let finishing = matches!(
+                command,
+                WriteCommand::Finish(_) | WriteCommand::HeadersOnly(_)
+            );
             let result = match command {
                 WriteCommand::Head(headers) => self.transport.start_response(id, &headers).await,
                 WriteCommand::Data(bytes, offset) => {
@@ -504,15 +559,19 @@ impl<Io: Read + Write> Connection<Io> {
                     Ok(())
                 }
                 WriteCommand::Finish(trailers) => {
-                    match self.transport.finish_response(id, &trailers).await {
-                        Ok(()) => {
-                            stream.send.borrow_mut().finished = true;
-                            stream.writer.wake();
-                            self.streams.swap_remove(index);
-                            continue;
-                        }
-                        Err(error) => Err(error),
-                    }
+                    self.transport.finish_response(id, &trailers).await
+                }
+                WriteCommand::HeadersOnly(headers) => {
+                    self.transport
+                        .respond(
+                            id,
+                            crate::Response {
+                                headers: &headers,
+                                body: &[],
+                                trailers: &[],
+                            },
+                        )
+                        .await
                 }
             };
             if let Err(error) = result {
@@ -526,9 +585,16 @@ impl<Io: Read + Write> Connection<Io> {
                 fail(&stream, StreamError::Reset(ErrorCode::InternalError as u32));
                 continue;
             }
-            stream.send.borrow_mut().writing = false;
+            let mut send = stream.send.borrow_mut();
+            send.writing = false;
+            send.finished = finishing;
+            drop(send);
             stream.writer.wake();
-            index += 1;
+            if finishing {
+                self.streams.swap_remove(index);
+            } else {
+                index += 1;
+            }
         }
         Ok(())
     }
@@ -538,7 +604,7 @@ fn command_ready(send: &SendState, ended: bool, capacity: bool) -> bool {
     match &send.command {
         Some(WriteCommand::Head(_)) => true,
         Some(WriteCommand::Data(..)) => capacity,
-        Some(WriteCommand::Finish(_)) => ended,
+        Some(WriteCommand::Finish(_) | WriteCommand::HeadersOnly(_)) => ended,
         None => false,
     }
 }
