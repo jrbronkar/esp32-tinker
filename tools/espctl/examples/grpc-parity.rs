@@ -100,6 +100,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         drop(client);
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut client = connect(&args[1]).await?;
+        let (deadline_tx, deadline_rx) = tokio::sync::mpsc::channel(1);
+        let mut request =
+            tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(deadline_rx));
+        request.set_timeout(Duration::from_secs(2));
+        client.ready().await?;
+        let mut deadline_replies = client
+            .streaming(request, device_grpc::UPLOAD_PATH.parse()?, RawCodec)
+            .await?
+            .into_inner();
+        op(
+            &deadline_tx,
+            &mut deadline_replies,
+            begin_for_application(&image, &args[3], application.as_str()),
+            1,
+        )
+        .await?;
+        match deadline_replies.message().await {
+            Err(status) if status.code() == tonic::Code::DeadlineExceeded => {}
+            _ => return Err("expected DeadlineExceeded on the active upload".into()),
+        }
+        drop(deadline_replies);
+        drop(deadline_tx);
+        identity(&mut client).await?;
+        println!("PASS: grpc-timeout expired the active upload and preserved the connection");
         let (tx, mut replies) = upload(&mut client).await?;
         op(
             &tx,

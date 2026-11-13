@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+#[cfg(feature = "ota-heap-probe")]
+extern crate alloc;
+
 use device_service::{DeviceLogs, LogSeverity};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -75,6 +78,11 @@ async fn main(spawner: Spawner) -> ! {
         println!("Device service initialization failed: {error}");
         restart_initialization().await;
     }
+    #[cfg(feature = "ota-heap-probe")]
+    match ota_heap_probe() {
+        Ok(task) => spawner.spawn(task),
+        Err(_) => println!("OTA heap probe task unavailable"),
+    }
     logs.log(LogSeverity::Info, "Application ready");
     println!("device-demo ready: UNSIGNED DEVELOPMENT OTA; requires provisioned layout");
     #[cfg(feature = "imu")]
@@ -96,6 +104,31 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         Timer::after(Duration::from_secs(10)).await;
         println!("device-demo alive");
+    }
+}
+
+#[cfg(feature = "ota-heap-probe")]
+#[embassy_executor::task]
+async fn ota_heap_probe() {
+    let reserve_bytes = option_env!("OTA_HEAP_RESERVE_BYTES")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut reserve = alloc::vec::Vec::<u8>::new();
+    if reserve.try_reserve_exact(reserve_bytes).is_err() {
+        println!("OTA heap probe could not reserve {} bytes", reserve_bytes);
+        return;
+    }
+    loop {
+        let stats = esp_alloc::HEAP.stats();
+        println!(
+            "OTA heap probe reserved={} used={} peak={} min_free={} total={}",
+            reserve.capacity(),
+            stats.current_usage,
+            stats.max_usage,
+            stats.size.saturating_sub(stats.max_usage),
+            stats.size,
+        );
+        Timer::after(Duration::from_millis(500)).await;
     }
 }
 

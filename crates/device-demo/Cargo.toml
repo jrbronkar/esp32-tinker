@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [features]
+ota-heap-probe = ["esp-alloc/internal-heap-stats"]
 imu = ["dep:mpu6050", "dep:onboard-rgb", "dep:wifi-telemetry", "dep:embassy-net", "dep:heapless"]
 
 [dependencies]
