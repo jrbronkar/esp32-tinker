@@ -179,8 +179,7 @@ pub trait Environment {
 }
 struct Subscription {
     id: CallId,
-    cursor: ReadLogsRequest,
-    first: bool,
+    cursor: logs::LogCursor,
 }
 struct Upload<'a, T> {
     id: CallId,
@@ -368,8 +367,7 @@ impl<T: ota_core::Target, E: Environment> ManagementRpc for StreamingManagement<
             .ok_or_else(|| Status::resource_exhausted("too many subscriptions"))?;
         *slot = Some(Subscription {
             id: ctx.id,
-            cursor,
-            first: true,
+            cursor: logs::LogCursor::new(cursor),
         });
         Ok(())
     }
@@ -387,15 +385,9 @@ impl<T: ota_core::Target, E: Environment> ManagementRpc for StreamingManagement<
         else {
             return Poll::Ready(Next::Done(Err(Status::internal("missing subscription"))));
         };
-        let batch = self.env.logs(&sub.cursor, cx);
-        if sub.first || batch.reset || batch.dropped || !batch.entries.is_empty() {
-            sub.first = false;
-            sub.cursor.boot_id = batch.boot_id;
-            sub.cursor.after_sequence = batch.next_sequence;
-            Poll::Ready(Next::Message(batch))
-        } else {
-            Poll::Pending
-        }
+        sub.cursor
+            .poll(|cursor| self.env.logs(cursor, cx))
+            .map(Next::Message)
     }
 
     fn cancel_logs(&mut self, ctx: &mut CallContext<'_>) {
