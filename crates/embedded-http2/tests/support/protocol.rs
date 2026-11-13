@@ -1758,8 +1758,10 @@ async fn receive_handles_release_credit_and_report_reset() -> Result<(), Box<dyn
             Ok::<_, Box<dyn std::error::Error>>(())
         };
         let handler = async {
-            let mut first = incoming.accept().await.ok_or("missing first request")?.body;
-            let mut next = incoming.accept().await.ok_or("missing next request")?.body;
+            let mut first_request = incoming.accept().await.ok_or("missing first request")?;
+            let first = &mut first_request.body;
+            let mut next_request = incoming.accept().await.ok_or("missing next request")?;
+            let next = &mut next_request.body;
             let chunk = first.data().await.map_err(|error| format!("{error:?}"))?.ok_or("missing first chunk")?;
             {
                 let next_chunk = next.data().await.map_err(|error| format!("{error:?}"))?.ok_or("missing next chunk")?;
@@ -1837,7 +1839,8 @@ async fn receive_handles_deliver_trailers_cancel_dropped_requests_and_report_dis
             let first = incoming.accept().await.ok_or("missing first request")?;
             assert_eq!(first.head.stream_id, FIRST_STREAM);
             drop(first);
-            let mut next = incoming.accept().await.ok_or("missing next request")?.body;
+            let mut next_request = incoming.accept().await.ok_or("missing next request")?;
+            let next = &mut next_request.body;
             assert!(next.trailers().is_none());
             let chunk = next
                 .data()
@@ -1854,6 +1857,272 @@ async fn receive_handles_deliver_trailers_cancel_dropped_requests_and_report_dis
             assert!(next.trailers().is_none());
             assert!(incoming.accept().await.is_none());
             assert!(matches!(next.data().await, Err(StreamError::Disconnected)));
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (driver, client, handler) = tokio::join!(connection.run(), client, handler);
+        client?;
+        handler?;
+        assert!(matches!(
+            driver,
+            Err(Error::Read(
+                embedded_io_async::ReadExactError::UnexpectedEof
+            ))
+        ));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn response_handles_isolate_send_backpressure_and_reset()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::server::{self, StreamError};
+    use tokio::time::{Duration, timeout};
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, mut peer) = duplex(4096);
+        peer.write_all(CLIENT_PREFACE).await?;
+        let settings = encode_settings(&[Setting {
+            id: SettingId::InitialWindowSize,
+            value: 1,
+        }]);
+        peer.write_all(&frame(FrameType::Settings, 0, NO_FLAGS, &settings))
+            .await?;
+        let (connection, mut incoming) = server::handshake(FromTokio::new(socket))
+            .await
+            .map_err(describe_transport_error)?;
+
+        let client = async {
+            let _settings = read_wire_frame(&mut peer).await?;
+            let _ack = read_wire_frame(&mut peer).await?;
+            for id in [FIRST_STREAM, NEXT_STREAM] {
+                peer.write_all(&frame(
+                    FrameType::Headers,
+                    id,
+                    END_HEADERS | END_STREAM,
+                    REQUEST,
+                ))
+                .await?;
+            }
+            let mut data = Vec::new();
+            while data.len() < 3 {
+                let packet = read_wire_frame(&mut peer).await?;
+                if packet[3] == FrameType::Data as u8 {
+                    data.push(packet);
+                }
+            }
+            assert_eq!(
+                data,
+                [
+                    frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, b"a"),
+                    frame(FrameType::Data, NEXT_STREAM, NO_FLAGS, b"z"),
+                    frame(FrameType::Data, NEXT_STREAM, END_STREAM, &[]),
+                ]
+            );
+            peer.write_all(&frame(
+                FrameType::RstStream,
+                FIRST_STREAM,
+                NO_FLAGS,
+                &(ErrorCode::Cancel as u32).to_be_bytes(),
+            ))
+            .await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let handlers = async {
+            let headers = || {
+                vec![HeaderField {
+                    name: ":status".into(),
+                    value: "200".into(),
+                }]
+            };
+            let mut first = incoming
+                .accept()
+                .await
+                .ok_or("missing first request")?
+                .respond
+                .send_response(headers())
+                .map_err(|error| format!("{error:?}"))?;
+            assert_eq!(
+                first
+                    .send_data(b"ab")
+                    .await
+                    .map_err(|error| format!("{error:?}"))?,
+                2
+            );
+            let mut next = incoming
+                .accept()
+                .await
+                .ok_or("missing second request")?
+                .respond
+                .send_response(headers())
+                .map_err(|error| format!("{error:?}"))?;
+            let (first_result, next_result) = tokio::join!(first.send_data(b"more"), async {
+                assert_eq!(next.send_data(b"z").await?, 1);
+                next.finish(Vec::new()).await
+            });
+            assert_eq!(
+                first_result,
+                Err(StreamError::Reset(ErrorCode::Cancel as u32))
+            );
+            assert_eq!(next_result, Ok(()));
+            drop(incoming);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (driver, client, handlers) = tokio::join!(connection.run(), client, handlers);
+        client?;
+        handlers?;
+        driver.map_err(describe_transport_error)?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn response_finish_waits_for_final_data_and_sends_trailers()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::server;
+    use tokio::time::{Duration, timeout};
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, mut peer) = duplex(4096);
+        peer.write_all(CLIENT_PREFACE).await?;
+        let settings = encode_settings(&[Setting {
+            id: SettingId::InitialWindowSize,
+            value: 1,
+        }]);
+        peer.write_all(&frame(FrameType::Settings, CONNECTION, NO_FLAGS, &settings))
+            .await?;
+        let (connection, mut incoming) = server::handshake(FromTokio::new(socket))
+            .await
+            .map_err(describe_transport_error)?;
+        let (finished, mut completion) = tokio::sync::oneshot::channel();
+        let client = async {
+            let _settings = read_wire_frame(&mut peer).await?;
+            let _ack = read_wire_frame(&mut peer).await?;
+            peer.write_all(&frame(
+                FrameType::Headers,
+                FIRST_STREAM,
+                END_HEADERS | END_STREAM,
+                REQUEST,
+            ))
+            .await?;
+            let head = read_wire_frame(&mut peer).await?;
+            assert_eq!(head[3], FrameType::Headers as u8);
+            assert_eq!(
+                read_wire_frame(&mut peer).await?,
+                frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, b"a")
+            );
+            assert!(matches!(
+                completion.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            peer.write_all(&window_update(FIRST_STREAM, 1)).await?;
+            completion.await?;
+            assert_eq!(
+                read_wire_frame(&mut peer).await?,
+                frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, b"b")
+            );
+            let trailers = read_wire_frame(&mut peer).await?;
+            assert_eq!(trailers[3], FrameType::Headers as u8);
+            assert_eq!(trailers[4], END_HEADERS | END_STREAM);
+            assert_eq!(trailers[5..9], FIRST_STREAM.to_be_bytes());
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let handler = async {
+            let request = incoming.accept().await.ok_or("missing request")?;
+            let mut send = request
+                .respond
+                .send_response(vec![HeaderField {
+                    name: ":status".into(),
+                    value: "200".into(),
+                }])
+                .map_err(|error| format!("{error:?}"))?;
+            assert_eq!(
+                send.send_data(b"ab")
+                    .await
+                    .map_err(|error| format!("{error:?}"))?,
+                2
+            );
+            send.finish(vec![HeaderField {
+                name: "grpc-status".into(),
+                value: "0".into(),
+            }])
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+            finished.send(()).map_err(|_| "peer exited")?;
+            drop(incoming);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (driver, client, handler) = tokio::join!(connection.run(), client, handler);
+        client?;
+        handler?;
+        driver.map_err(describe_transport_error)?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn disconnect_wakes_a_response_writer_waiting_for_capacity()
+-> Result<(), Box<dyn std::error::Error>> {
+    use core::{
+        future::{Future, poll_fn},
+        pin::pin,
+        task::Poll,
+    };
+    use embedded_http2::server::{self, StreamError};
+    use tokio::time::{Duration, timeout};
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, mut peer) = duplex(4096);
+        peer.write_all(CLIENT_PREFACE).await?;
+        let settings = encode_settings(&[Setting {
+            id: SettingId::InitialWindowSize,
+            value: 0,
+        }]);
+        peer.write_all(&frame(FrameType::Settings, CONNECTION, NO_FLAGS, &settings))
+            .await?;
+        let (connection, mut incoming) = server::handshake(FromTokio::new(socket))
+            .await
+            .map_err(describe_transport_error)?;
+        let (waiting, writer_polled) = tokio::sync::oneshot::channel();
+        let client = async {
+            let _settings = read_wire_frame(&mut peer).await?;
+            let _ack = read_wire_frame(&mut peer).await?;
+            peer.write_all(&frame(
+                FrameType::Headers,
+                FIRST_STREAM,
+                END_HEADERS | END_STREAM,
+                REQUEST,
+            ))
+            .await?;
+            writer_polled.await?;
+            peer.shutdown().await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let handler = async {
+            let request = incoming.accept().await.ok_or("missing request")?;
+            let mut send = request
+                .respond
+                .send_response(vec![HeaderField {
+                    name: ":status".into(),
+                    value: "200".into(),
+                }])
+                .map_err(|error| format!("{error:?}"))?;
+            assert_eq!(
+                send.send_data(b"queued")
+                    .await
+                    .map_err(|error| format!("{error:?}"))?,
+                6
+            );
+            let mut blocked = pin!(send.send_data(b"blocked"));
+            poll_fn(|cx| {
+                assert!(blocked.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            waiting.send(()).map_err(|_| "peer exited")?;
+            assert_eq!(blocked.await, Err(StreamError::Disconnected));
             Ok::<_, Box<dyn std::error::Error>>(())
         };
         let (driver, client, handler) = tokio::join!(connection.run(), client, handler);

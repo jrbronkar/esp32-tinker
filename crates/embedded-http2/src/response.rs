@@ -176,7 +176,7 @@ impl<Io: Read + Write> Server<Io> {
         .await
     }
 
-    fn send_capacity(&self, stream_id: StreamId) -> Result<usize, Error<Io::Error>> {
+    pub(super) fn send_capacity(&self, stream_id: StreamId) -> Result<usize, Error<Io::Error>> {
         let stream = self
             .stream(stream_id)
             .filter(|stream| stream.response_started)
