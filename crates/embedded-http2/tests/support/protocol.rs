@@ -2138,3 +2138,102 @@ async fn disconnect_wakes_a_response_writer_waiting_for_capacity()
     })
     .await?
 }
+
+#[tokio::test]
+async fn response_header_limits_reset_only_the_affected_stream()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::server::{self, StreamError};
+    use tokio::time::{Duration, timeout};
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, mut peer) = duplex(4096);
+        peer.write_all(CLIENT_PREFACE).await?;
+        let settings = encode_settings(&[Setting {
+            id: SettingId::MaxHeaderListSize,
+            value: 64,
+        }]);
+        peer.write_all(&frame(FrameType::Settings, CONNECTION, NO_FLAGS, &settings))
+            .await?;
+        let (connection, mut incoming) = server::handshake(FromTokio::new(socket))
+            .await
+            .map_err(describe_transport_error)?;
+        let client = async {
+            let _settings = read_wire_frame(&mut peer).await?;
+            let _ack = read_wire_frame(&mut peer).await?;
+            for id in [1, 3] {
+                peer.write_all(&frame(
+                    FrameType::Headers,
+                    id,
+                    END_HEADERS | END_STREAM,
+                    REQUEST,
+                ))
+                .await?;
+            }
+            for (id, code) in [(1, ErrorCode::Cancel), (3, ErrorCode::InternalError)] {
+                assert_eq!(
+                    read_wire_frame(&mut peer).await?,
+                    frame(
+                        FrameType::RstStream,
+                        id,
+                        NO_FLAGS,
+                        &(code as u32).to_be_bytes()
+                    )
+                );
+            }
+            peer.write_all(&frame(
+                FrameType::Headers,
+                5,
+                END_HEADERS | END_STREAM,
+                REQUEST,
+            ))
+            .await?;
+            let head = read_wire_frame(&mut peer).await?;
+            assert_eq!(head[3], FrameType::Headers as u8);
+            assert_eq!(head[5..9], 5_u32.to_be_bytes());
+            assert_eq!(
+                read_wire_frame(&mut peer).await?,
+                frame(FrameType::Data, 5, END_STREAM, &[])
+            );
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let handler = async {
+            let header = |value: &str| HeaderField {
+                name: "x".into(),
+                value: value.into(),
+            };
+            let request = incoming.accept().await.ok_or("missing first request")?;
+            assert!(matches!(
+                request
+                    .respond
+                    .send_response(vec![header(&"x".repeat(4096))]),
+                Err(StreamError::HeaderLimit)
+            ));
+            let request = incoming.accept().await.ok_or("missing second request")?;
+            let mut send = request
+                .respond
+                .send_response(vec![header(&"x".repeat(64))])
+                .map_err(|error| format!("{error:?}"))?;
+            assert_eq!(
+                send.send_data(b"body").await,
+                Err(StreamError::Reset(ErrorCode::InternalError as u32))
+            );
+            let request = incoming.accept().await.ok_or("missing third request")?;
+            let send = request
+                .respond
+                .send_response(vec![HeaderField {
+                    name: ":status".into(),
+                    value: "200".into(),
+                }])
+                .map_err(|error| format!("{error:?}"))?;
+            assert_eq!(send.finish(Vec::new()).await, Ok(()));
+            drop(incoming);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (driver, client, handler) = tokio::join!(connection.run(), client, handler);
+        client?;
+        handler?;
+        driver.map_err(describe_transport_error)?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?
+}
