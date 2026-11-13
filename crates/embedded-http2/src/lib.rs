@@ -17,6 +17,7 @@ mod multiplex;
 mod request;
 mod request_fields;
 mod response;
+pub mod server;
 pub mod service;
 
 pub use multiplex::Event;
