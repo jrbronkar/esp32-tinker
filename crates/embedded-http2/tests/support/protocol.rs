@@ -1379,3 +1379,143 @@ async fn multiplexing_refuses_excess_streams_and_isolates_flow_control_errors()
     );
     Ok(())
 }
+
+struct EchoBuffered;
+
+impl embedded_http2::service::Service for EchoBuffered {
+    async fn call(
+        &mut self,
+        request: embedded_http2::service::Request,
+    ) -> embedded_http2::service::Response {
+        embedded_http2::service::Response {
+            headers: vec![HeaderField {
+                name: ":status".into(),
+                value: "200".into(),
+            }],
+            body: request.body,
+            trailers: request.trailers,
+        }
+    }
+}
+
+async fn serve_buffered_frames(
+    frames: &[Vec<u8>],
+) -> Result<DuplexStream, Box<dyn std::error::Error>> {
+    let (socket, mut peer) = duplex(128 * 1024);
+    peer.write_all(CLIENT_PREFACE).await?;
+    peer.write_all(&frame(FrameType::Settings, 0, 0, &[]))
+        .await?;
+    for packet in frames {
+        peer.write_all(packet).await?;
+    }
+    peer.shutdown().await?;
+    let mut server = Server::handshake(FromTokio::new(socket))
+        .await
+        .map_err(describe_transport_error)?;
+    assert!(matches!(
+        server.serve(&mut EchoBuffered).await,
+        Err(Error::Read(
+            embedded_io_async::ReadExactError::UnexpectedEof
+        ))
+    ));
+    Ok(peer)
+}
+
+async fn collect_response_frames(
+    mut peer: DuplexStream,
+) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
+    let mut frames = Vec::new();
+    loop {
+        let mut header = [0; FRAME_HEADER_LEN];
+        if peer.read(&mut header[..1]).await? == 0 {
+            return Ok(frames);
+        }
+        peer.read_exact(&mut header[1..]).await?;
+        let length = u32::from_be_bytes([0, header[0], header[1], header[2]]) as usize;
+        let mut packet = header.to_vec();
+        packet.resize(FRAME_HEADER_LEN + length, 0);
+        peer.read_exact(&mut packet[FRAME_HEADER_LEN..]).await?;
+        frames.push(packet);
+    }
+}
+
+#[tokio::test]
+async fn buffered_service_advances_other_streams_and_reuses_canceled_slot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let settings = encode_settings(&[Setting {
+        id: SettingId::InitialWindowSize,
+        value: 1,
+    }]);
+    let peer = serve_buffered_frames(&[
+        frame(FrameType::Settings, 0, 0, &settings),
+        frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
+        frame(FrameType::Data, 1, END_STREAM, b"ab"),
+        frame(FrameType::Headers, 3, END_HEADERS, REQUEST),
+        frame(FrameType::Data, 3, END_STREAM, b"z"),
+        frame(FrameType::Headers, 5, END_HEADERS, REQUEST),
+        frame(
+            FrameType::RstStream,
+            1,
+            NO_FLAGS,
+            &(ErrorCode::Cancel as u32).to_be_bytes(),
+        ),
+        frame(FrameType::Headers, 7, END_HEADERS, REQUEST),
+        frame(FrameType::Data, 7, END_STREAM, b"q"),
+        frame(FrameType::Data, 5, END_STREAM, b"r"),
+    ])
+    .await?;
+    let responses = collect_response_frames(peer).await?;
+    let data: Vec<_> = responses
+        .iter()
+        .filter(|packet| packet[3] == FrameType::Data as u8)
+        .collect();
+    assert_eq!(
+        data,
+        [
+            &frame(FrameType::Data, 1, NO_FLAGS, b"a"),
+            &frame(FrameType::Data, 3, END_STREAM, b"z"),
+            &frame(FrameType::Data, 7, END_STREAM, b"q"),
+            &frame(FrameType::Data, 5, END_STREAM, b"r"),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn buffered_service_resets_an_oversized_request_and_completes_its_peer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let full_frame = vec![0; DEFAULT_MAX_FRAME_SIZE as usize];
+    let peer = serve_buffered_frames(&[
+        frame(FrameType::Headers, 1, END_HEADERS, REQUEST),
+        frame(FrameType::Headers, 3, END_HEADERS, REQUEST),
+        frame(FrameType::Data, 1, NO_FLAGS, &full_frame),
+        frame(FrameType::Data, 1, END_STREAM, b"extra"),
+        frame(FrameType::Data, 3, NO_FLAGS, b"ok"),
+        // HPACK literal without indexing, new name "x", value "y".
+        frame(
+            FrameType::Headers,
+            3,
+            END_HEADERS | END_STREAM,
+            &[0, 1, b'x', 1, b'y'],
+        ),
+    ])
+    .await?;
+    let responses = collect_response_frames(peer).await?;
+    let reset = frame(
+        FrameType::RstStream,
+        1,
+        NO_FLAGS,
+        &(ErrorCode::Cancel as u32).to_be_bytes(),
+    );
+    let data = frame(FrameType::Data, 3, NO_FLAGS, b"ok");
+    assert!(responses.contains(&reset));
+    assert!(responses.contains(&data));
+    assert!(
+        responses
+            .iter()
+            .any(|packet| packet[3] == FrameType::Headers as u8
+                && packet[4] == END_HEADERS | END_STREAM
+                && packet[5..9] == 3_u32.to_be_bytes())
+    );
+    Ok(())
+}
