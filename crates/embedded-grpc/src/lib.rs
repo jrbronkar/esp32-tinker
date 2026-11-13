@@ -7,12 +7,17 @@
 
 extern crate alloc;
 
+mod framing;
+
+pub use framing::MessageDecoder;
+
 use alloc::{vec, vec::Vec};
 use embedded_http2::{
     HeaderField,
     service::{Request as HttpRequest, Response as HttpResponse},
 };
 use embedded_io_async::{Read, ReadExactError, Write};
+use framing::{ENVELOPE_LEN, UNCOMPRESSED, decode_message, message_length};
 use micropb::{MessageDecode, MessageEncode, PbEncoder};
 
 /// Dispatches a buffered unary RPC. Generated servers implement this trait.
@@ -72,11 +77,6 @@ const HTTP_OK: &str = "200";
 const HTTP_METHOD_NOT_ALLOWED: &str = "405";
 const HTTP_UNSUPPORTED_MEDIA_TYPE: &str = "415";
 const GRPC_OK: &str = "0";
-
-// A gRPC message starts with a compression byte and a big-endian u32 length.
-const UNCOMPRESSED: u8 = 0;
-const COMPRESSED: u8 = 1;
-const ENVELOPE_LEN: usize = size_of::<u8>() + size_of::<u32>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -143,24 +143,10 @@ impl UnaryRequest<'_> {
             .0
             .split_first_chunk::<ENVELOPE_LEN>()
             .ok_or(Status::InvalidArgument)?;
-        let [compression, length @ ..] = *header;
-        match compression {
-            UNCOMPRESSED => {}
-            COMPRESSED => return Err(Status::Unimplemented),
-            _ => return Err(Status::InvalidArgument),
-        }
-        let len = u32::from_be_bytes(length) as usize;
-        if len > MAX {
-            return Err(Status::ResourceExhausted);
-        }
-        if len != body.len() {
+        if message_length::<MAX>(*header)? != body.len() {
             return Err(Status::InvalidArgument);
         }
-        let mut message = M::default();
-        message
-            .decode_from_bytes(body)
-            .map_err(|_| Status::InvalidArgument)?;
-        Ok(message)
+        decode_message(body)
     }
 }
 
