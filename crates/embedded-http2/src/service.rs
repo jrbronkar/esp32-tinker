@@ -39,9 +39,42 @@ pub async fn serve<Io: Read + Write, S: Service>(
     io: Io,
     service: &mut S,
 ) -> Result<(), Error<Io::Error>> {
+    let service = ServiceSlot {
+        value: RefCell::new(Some(service)),
+        released: Cell::new(false),
+    };
+    drive_streams(
+        io,
+        |request| async { exchange(&service, request).await },
+        || service.released.replace(false),
+    )
+    .await
+}
+
+/// Drive the connection alongside at most one handler per active stream.
+pub async fn serve_streams<Io, Task>(
+    io: Io,
+    handle: impl Fn(server::Request) -> Task,
+) -> Result<(), Error<Io::Error>>
+where
+    Io: Read + Write,
+    Task: Future<Output = Result<(), Error<Io::Error>>>,
+{
+    drive_streams(io, handle, || false).await
+}
+
+async fn drive_streams<Io, Task>(
+    io: Io,
+    handle: impl Fn(server::Request) -> Task,
+    handlers_need_poll: impl Fn() -> bool,
+) -> Result<(), Error<Io::Error>>
+where
+    Io: Read + Write,
+    Task: Future<Output = Result<(), Error<Io::Error>>>,
+{
     let (connection, incoming) = server::handshake(io).await?;
     let mut driver = pin!(connection.run());
-    let mut handlers = pin!(serve_requests(incoming, service));
+    let mut handlers = pin!(serve_requests(incoming, handle, handlers_need_poll));
     let mut transport_result = None;
     let mut handler_result = None;
     poll_fn(|cx| {
@@ -65,16 +98,12 @@ pub async fn serve<Io: Read + Write, S: Service>(
     .await
 }
 
-async fn serve_requests<E, S: Service>(
+async fn serve_requests<E, Task: Future<Output = Result<(), Error<E>>>>(
     mut incoming: server::Incoming,
-    service: &mut S,
+    handle: impl Fn(server::Request) -> Task,
+    handlers_need_poll: impl Fn() -> bool,
 ) -> Result<(), Error<E>> {
-    let service = ServiceSlot {
-        value: RefCell::new(Some(service)),
-        released: Cell::new(false),
-    };
-    type ExchangeTask<'a, E> = Pin<Box<dyn Future<Output = Result<(), Error<E>>> + 'a>>;
-    let mut exchanges: [Option<ExchangeTask<'_, E>>; MAX_STREAMS] = core::array::from_fn(|_| None);
+    let mut exchanges: [Option<Pin<Box<Task>>>; MAX_STREAMS] = core::array::from_fn(|_| None);
     // There are at most two tasks, so polling both on a shared waker is bounded.
     poll_fn(|cx| {
         for slot in &mut exchanges {
@@ -87,14 +116,14 @@ async fn serve_requests<E, S: Service>(
             }
             match incoming.poll_accept(cx) {
                 Poll::Ready(Some(request)) => {
-                    *slot = Some(Box::pin(exchange::<E, S>(&service, request)));
+                    *slot = Some(Box::pin(handle(request)));
                     cx.waker().wake_by_ref();
                 }
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Pending => {}
             }
         }
-        if service.released.replace(false) {
+        if handlers_need_poll() {
             // A slot visited earlier may be waiting for the service.
             cx.waker().wake_by_ref();
         }

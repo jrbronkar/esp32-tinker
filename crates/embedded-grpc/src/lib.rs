@@ -8,6 +8,11 @@
 extern crate alloc;
 
 mod framing;
+mod streaming;
+
+pub use embedded_http2::server::StreamError;
+pub use futures_core::Stream;
+pub use streaming::{ServerStreaming, StreamingCall, StreamingService, serve_streaming};
 
 pub use framing::MessageDecoder;
 
@@ -61,7 +66,7 @@ struct HttpService<'a, S>(&'a mut S);
 
 impl<S: Service> embedded_http2::service::Service for HttpService<'_, S> {
     async fn call(&mut self, request: HttpRequest) -> HttpResponse {
-        let path = match rpc_path(&request) {
+        let path = match rpc_path(&request.headers) {
             Ok(path) => path,
             Err(response) => return response,
         };
@@ -104,10 +109,9 @@ impl Status {
 }
 
 /// Check the gRPC HTTP headers and return the RPC path.
-fn rpc_path(request: &HttpRequest) -> Result<&str, HttpResponse> {
+fn rpc_path(headers: &[HeaderField]) -> Result<&str, HttpResponse> {
     let header = |name: &str| {
-        request
-            .headers
+        headers
             .iter()
             .find(|field| field.name == name)
             .map(|field| field.value.as_str())

@@ -168,22 +168,11 @@ impl SendResponse {
     /// Wait for the peer to reset this stream or disconnect before responding.
     pub async fn closed(&self) {
         let Some(stream) = &self.0 else { return };
-        poll_fn(|cx| {
-            if stream.state.borrow().error.is_some() {
-                Poll::Ready(())
-            } else {
-                stream.writer.register(cx.waker());
-                Poll::Pending
-            }
-        })
-        .await
+        wait_for_close(stream).await
     }
 
     /// Send a headers-only response after the request half-closes.
-    pub(crate) async fn finish_headers(
-        mut self,
-        headers: Vec<HeaderField>,
-    ) -> Result<(), StreamError> {
+    pub async fn finish_headers(mut self, headers: Vec<HeaderField>) -> Result<(), StreamError> {
         let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
         check_header_size(&headers)?;
         if let Some(error) = stream.state.borrow().error {
@@ -221,6 +210,19 @@ fn check_header_size(headers: &[HeaderField]) -> Result<(), StreamError> {
 }
 
 impl SendStream {
+    /// Wait for peer reset or disconnection during a streaming response.
+    pub async fn closed(&self) {
+        if let Some(stream) = &self.0 {
+            wait_for_close(stream).await;
+        }
+    }
+
+    /// Wait until all previously queued response bytes have been flushed.
+    pub async fn flush(&mut self) -> Result<(), StreamError> {
+        let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
+        Self::wait_for_slot(stream).await
+    }
+
     /// Wait for the outbound slot and enqueue up to one frame of DATA.
     pub async fn send_data(&mut self, bytes: &[u8]) -> Result<usize, StreamError> {
         let stream = self.0.as_ref().ok_or(StreamError::Disconnected)?;
@@ -264,6 +266,18 @@ impl SendStream {
         })
         .await
     }
+}
+
+async fn wait_for_close(stream: &Receive) {
+    poll_fn(|cx| {
+        if stream.state.borrow().error.is_some() {
+            Poll::Ready(())
+        } else {
+            stream.writer.register(cx.waker());
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 async fn wait_for_finish(stream: &Receive) -> Result<(), StreamError> {

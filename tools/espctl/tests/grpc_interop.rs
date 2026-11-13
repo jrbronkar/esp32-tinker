@@ -72,8 +72,22 @@ async fn check_status_exchanges(addr: std::net::SocketAddr) {
 struct EmbeddedManagement;
 
 impl management_grpc::Management for EmbeddedManagement {
+    async fn logs(
+        &self,
+        _request: ota_protocol::ReadLogsRequest,
+    ) -> Result<
+        impl embedded_grpc::Stream<
+            Item = Result<ota_protocol::ReadLogsResponse, management_grpc::Status>,
+        >,
+        management_grpc::Status,
+    > {
+        Ok(tokio_stream::iter([Ok(
+            ota_protocol::ReadLogsResponse::default(),
+        )]))
+    }
+
     async fn status(
-        &mut self,
+        &self,
         request: ota_protocol::StatusRequest,
     ) -> Result<ota_protocol::StatusResponse, management_grpc::Status> {
         if request.include_timings {
@@ -100,9 +114,9 @@ async fn embedded_unary_status_with_tonic_and_espctl() {
                 let server = tokio::task::spawn_local(async move {
                     for _ in 0..3 {
                         let (socket, _) = listener.accept().await.unwrap();
-                        let error = embedded_grpc::serve(
+                        let error = embedded_grpc::serve_streaming(
                             embedded_io_adapters::tokio_1::FromTokio::new(socket),
-                            &mut management_grpc::ManagementServer::new(EmbeddedManagement),
+                            &management_grpc::ManagementServer::new(EmbeddedManagement),
                         )
                         .await
                         .unwrap_err();
@@ -119,6 +133,23 @@ async fn embedded_unary_status_with_tonic_and_espctl() {
                         .await
                         .unwrap(),
                 );
+                client.ready().await.unwrap();
+                let mut logs = client
+                    .server_streaming(
+                        tonic::Request::new(proto(&ota_protocol::ReadLogsRequest::default())),
+                        device_grpc::LOGS_PATH.parse().unwrap(),
+                        RawCodec,
+                    )
+                    .await
+                    .unwrap()
+                    .into_inner();
+                let batch = logs.message().await.unwrap().unwrap();
+                assert_eq!(
+                    ota_protocol::decode::<ota_protocol::ReadLogsResponse>(&batch).unwrap(),
+                    ota_protocol::ReadLogsResponse::default(),
+                );
+                assert!(logs.message().await.unwrap().is_none());
+                drop(logs);
                 client.ready().await.unwrap();
                 let request = ota_protocol::StatusRequest {
                     include_timings: true,
