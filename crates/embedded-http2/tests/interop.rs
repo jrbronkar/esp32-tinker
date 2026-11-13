@@ -48,7 +48,7 @@ async fn h2_client_exchanges_headers_data_and_trailers_over_tcp() {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut server = Server::handshake_sequential(Fragmented(FromTokio::new(socket)))
+            let mut server = Server::handshake(Fragmented(FromTokio::new(socket)))
                 .await
                 .unwrap();
 
@@ -127,11 +127,10 @@ async fn h2_client_reset_interrupts_a_blocked_response() {
     timeout(Duration::from_secs(5), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let (reset_seen, reset_received) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut server = Server::handshake_sequential(FromTokio::new(socket))
-                .await
-                .unwrap();
+            let mut server = Server::handshake(FromTokio::new(socket)).await.unwrap();
             let request = server.accept().await.unwrap();
             assert_eq!(request.stream_id, 1);
             let result = server
@@ -151,6 +150,7 @@ async fn h2_client_reset_interrupts_a_blocked_response() {
                     code: 8
                 })
             ));
+            reset_seen.send(()).unwrap();
             let request = server.accept().await.unwrap();
             assert_eq!(request.stream_id, 3);
             server
@@ -179,6 +179,7 @@ async fn h2_client_reset_interrupts_a_blocked_response() {
         let response = response.await.unwrap();
         assert_eq!(response.status(), 200);
         send.send_reset(h2::Reason::CANCEL);
+        reset_received.await.unwrap();
 
         client = client.ready().await.unwrap();
         let request = Request::get("http://localhost/next").body(()).unwrap();
@@ -205,7 +206,7 @@ async fn h2_client_receives_ack_before_request_closes() -> Result<(), Box<dyn st
         let (peer, socket) = tokio::io::duplex(DUPLEX_BUFFER);
         let (observed_body, body_observed) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
-            let mut server = Server::handshake_sequential(FromTokio::new(socket))
+            let mut server = Server::handshake(FromTokio::new(socket))
                 .await
                 .map_err(transport_error)?;
             let head = server.accept_head().await.map_err(transport_error)?;

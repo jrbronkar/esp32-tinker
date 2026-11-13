@@ -45,7 +45,6 @@ impl<Io: Read + Write> Server<Io> {
         &mut self,
         stream_id: StreamId,
     ) -> Result<SendEvent<'_>, Error<Io::Error>> {
-        self.require_sequential()?;
         while self.send_capacity(stream_id)? == 0 {
             if let Some(frame) = self.receive_body_frame(stream_id).await? {
                 return self.body_frame(frame).map(SendEvent::RequestBody);
@@ -86,7 +85,6 @@ impl<Io: Read + Write> Server<Io> {
         stream_id: StreamId,
         response: Response<'_>,
     ) -> Result<(), Error<Io::Error>> {
-        self.require_sequential()?;
         self.check_response_start(stream_id, true)?;
         if response.body.len() > MAX_BODY {
             return Err(Error::BodyLimit);
@@ -187,7 +185,7 @@ impl<Io: Read + Write> Server<Io> {
         Ok(window.clamp(0, i64::from(DEFAULT_MAX_FRAME_SIZE)) as usize)
     }
 
-    async fn send_data_frame(
+    pub(super) async fn send_data_frame(
         &mut self,
         stream_id: StreamId,
         bytes: &[u8],

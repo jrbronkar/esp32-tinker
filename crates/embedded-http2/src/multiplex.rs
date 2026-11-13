@@ -3,8 +3,6 @@ use zerodds_http2::{ErrorCode, Flags, FrameType, StreamId};
 
 use crate::{BodyFrame, Error, RequestHead, Server};
 
-const MAX_STREAMS: usize = 2;
-
 /// One inbound event on a multiplexed connection.
 #[derive(Debug)]
 pub enum Event<'a> {
@@ -23,22 +21,10 @@ pub enum Event<'a> {
 }
 
 impl<Io: Read + Write> Server<Io> {
-    /// Accept up to two active streams, driven by one caller using [Self::next_event].
-    ///
-    /// The transport retains no queued bodies. DATA borrows the receive buffer,
-    /// and the caller returns receive credit after consuming it. The caller
-    /// owns pending response bytes and chooses which stream to write next.
-    pub async fn handshake(io: Io) -> Result<Self, Error<Io::Error>> {
-        Self::handshake_with_limit(io, MAX_STREAMS).await
-    }
-
     /// Read one inbound event. Use the incremental response methods to send
     /// on any active stream. A zero-byte send leaves the caller free to
     /// advance other streams before reading another event.
     pub async fn next_event(&mut self) -> Result<Event<'_>, Error<Io::Error>> {
-        if self.max_streams == 1 {
-            return Err(Error::Protocol);
-        }
         let frame = self.read_frame().await?;
         let stream_id = frame.stream_id;
         let end_stream = frame.flags.has(Flags::END_STREAM);
@@ -84,14 +70,6 @@ impl<Io: Read + Write> Server<Io> {
         }
     }
 
-    pub(super) fn require_sequential(&self) -> Result<(), Error<Io::Error>> {
-        if self.max_streams == 1 {
-            Ok(())
-        } else {
-            Err(Error::Protocol)
-        }
-    }
-
     pub(super) async fn reset_stream(
         &mut self,
         stream_id: StreamId,
@@ -106,22 +84,30 @@ impl<Io: Read + Write> Server<Io> {
     }
 
     async fn discard_closed_body(&mut self, frame: crate::Frame) -> Result<(), Error<Io::Error>> {
-        if frame.kind == FrameType::Headers as u8 {
+        if frame.kind == FrameType::Headers as u8 && self.stream(frame.stream_id).is_none() {
+            let code = if frame.stream_id == self.last_stream {
+                ErrorCode::StreamClosed
+            } else {
+                ErrorCode::ProtocolError
+            };
+            self.write_goaway(code).await?;
+            return Err(Error::Protocol);
+        }
+        let credit = if frame.kind == FrameType::Headers as u8 {
             // Keep the connection-wide HPACK decoder in sync.
             self.read_headers(&frame).await?;
+            0
         } else {
             let credit = self.payload.len() as u32;
             self.connection_receive.consume(credit)?;
-            self.release_connection_capacity(credit).await?;
-        }
+            credit
+        };
         let code = ErrorCode::StreamClosed;
-        if self.stream(frame.stream_id).is_some() {
-            self.reset_stream(frame.stream_id, code).await?;
-            return Err(Error::Reset {
-                stream_id: frame.stream_id,
-                code: code as u32,
-            });
-        }
-        Ok(())
+        self.reset_stream(frame.stream_id, code).await?;
+        self.release_connection_capacity(credit).await?;
+        Err(Error::Reset {
+            stream_id: frame.stream_id,
+            code: code as u32,
+        })
     }
 }

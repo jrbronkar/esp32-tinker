@@ -17,11 +17,12 @@ and try other streams. Retry pending writes after a control event, which can
 update stream or connection credit. A reset ends only the identified stream.
 The transport keeps at most two stream states and does not queue bodies.
 
-## Sequential connections
+## Buffered services and single-stream helpers
 
-Use `Server::handshake_sequential` for the buffered service adapter or the
-single-stream read and wait helpers below. The conformance fixture and the
-unary gRPC adapter use this handshake.
+The conformance fixture and unary gRPC adapter use the same handshake and
+event loop. The buffered service calls one handler at a time and keeps up
+to two bounded exchanges in flight. The helpers below are for callers
+that control the peer and exchange only one request at a time.
 
 ### Reading a request
 

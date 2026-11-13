@@ -36,7 +36,6 @@ pub(super) enum ReceivedBody {
 impl<Io: Read + Write> Server<Io> {
     /// Receive the initial headers without waiting for the request body.
     pub async fn accept_head(&mut self) -> Result<RequestHead, Error<Io::Error>> {
-        self.require_sequential()?;
         if !self.streams.is_empty() {
             return Err(Error::Protocol);
         }
@@ -58,7 +57,7 @@ impl<Io: Read + Write> Server<Io> {
         }
         let headers = self.read_headers(frame).await?;
         self.last_stream = frame.stream_id;
-        if self.streams.len() == self.max_streams {
+        if self.streams.len() == crate::MAX_STREAMS {
             let code = ErrorCode::RefusedStream;
             self.write_reset(frame.stream_id, code).await?;
             return Err(Error::Reset {
@@ -95,7 +94,6 @@ impl<Io: Read + Write> Server<Io> {
         &mut self,
         stream_id: StreamId,
     ) -> Result<Option<BodyFrame<'_>>, Error<Io::Error>> {
-        self.require_sequential()?;
         let stream = self.stream(stream_id).ok_or(Error::Protocol)?;
         if stream.remote_closed {
             return Ok(None);
@@ -126,14 +124,8 @@ impl<Io: Read + Write> Server<Io> {
         match FrameType::from_u8(frame.kind) {
             Ok(FrameType::Headers) => {
                 self.require_open_body(stream_id, frame.stream_id)?;
-                if !end_stream && self.max_streams == 1 {
-                    return Err(Error::Protocol);
-                }
                 let trailers = self.read_headers(&frame).await?;
                 if !end_stream || check_trailers(&trailers).is_err() {
-                    if self.max_streams == 1 {
-                        return Err(Error::Protocol);
-                    }
                     return self.reject_malformed_request(stream_id).await;
                 }
                 let stream = self.stream_mut(stream_id).ok_or(Error::Protocol)?;
@@ -152,12 +144,8 @@ impl<Io: Read + Write> Server<Io> {
                 let credit = self.payload.len() as u32;
                 let data_len = data.len();
                 self.connection_receive.consume(credit)?;
-                let sequential = self.max_streams == 1;
                 let stream = self.stream_mut(stream_id).ok_or(Error::Protocol)?;
-                if let Err(error) = stream.receive.consume(credit) {
-                    if sequential {
-                        return Err(error.into());
-                    }
+                if stream.receive.consume(credit).is_err() {
                     stream.pending_receive_credit += credit;
                     let code = ErrorCode::FlowControlError;
                     self.reset_stream(stream_id, code).await?;

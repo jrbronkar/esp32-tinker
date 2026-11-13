@@ -45,7 +45,7 @@ pub async fn serve<Io: Read + Write, S: Service>(
     io: Io,
     service: &mut S,
 ) -> Result<(), ConnectionError<Io::Error>> {
-    let mut connection = embedded_http2::Server::handshake_sequential(io)
+    let mut connection = embedded_http2::Server::handshake(io)
         .await
         .map_err(ConnectionError)?;
     connection

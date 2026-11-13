@@ -3,7 +3,7 @@
 
 //! A cleartext HTTP/2 server connection for embedded async I/O.
 //!
-//! Supports sequential exchanges and opt-in bounded multiplexing. Requests can be read
+//! Supports bounded multiplexing. Requests can be read
 //! incrementally or buffered within a fixed limit. Responses can send DATA
 //! before the request half-closes and may include trailers.
 //! Drop the connection on an error other than a reported stream reset, or
@@ -37,6 +37,7 @@ use zerodds_http2::{
 pub use zerodds_hpack::HeaderField;
 
 // The first server slice buffers complete bodies up to this local limit.
+const MAX_STREAMS: usize = 2;
 const MAX_BODY: usize = 16 * 1024;
 const NO_FLAGS: u8 = 0;
 const CONNECTION_STREAM_ID: StreamId = 0;
@@ -110,17 +111,12 @@ pub struct Server<Io> {
     connection_receive: FlowControl,
     payload: Vec<u8>,
     streams: Vec<Stream>,
-    max_streams: usize,
     last_stream: StreamId,
 }
 
 impl<Io: Read + Write> Server<Io> {
-    /// Complete a cleartext handshake for the buffered or sequential APIs.
-    pub async fn handshake_sequential(io: Io) -> Result<Self, Error<Io::Error>> {
-        Self::handshake_with_limit(io, 1).await
-    }
-
-    async fn handshake_with_limit(io: Io, max_streams: usize) -> Result<Self, Error<Io::Error>> {
+    /// Complete a cleartext handshake and advertise a two-stream limit.
+    pub async fn handshake(io: Io) -> Result<Self, Error<Io::Error>> {
         let mut server = Self {
             io,
             peer: Settings::default(),
@@ -130,7 +126,6 @@ impl<Io: Read + Write> Server<Io> {
             connection_receive: FlowControl::default(),
             payload: Vec::new(),
             streams: Vec::new(),
-            max_streams,
             last_stream: 0,
         };
         let mut preface = [0; CLIENT_PREFACE.len()];
@@ -145,7 +140,7 @@ impl<Io: Read + Write> Server<Io> {
         let settings = encode_settings(&[
             Setting {
                 id: SettingId::MaxConcurrentStreams,
-                value: max_streams as u32,
+                value: MAX_STREAMS as u32,
             },
             Setting {
                 id: SettingId::MaxHeaderListSize,
@@ -361,12 +356,10 @@ impl<Io: Read + Write> Server<Io> {
                         self.write_goaway(*code).await?;
                     } else {
                         self.reset_stream(frame.stream_id, *code).await?;
-                        if self.max_streams > 1 {
-                            return Err(Error::Reset {
-                                stream_id: frame.stream_id,
-                                code: *code as u32,
-                            });
-                        }
+                        return Err(Error::Reset {
+                            stream_id: frame.stream_id,
+                            code: *code as u32,
+                        });
                     }
                 }
                 updated.map_err(Error::Wire)

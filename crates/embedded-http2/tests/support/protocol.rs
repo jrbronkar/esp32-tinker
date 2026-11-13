@@ -31,7 +31,7 @@ async fn open(bytes: &[u8]) -> Result<(TestServer, DuplexStream), TestError> {
     let (socket, mut peer) = duplex(128 * 1024);
     peer.write_all(bytes).await.unwrap();
     peer.shutdown().await.unwrap();
-    let server = Server::handshake_sequential(FromTokio::new(socket)).await?;
+    let server = Server::handshake(FromTokio::new(socket)).await?;
     Ok((server, peer))
 }
 
@@ -84,7 +84,7 @@ async fn handshake_requires_the_preface_and_initial_settings() {
     peer.write_all(CLIENT_PREFACE).await.unwrap();
     drop(peer);
     assert!(matches!(
-        Server::handshake_sequential(FromTokio::new(socket)).await,
+        Server::handshake(FromTokio::new(socket)).await,
         Err(Error::Write(_))
     ));
 }
@@ -647,7 +647,7 @@ async fn incremental_body_rejects_invalid_stream_transitions()
             REQUEST,
         ),
     ];
-    for invalid in invalid_frames {
+    for (index, invalid) in invalid_frames.into_iter().enumerate() {
         let (mut server, _peer) = connection(&[
             frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
             invalid,
@@ -665,10 +665,12 @@ async fn incremental_body_rejects_invalid_stream_transitions()
             server.release_capacity(NEXT_STREAM).await,
             Err(Error::Protocol)
         ));
-        assert!(matches!(
-            server.read_body(head.stream_id).await,
-            Err(Error::Protocol)
-        ));
+        let result = server.read_body(head.stream_id).await;
+        if index < 2 {
+            assert!(matches!(result, Err(Error::Protocol)));
+        } else {
+            assert!(matches!(result, Err(Error::MalformedRequest)));
+        }
     }
     Ok(())
 }
@@ -1259,12 +1261,19 @@ async fn window_overflow_sends_an_error_in_the_right_scope()
             window_update(target, MAX_WINDOW_INCREMENT),
         ])
         .await;
-        assert!(matches!(
-            server.accept().await,
-            Err(Error::Wire(Http2Error::Protocol(
-                ErrorCode::FlowControlError
-            )))
-        ));
+        let result = server.accept().await;
+        if target == CONNECTION {
+            assert!(matches!(
+                result,
+                Err(Error::Wire(Http2Error::Protocol(
+                    ErrorCode::FlowControlError
+                )))
+            ));
+        } else {
+            assert!(
+                matches!(result, Err(Error::Reset { stream_id: FIRST_STREAM, code: wire_code }) if wire_code == code as u32)
+            );
+        }
         let _settings = read_wire_frame(&mut peer).await?;
         let _ack = read_wire_frame(&mut peer).await?;
         assert_eq!(read_wire_frame(&mut peer).await?, expected);
