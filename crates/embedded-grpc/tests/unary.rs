@@ -215,8 +215,8 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
     }
 
     impl StreamingService for ProducerState {
-        async fn call(&self, path: &str, call: StreamingCall) -> Result<(), StreamError> {
-            let Some((request, response)) = call.unary::<StatusRequest, 2>().await? else {
+        async fn call(&self, path: &str, call: StreamingCall<'_>) -> Result<(), StreamError> {
+            let Some((request, mut response)) = call.unary::<StatusRequest, 2>().await? else {
                 return Ok(());
             };
             if path == "/test.Echo/Setup" {
@@ -225,7 +225,7 @@ async fn stalled_response_stops_polling_and_cancellation_drops_the_producer() {
                     self.polls.set(self.polls.get() + 1);
                     std::future::pending::<()>().await;
                 };
-                assert!(response.start(setup).await.is_none());
+                assert!(matches!(response.start(setup).await, Ok(None)));
                 return Ok(());
             }
             if path == PATH {
@@ -354,7 +354,7 @@ async fn streaming_rejects_bad_requests_and_reports_producer_errors() {
 
     struct Streaming;
     impl StreamingService for Streaming {
-        async fn call(&self, path: &str, call: StreamingCall) -> Result<(), StreamError> {
+        async fn call(&self, path: &str, call: StreamingCall<'_>) -> Result<(), StreamError> {
             let Some((message, response)) = call.unary::<StatusRequest, 2>().await? else {
                 return Ok(());
             };

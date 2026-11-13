@@ -16,14 +16,17 @@ The ESP32-S3 release build also passes.
 ## Hardware probes
 
 Use a private application-only image built as described in [provisioning](provisioning.md).
-These probes check the known development board identity and do not activate images:
+The four probes run sequentially against the known development board and
+verify the candidate in the inactive slot without activating it:
 
 ```sh
-cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
-GRPC_STALL_LOGS=1 cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
-cargo run -p espctl --example grpc-cleanup -- BOARD_IP IMAGE.bin VERSION
-cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
+nix develop --command python3 tools/ota-probes/run.py BOARD_IP IMAGE.bin VERSION
 ```
+
+The runner reports each result and exits nonzero if any probe fails. It is
+intended for a dedicated board with network access. GitHub CI automatically
+runs the host regression suite through `cargo test --locked`, including the
+embedded gRPC deadline and allocation-failure tests.
 
 The live probe requires each chunk log before the next chunk. Stalled mode holds
 a 1024-byte log window while upload completes, then requires overwrite reporting.

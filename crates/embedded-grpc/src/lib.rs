@@ -13,7 +13,7 @@ pub use embedded_http2::{Config as Http2Config, server::StreamError};
 pub use futures_core::Stream;
 pub use streaming::{
     Bidirectional, ServerStreaming, StreamingCall, StreamingService, serve_streaming,
-    serve_streaming_with_config,
+    serve_streaming_with_config, serve_streaming_with_timer,
 };
 
 pub use framing::MessageDecoder;
@@ -88,6 +88,7 @@ const GRPC_OK: &str = "0";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     InvalidArgument,
+    DeadlineExceeded,
     ResourceExhausted,
     FailedPrecondition,
     Unimplemented,
@@ -99,6 +100,7 @@ impl Status {
     fn wire_code(self) -> &'static str {
         match self {
             Self::InvalidArgument => "3",
+            Self::DeadlineExceeded => "4",
             Self::ResourceExhausted => "8",
             Self::FailedPrecondition => "9",
             Self::Unimplemented => "12",

@@ -76,7 +76,7 @@ pub enum Error<E> {
     BodyLimit,
     /// The configured concurrent stream limit exceeds inline handler capacity.
     HandlerCapacity,
-    /// A frame buffer could not be allocated. Close this connection.
+    /// Transport storage could not be allocated. Close this connection.
     ResourceExhausted,
     Reset {
         stream_id: StreamId,
@@ -294,10 +294,12 @@ impl<Io: Read + Write> Server<Io> {
                 self.payload.drain(..start);
                 return Ok(first);
             }
-            self.header_block = Some(HeaderBlock {
-                first,
-                bytes: fragment.to_vec(),
-            });
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(fragment.len())
+                .map_err(|_| Error::ResourceExhausted)?;
+            bytes.extend_from_slice(fragment);
+            self.header_block = Some(HeaderBlock { first, bytes });
         }
 
         loop {
@@ -312,11 +314,14 @@ impl<Io: Read + Write> Server<Io> {
             if block.bytes.len() + self.payload.len() > headers::MAX_BLOCK {
                 return Err(Error::HeaderBlock);
             }
+            block
+                .bytes
+                .try_reserve_exact(self.payload.len())
+                .map_err(|_| Error::ResourceExhausted)?;
             block.bytes.extend_from_slice(&self.payload);
             if frame.flags.has(Flags::END_HEADERS) {
                 let block = self.header_block.take().ok_or(Error::Protocol)?;
-                self.payload.clear();
-                self.payload.extend_from_slice(&block.bytes);
+                self.payload = block.bytes;
                 return Ok(block.first);
             }
         }

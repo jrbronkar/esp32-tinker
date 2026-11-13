@@ -70,6 +70,9 @@ impl<Io: Read + Write> Server<Io> {
             Ok(length) if !end_stream || length.finish().is_ok() => length,
             _ => return self.reject_malformed_request(frame.stream_id).await,
         };
+        self.streams
+            .try_reserve(1)
+            .map_err(|_| Error::ResourceExhausted)?;
         self.streams.push(Stream {
             id: frame.stream_id,
             send: FlowControl::new(i64::from(self.peer.initial_window_size)),

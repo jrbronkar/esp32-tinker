@@ -276,6 +276,20 @@ impl SendStream {
         Ok(())
     }
 
+    /// Finish the response without waiting for queued DATA to gain send credit.
+    pub async fn finish_discarding_data(
+        self,
+        trailers: Vec<HeaderField>,
+    ) -> Result<(), StreamError> {
+        if let Some(stream) = &self.0 {
+            let mut send = stream.send.borrow_mut();
+            if matches!(send.command, Some(WriteCommand::Data(..))) {
+                send.command = None;
+            }
+        }
+        self.finish(trailers).await
+    }
+
     async fn wait_for_slot(stream: &Receive) -> Result<(), StreamError> {
         poll_fn(|cx| {
             let send = stream.send.borrow();
@@ -439,6 +453,9 @@ impl<Io: Read + Write> Connection<Io> {
             }
             let frame = {
                 send_capacity.clear();
+                send_capacity
+                    .try_reserve(self.streams.len())
+                    .map_err(|_| Error::ResourceExhausted)?;
                 send_capacity.extend(
                     self.streams
                         .iter()
@@ -474,6 +491,14 @@ impl<Io: Read + Write> Connection<Io> {
             let Some(frame) = frame else { continue };
             match self.transport.dispatch(frame?).await? {
                 Event::Request(head) => {
+                    self.streams
+                        .try_reserve(1)
+                        .map_err(|_| Error::ResourceExhausted)?;
+                    self.shared
+                        .pending
+                        .borrow_mut()
+                        .try_reserve(1)
+                        .map_err(|_| Error::ResourceExhausted)?;
                     let receive = Rc::new(Receive {
                         state: RefCell::new(ReceiveState {
                             ended: head.end_stream,

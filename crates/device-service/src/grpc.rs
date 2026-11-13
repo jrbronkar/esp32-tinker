@@ -74,10 +74,11 @@ async fn serve_connection(
             {
                 let connection = with_timeout(
                     Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS),
-                    embedded_grpc::serve_streaming_with_config::<{ HANDLER_SLOTS as usize }, _, _>(
+                    embedded_grpc::serve_streaming_with_timer::<{ HANDLER_SLOTS as usize }, _, _, _>(
                         &mut socket,
                         &handler,
                         HTTP2_CONFIG,
+                        |duration| Timer::after_micros(duration.as_nanos().div_ceil(1000) as u64),
                     ),
                 );
                 let reboot = async {
