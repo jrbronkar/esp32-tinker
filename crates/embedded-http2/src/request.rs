@@ -40,7 +40,7 @@ impl<Io: Read + Write> Server<Io> {
             return Err(Error::Protocol);
         }
         loop {
-            let frame = self.read_frame().await?;
+            let frame = self.read_inbound().await?;
             if frame.kind == FrameType::Headers as u8 {
                 return self.open_request(&frame).await;
             }
@@ -55,7 +55,7 @@ impl<Io: Read + Write> Server<Io> {
         if !is_client_initiated(frame.stream_id) || frame.stream_id <= self.last_stream {
             return Err(Error::Protocol);
         }
-        let headers = self.read_headers(frame).await?;
+        let headers = self.decode_headers()?;
         self.last_stream = frame.stream_id;
         if self.streams.len() == crate::MAX_STREAMS {
             let code = ErrorCode::RefusedStream;
@@ -111,7 +111,7 @@ impl<Io: Read + Write> Server<Io> {
         &mut self,
         stream_id: StreamId,
     ) -> Result<Option<ReceivedBody>, Error<Io::Error>> {
-        let frame = self.read_frame().await?;
+        let frame = self.read_inbound().await?;
         match FrameType::from_u8(frame.kind) {
             Ok(FrameType::Headers | FrameType::Data) => {
                 self.process_body_frame(stream_id, frame).await.map(Some)
@@ -132,7 +132,7 @@ impl<Io: Read + Write> Server<Io> {
         match FrameType::from_u8(frame.kind) {
             Ok(FrameType::Headers) => {
                 self.require_open_body(stream_id, frame.stream_id)?;
-                let trailers = self.read_headers(&frame).await?;
+                let trailers = self.decode_headers()?;
                 if !end_stream || check_trailers(&trailers).is_err() {
                     return self.reject_malformed_request(stream_id).await;
                 }

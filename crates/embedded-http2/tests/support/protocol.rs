@@ -1666,3 +1666,62 @@ async fn multiplexing_reports_malformed_trailers_as_a_stream_reset()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn multiplexed_read_resumes_in_a_continuation_block() -> Result<(), Box<dyn std::error::Error>>
+{
+    use core::{
+        future::{Future, poll_fn},
+        pin::pin,
+        task::Poll,
+    };
+    use embedded_http2::Event;
+
+    let (socket, mut peer) = duplex(4096);
+    peer.write_all(CLIENT_PREFACE).await?;
+    peer.write_all(&frame(FrameType::Settings, 0, 0, &[]))
+        .await?;
+    let mut server = Server::handshake(FromTokio::new(socket))
+        .await
+        .map_err(describe_transport_error)?;
+    peer.write_all(&frame(
+        FrameType::Headers,
+        FIRST_STREAM,
+        END_STREAM,
+        &REQUEST[..1],
+    ))
+    .await?;
+    peer.write_all(&frame(
+        FrameType::Continuation,
+        FIRST_STREAM,
+        NO_FLAGS,
+        &REQUEST[1..2],
+    ))
+    .await?;
+    let last = frame(
+        FrameType::Continuation,
+        FIRST_STREAM,
+        END_HEADERS,
+        &REQUEST[2..],
+    );
+    peer.write_all(&last[..4]).await?;
+
+    {
+        let mut read = pin!(server.next_event());
+        poll_fn(|cx| {
+            assert!(read.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    peer.write_all(&last[4..]).await?;
+    let event = server
+        .next_event()
+        .await
+        .map_err(describe_transport_error)?;
+    assert!(
+        matches!(event, Event::Request(head) if head.stream_id == FIRST_STREAM && head.end_stream && head.headers.len() == 3)
+    );
+    Ok(())
+}

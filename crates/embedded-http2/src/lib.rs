@@ -85,6 +85,11 @@ pub struct Response<'a> {
     pub trailers: &'a [HeaderField],
 }
 
+struct HeaderBlock {
+    first: Frame,
+    bytes: Vec<u8>,
+}
+
 struct Frame {
     kind: u8,
     flags: Flags,
@@ -110,6 +115,7 @@ pub struct Server<Io> {
     connection_receive: FlowControl,
     payload: Vec<u8>,
     frame_reader: frame_reader::FrameReader,
+    header_block: Option<HeaderBlock>,
     streams: Vec<Stream>,
     last_stream: StreamId,
 }
@@ -126,6 +132,7 @@ impl<Io: Read + Write> Server<Io> {
             connection_receive: FlowControl::default(),
             payload: Vec::new(),
             frame_reader: frame_reader::FrameReader::default(),
+            header_block: None,
             streams: Vec::new(),
             last_stream: 0,
         };
@@ -229,33 +236,62 @@ impl<Io: Read + Write> Server<Io> {
         .await
     }
 
-    async fn read_headers(&mut self, first: &Frame) -> Result<Vec<HeaderField>, Error<Io::Error>> {
-        let mut fragment = strip_padding(&self.payload, first.flags).ok_or(Error::Protocol)?;
-        if first.flags.has(Flags::PRIORITY) {
-            // The optional stream dependency and weight precede the
-            // header block fragment (RFC 9113 §6.2).
-            fragment = fragment.get(PRIORITY_FIELDS_LEN..).ok_or(Error::Protocol)?;
+    // Read an inbound frame or an entire compressed header block. The first
+    // HEADERS frame and completed fragments survive an interrupted read.
+    async fn read_inbound(&mut self) -> Result<Frame, Error<Io::Error>> {
+        if self.header_block.is_none() {
+            let first = self.read_frame().await?;
+            if first.kind != FrameType::Headers as u8 {
+                return Ok(first);
+            }
+            let mut fragment = strip_padding(&self.payload, first.flags).ok_or(Error::Protocol)?;
+            if first.flags.has(Flags::PRIORITY) {
+                fragment = fragment.get(PRIORITY_FIELDS_LEN..).ok_or(Error::Protocol)?;
+            }
+            if fragment.len() > headers::MAX_BLOCK {
+                return Err(Error::HeaderBlock);
+            }
+            if first.flags.has(Flags::END_HEADERS) {
+                let start = usize::from(first.flags.has(Flags::PADDED))
+                    + if first.flags.has(Flags::PRIORITY) {
+                        PRIORITY_FIELDS_LEN
+                    } else {
+                        0
+                    };
+                self.payload.truncate(start + fragment.len());
+                self.payload.drain(..start);
+                return Ok(first);
+            }
+            self.header_block = Some(HeaderBlock {
+                first,
+                bytes: fragment.to_vec(),
+            });
         }
-        if fragment.len() > headers::MAX_BLOCK {
-            return Err(Error::HeaderBlock);
-        }
-        let mut block = fragment.to_vec();
-        let mut end = first.flags.has(Flags::END_HEADERS);
-        // Only CONTINUATION frames on the same stream may follow until
-        // END_HEADERS is set (RFC 9113 §6.10).
-        while !end {
+
+        loop {
             let frame = self.read_frame().await?;
-            if frame.kind != FrameType::Continuation as u8 || frame.stream_id != first.stream_id {
+            let block = self.header_block.as_mut().ok_or(Error::Protocol)?;
+            if frame.kind != FrameType::Continuation as u8
+                || frame.stream_id != block.first.stream_id
+            {
                 self.write_goaway(ErrorCode::ProtocolError).await?;
                 return Err(Error::Protocol);
             }
-            if block.len() + self.payload.len() > headers::MAX_BLOCK {
+            if block.bytes.len() + self.payload.len() > headers::MAX_BLOCK {
                 return Err(Error::HeaderBlock);
             }
-            block.extend_from_slice(&self.payload);
-            end = frame.flags.has(Flags::END_HEADERS);
+            block.bytes.extend_from_slice(&self.payload);
+            if frame.flags.has(Flags::END_HEADERS) {
+                let block = self.header_block.take().ok_or(Error::Protocol)?;
+                self.payload.clear();
+                self.payload.extend_from_slice(&block.bytes);
+                return Ok(block.first);
+            }
         }
-        headers::decode(&mut self.decoder, &block).ok_or(Error::HeaderBlock)
+    }
+
+    fn decode_headers(&mut self) -> Result<Vec<HeaderField>, Error<Io::Error>> {
+        headers::decode(&mut self.decoder, &self.payload).ok_or(Error::HeaderBlock)
     }
 
     fn encode_headers(&mut self, fields: &[HeaderField]) -> Result<Vec<u8>, Error<Io::Error>> {
