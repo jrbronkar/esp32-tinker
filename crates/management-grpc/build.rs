@@ -22,6 +22,10 @@ fn main() {
             .method
             .iter()
             .filter(|method| !method.client_streaming() && !method.server_streaming());
+        let server_streaming = service
+            .method
+            .iter()
+            .filter(|method| !method.client_streaming() && method.server_streaming());
         writeln!(bindings, "#[allow(async_fn_in_trait)]\npub trait {name} {{").unwrap();
         for method in methods.clone() {
             let rpc = rust_method(method.name());
@@ -29,7 +33,17 @@ fn main() {
             let output = ota_type(method.output_type());
             writeln!(
                 bindings,
-                "async fn {rpc}(&mut self, request: {input}) -> Result<{output}, Status>;"
+                "async fn {rpc}(&self, request: {input}) -> Result<{output}, Status>;"
+            )
+            .unwrap();
+        }
+        for method in server_streaming.clone() {
+            let rpc = rust_method(method.name());
+            let input = ota_type(method.input_type());
+            let output = ota_type(method.output_type());
+            writeln!(
+                bindings,
+                "async fn {rpc}(&self, request: {input}) -> Result<impl embedded_grpc::Stream<Item = Result<{output}, Status>>, Status>;"
             )
             .unwrap();
         }
@@ -49,7 +63,7 @@ fn main() {
                     match path {{"
         )
         .unwrap();
-        for method in methods {
+        for method in methods.clone() {
             let rpc = rust_method(method.name());
             let input = ota_type(method.input_type());
             let path = format!("/{}.{name}/{}", schema.package(), method.name());
@@ -64,6 +78,42 @@ fn main() {
             .unwrap();
         }
         bindings.push_str("_ => Err(Status::Unimplemented),\n}\n}\n}\n");
+        writeln!(
+            bindings,
+            "impl<S: {name}> embedded_grpc::StreamingService for {name}Server<S> {{
+                async fn call(
+                    &self,
+                    path: &str,
+                    call: embedded_grpc::StreamingCall,
+                ) -> Result<(), embedded_grpc::StreamError> {{
+                    match path {{"
+        )
+        .unwrap();
+        for method in methods.chain(server_streaming) {
+            let rpc = rust_method(method.name());
+            let input = ota_type(method.input_type());
+            let path = format!("/{}.{name}/{}", schema.package(), method.name());
+            let send = if method.server_streaming() {
+                "response.stream::<_, { ota_protocol::MAX_FRAME }>(value).await"
+            } else {
+                "response.reply::<_, { ota_protocol::MAX_FRAME }>(value).await"
+            };
+            writeln!(
+                bindings,
+                "{path:?} => {{
+                    let Some((request, response)) = call.unary::<{input}, {{ ota_protocol::MAX_FRAME }}>().await? else {{
+                        return Ok(());
+                    }};
+                    match response.start(self.service.{rpc}(request)).await {{
+                        Some(Ok(value)) => {send},
+                        Some(Err(status)) => response.reject(status).await,
+                        None => Ok(()),
+                    }}
+                }},"
+            )
+            .unwrap();
+        }
+        bindings.push_str("_ => call.reject(Status::Unimplemented).await,\n}\n}\n}\n");
     }
 
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));

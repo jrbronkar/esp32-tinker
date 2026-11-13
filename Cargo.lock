@@ -833,6 +833,7 @@ dependencies = [
  "embedded-http2",
  "embedded-io-adapters",
  "embedded-io-async 0.7.0",
+ "futures-core",
  "h2",
  "http",
  "micropb",

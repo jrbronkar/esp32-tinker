@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+futures-core = { version = "0.3", default-features = false }
 embedded-http2 = { path = "../embedded-http2" }
 embedded-io-async = "0.7"
 micropb = { version = "=0.6.0", default-features = false, features = ["encode", "decode"] }
