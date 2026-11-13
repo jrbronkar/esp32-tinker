@@ -1725,3 +1725,58 @@ async fn multiplexed_read_resumes_in_a_continuation_block() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn receive_handles_release_credit_and_report_reset() -> Result<(), Box<dyn std::error::Error>>
+{
+    use embedded_http2::server::{self, StreamError};
+    use tokio::time::{Duration, timeout};
+
+    timeout(Duration::from_secs(5), async {
+        let (socket, mut peer) = duplex(4096);
+        peer.write_all(CLIENT_PREFACE).await?;
+        peer.write_all(&frame(FrameType::Settings, 0, 0, &[])).await?;
+        let (connection, mut incoming) = server::handshake(FromTokio::new(socket))
+            .await
+            .map_err(describe_transport_error)?;
+
+        let (next_released, next_credit_seen) = tokio::sync::oneshot::channel();
+        let client = async {
+            let _settings = read_wire_frame(&mut peer).await?;
+            let _ack = read_wire_frame(&mut peer).await?;
+            for id in [FIRST_STREAM, NEXT_STREAM] {
+                peer.write_all(&frame(FrameType::Headers, id, END_HEADERS, REQUEST)).await?;
+            }
+            peer.write_all(&frame(FrameType::Data, FIRST_STREAM, NO_FLAGS, b"first")).await?;
+            peer.write_all(&frame(FrameType::Data, NEXT_STREAM, END_STREAM, b"next")).await?;
+            let update = read_wire_frame(&mut peer).await?;
+            assert_eq!(update, window_update(CONNECTION, 4));
+            next_released.send(()).map_err(|_| "handler exited")?;
+            assert_eq!(read_wire_frame(&mut peer).await?, window_update(FIRST_STREAM, 5));
+            assert_eq!(read_wire_frame(&mut peer).await?, window_update(CONNECTION, 5));
+            peer.write_all(&frame(FrameType::RstStream, FIRST_STREAM, NO_FLAGS, &(ErrorCode::Cancel as u32).to_be_bytes())).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let handler = async {
+            let mut first = incoming.accept().await.ok_or("missing first request")?.body;
+            let mut next = incoming.accept().await.ok_or("missing next request")?.body;
+            let chunk = first.data().await.map_err(|error| format!("{error:?}"))?.ok_or("missing first chunk")?;
+            {
+                let next_chunk = next.data().await.map_err(|error| format!("{error:?}"))?.ok_or("missing next chunk")?;
+                assert_eq!(next_chunk.as_bytes(), b"next");
+            }
+            next_credit_seen.await?;
+            assert_eq!(chunk.as_bytes(), b"first");
+            drop(chunk);
+            assert!(matches!(first.data().await, Err(StreamError::Reset(code)) if code == ErrorCode::Cancel as u32));
+            assert!(matches!(next.data().await, Ok(None)));
+            drop(incoming);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (driver, client, handler) = tokio::join!(connection.run(), client, handler);
+        client?;
+        handler?;
+        driver.map_err(describe_transport_error)?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }).await?
+}
