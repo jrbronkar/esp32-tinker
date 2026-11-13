@@ -112,14 +112,22 @@ impl<Io: Read + Write> Server<Io> {
         stream_id: StreamId,
     ) -> Result<Option<ReceivedBody>, Error<Io::Error>> {
         let frame = self.read_frame().await?;
-        self.process_body_frame(stream_id, frame).await
+        match FrameType::from_u8(frame.kind) {
+            Ok(FrameType::Headers | FrameType::Data) => {
+                self.process_body_frame(stream_id, frame).await.map(Some)
+            }
+            _ => {
+                self.control(frame).await?;
+                Ok(None)
+            }
+        }
     }
 
     pub(super) async fn process_body_frame(
         &mut self,
         stream_id: StreamId,
         frame: crate::Frame,
-    ) -> Result<Option<ReceivedBody>, Error<Io::Error>> {
+    ) -> Result<ReceivedBody, Error<Io::Error>> {
         let end_stream = frame.flags.has(Flags::END_STREAM);
         match FrameType::from_u8(frame.kind) {
             Ok(FrameType::Headers) => {
@@ -133,7 +141,7 @@ impl<Io: Read + Write> Server<Io> {
                     return self.reject_malformed_request(stream_id).await;
                 }
                 stream.remote_closed = true;
-                Ok(Some(ReceivedBody::Trailers(trailers)))
+                Ok(ReceivedBody::Trailers(trailers))
             }
             Ok(FrameType::Data) => {
                 self.require_open_body(stream_id, frame.stream_id)?;
@@ -162,12 +170,9 @@ impl<Io: Read + Write> Server<Io> {
                     return self.reject_malformed_request(stream_id).await;
                 }
                 stream.remote_closed = end_stream;
-                Ok(Some(ReceivedBody::Data(data_range)))
+                Ok(ReceivedBody::Data(data_range))
             }
-            _ => {
-                self.control(frame).await?;
-                Ok(None)
-            }
+            _ => Err(Error::Protocol),
         }
     }
 

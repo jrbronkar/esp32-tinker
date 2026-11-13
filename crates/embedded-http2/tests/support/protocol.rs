@@ -1619,3 +1619,50 @@ async fn multiplexing_sends_goaway_for_headers_on_an_unavailable_stream()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn multiplexing_reports_malformed_trailers_as_a_stream_reset()
+-> Result<(), Box<dyn std::error::Error>> {
+    use embedded_http2::Event;
+
+    let (mut server, mut peer) = connection(&[
+        frame(FrameType::Headers, FIRST_STREAM, END_HEADERS, REQUEST),
+        frame(FrameType::Headers, NEXT_STREAM, END_HEADERS, REQUEST),
+        frame(
+            FrameType::Headers,
+            FIRST_STREAM,
+            END_HEADERS | END_STREAM,
+            REQUEST,
+        ),
+        frame(FrameType::Data, NEXT_STREAM, END_STREAM, b"ok"),
+    ])
+    .await;
+    for id in [FIRST_STREAM, NEXT_STREAM] {
+        assert!(
+            matches!(server.next_event().await, Ok(Event::Request(head)) if head.stream_id == id)
+        );
+    }
+    assert!(
+        matches!(server.next_event().await, Ok(Event::Reset { stream_id: FIRST_STREAM, code }) if code == ErrorCode::ProtocolError as u32)
+    );
+    assert!(matches!(
+        server.next_event().await,
+        Ok(Event::Body {
+            stream_id: NEXT_STREAM,
+            frame: BodyFrame::Data(b"ok"),
+            end_stream: true
+        })
+    ));
+    let _settings = read_wire_frame(&mut peer).await?;
+    let _ack = read_wire_frame(&mut peer).await?;
+    assert_eq!(
+        read_wire_frame(&mut peer).await?,
+        frame(
+            FrameType::RstStream,
+            FIRST_STREAM,
+            NO_FLAGS,
+            &(ErrorCode::ProtocolError as u32).to_be_bytes()
+        )
+    );
+    Ok(())
+}

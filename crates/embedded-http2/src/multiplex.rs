@@ -43,14 +43,13 @@ impl<Io: Read + Write> Server<Io> {
                     .is_some_and(|stream| !stream.remote_closed)
                 {
                     match self.process_body_frame(stream_id, frame).await {
-                        Ok(Some(frame)) => {
+                        Ok(frame) => {
                             return Ok(Event::Body {
                                 stream_id,
                                 frame: self.body_frame(frame)?,
                                 end_stream,
                             });
                         }
-                        Ok(None) => Ok(()),
                         Err(error) => Err(error),
                     }
                 } else {
