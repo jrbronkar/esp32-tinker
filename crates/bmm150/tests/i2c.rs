@@ -126,3 +126,37 @@ fn failed_reinitialization_discards_old_trim_until_retry_succeeds() {
     assert_eq!(sensor.try_read(), Ok(Some([44.484375, -39.15625, 48.0])));
     sensor.release().done();
 }
+
+#[test]
+fn blocking_read_waits_for_a_fresh_sample() {
+    let mut transactions = initialization();
+    transactions.extend([read(0x42, &[0; 8]), read(0x42, &SAMPLE)]);
+    let mut sensor = Bmm150::new(Mock::new(&transactions), ADDRESS);
+    let mut delay = DelayLog::default();
+
+    assert_eq!(sensor.initialize(&mut delay), Ok(()));
+    delay.0.clear();
+    assert_eq!(sensor.read(&mut delay), Ok([44.484375, -39.15625, 48.0]));
+    assert_eq!(delay.0, [10_000_000]);
+    sensor.release().done();
+}
+
+#[test]
+fn blocking_read_times_out_and_propagates_errors_without_waiting() {
+    let mut transactions = initialization();
+    transactions.extend((0..16).map(|_| read(0x42, &[0; 8])));
+    transactions.push(read(0x42, &SAMPLE).with_error(ErrorKind::Bus));
+    let mut sensor = Bmm150::new(Mock::new(&transactions), ADDRESS);
+    let mut delay = DelayLog::default();
+
+    assert_eq!(sensor.read(&mut delay), Err(Error::NotInitialized));
+    assert!(delay.0.is_empty());
+    assert_eq!(sensor.initialize(&mut delay), Ok(()));
+    delay.0.clear();
+    assert_eq!(sensor.read(&mut delay), Err(Error::Timeout));
+    assert_eq!(delay.0, [10_000_000; 15]);
+    delay.0.clear();
+    assert_eq!(sensor.read(&mut delay), Err(Error::I2c(ErrorKind::Bus)));
+    assert!(delay.0.is_empty());
+    sensor.release().done();
+}

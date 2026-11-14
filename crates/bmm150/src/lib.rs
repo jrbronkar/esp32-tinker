@@ -13,11 +13,10 @@
 //! fn read_field<I: I2c>(
 //!     i2c: I,
 //!     delay: &mut impl DelayNs,
-//! ) -> Result<Option<[f32; 3]>, Error<I::Error>> {
+//! ) -> Result<[f32; 3], Error<I::Error>> {
 //!     let mut sensor = Bmm150::new(i2c, DEFAULT_ADDRESS);
 //!     sensor.initialize(delay)?;
-//!     delay.delay_ms(120);
-//!     sensor.try_read()
+//!     sensor.read(delay)
 //! }
 //! ```
 //!
@@ -50,6 +49,9 @@ const SOFT_RESET: u8 = 0x82;
 const REGULAR_REP_XY: u8 = 4; // 2 * 4 + 1 repetitions
 const REGULAR_REP_Z: u8 = 14; // 14 + 1 repetitions
 const NORMAL_10_HZ: u8 = 0x00;
+const READ_POLL_INTERVAL_MS: u32 = 10;
+// Allow more than one nominal 100 ms sample period for the next fresh sample.
+const READ_WAIT_MS: u32 = 150;
 
 /// An error returned when initializing or reading the sensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +66,8 @@ pub enum Error<E> {
     NotInitialized,
     /// The latest sample overflowed or could not be compensated.
     InvalidSample,
+    /// No fresh sample arrived within the blocking read polling window.
+    Timeout,
 }
 
 /// A BMM150 connected to an existing I²C bus or shared-bus handle.
@@ -92,7 +96,7 @@ impl<I2C: I2c> Bmm150<I2C> {
         self.write(POWER_CONTROL, POWER_ENABLE)?;
         delay.delay_ms(3);
 
-        let [id] = self.read(CHIP_ID)?;
+        let [id] = self.read_register(CHIP_ID)?;
         if id != EXPECTED_ID {
             return Err(Error::UnexpectedIdentity(id));
         }
@@ -100,7 +104,11 @@ impl<I2C: I2c> Bmm150<I2C> {
         self.write(POWER_CONTROL, POWER_ENABLE | SOFT_RESET)?;
         delay.delay_ms(1);
 
-        let trim = Trim::decode(self.read(0x5D)?, self.read(0x62)?, self.read(0x68)?);
+        let trim = Trim::decode(
+            self.read_register(0x5D)?,
+            self.read_register(0x62)?,
+            self.read_register(0x68)?,
+        );
         if trim.xyz1 == 0 || trim.z1 == 0 || trim.z2 == 0 {
             return Err(Error::InvalidTrim);
         }
@@ -120,7 +128,7 @@ impl<I2C: I2c> Bmm150<I2C> {
         let trim = self.trim.ok_or(Error::NotInitialized)?;
         // Read the ready bit with the complete sample since reading the data
         // registers in a separate transaction can clear the flag.
-        let data: [u8; 8] = self.read(FIELD_DATA)?;
+        let data: [u8; 8] = self.read_register(FIELD_DATA)?;
         if data[6] & 1 == 0 {
             return Ok(None);
         }
@@ -128,12 +136,30 @@ impl<I2C: I2c> Bmm150<I2C> {
         trim.compensate(data).map(Some).ok_or(Error::InvalidSample)
     }
 
+    /// Waits for a fresh field sample in sensor X, Y, Z order and microtesla.
+    ///
+    /// Polls immediately, then every 10 ms for up to 150 ms of delay. I²C
+    /// transaction time is additional. Bus and sample errors return immediately.
+    pub fn read(&mut self, delay: &mut impl DelayNs) -> Result<[f32; 3], Error<I2C::Error>> {
+        for _ in 0..(READ_WAIT_MS / READ_POLL_INTERVAL_MS) {
+            if let Some(field) = self.try_read()? {
+                return Ok(field);
+            }
+            delay.delay_ms(READ_POLL_INTERVAL_MS);
+        }
+
+        self.try_read()?.ok_or(Error::Timeout)
+    }
+
     /// Releases the I²C bus or shared-bus handle.
     pub fn release(self) -> I2C {
         self.i2c
     }
 
-    fn read<const N: usize>(&mut self, register: u8) -> Result<[u8; N], Error<I2C::Error>> {
+    fn read_register<const N: usize>(
+        &mut self,
+        register: u8,
+    ) -> Result<[u8; N], Error<I2C::Error>> {
         let mut data = [0; N];
         self.i2c
             .write_read(self.address, &[register], &mut data)
