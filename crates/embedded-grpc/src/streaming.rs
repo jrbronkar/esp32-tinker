@@ -1,7 +1,7 @@
 use alloc::vec;
 use core::{
     future::{Future, poll_fn},
-    pin::pin,
+    pin::{Pin, pin},
     task::{Context, Poll},
     time::Duration,
 };
@@ -21,6 +21,10 @@ pub trait StreamingService {
     async fn call(&self, path: &str, call: StreamingCall<'_>) -> Result<(), StreamError>;
 }
 
+/// Serve with the default HTTP/2 configuration and two inline handler slots.
+///
+/// Client timeout syntax is validated, but expiration requires
+/// [`serve_streaming_with_timer`].
 pub async fn serve_streaming<Io: Read + Write, S: StreamingService>(
     io: Io,
     service: &S,
@@ -29,7 +33,10 @@ pub async fn serve_streaming<Io: Read + Write, S: StreamingService>(
 }
 
 /// Serve gRPC with `SLOTS` inline handler futures per connection.
-/// The HTTP/2 stream limit must fit within that capacity.
+///
+/// The HTTP/2 stream limit must fit within that capacity or the call fails
+/// before the handshake. Client timeout syntax is validated, but expiration
+/// requires [`serve_streaming_with_timer`].
 pub async fn serve_streaming_with_config<
     const SLOTS: usize,
     Io: Read + Write,
@@ -43,7 +50,12 @@ pub async fn serve_streaming_with_config<
         .await
 }
 
-/// Enforce client-supplied deadlines with a caller-provided timer.
+/// Serve with `SLOTS` inline handler futures and enforce client deadlines.
+///
+/// The stream limit must fit within the handler capacity. Run on one local
+/// executor with cancellation-safe reads. The timer factory receives a
+/// relative [`Duration`] and must return a future that wakes when it expires.
+/// Deadline-aware call operations poll it while awaiting work.
 pub async fn serve_streaming_with_timer<
     const SLOTS: usize,
     Io: Read + Write,
@@ -185,42 +197,23 @@ pub struct StreamingCall<'a> {
 }
 
 impl<'a> StreamingCall<'a> {
-    /// Run a typed bidirectional handler until completion or peer reset.
-    pub async fn bidirectional<M, R, const MAX: usize>(
+    /// Split a streaming request from its response producer.
+    pub fn streaming<M, const MAX: usize>(
         self,
-        handler: impl AsyncFnOnce(&mut Bidirectional<M, R, MAX>) -> Result<(), Status>,
-    ) -> Result<(), StreamError>
-    where
-        M: MessageDecode + Default,
-        R: MessageEncode,
-    {
+    ) -> (Request<Streaming<M, MAX>>, ServerStreaming<'a>) {
         let Self {
             body,
             respond,
-            mut deadline,
+            deadline,
         } = self;
-        let mut call = Bidirectional {
+        let request = Request::new(Streaming {
             body,
-            send: respond.send_response(response_headers())?,
             chunk: None,
             offset: 0,
             decoder: MessageDecoder::default(),
-            reply: core::marker::PhantomData,
-        };
-        let cancel = call.send.cancellation();
-        let code = match before_deadline(&mut deadline, until_cancelled(cancel, handler(&mut call)))
-            .await
-        {
-            Err(status) => status.wire_code(),
-            Ok(None) => return Ok(()),
-            Ok(Some(Ok(()))) => GRPC_OK,
-            Ok(Some(Err(status))) => status.wire_code(),
-        };
-        // The handler may finish before the peer half-closes. Dropping the
-        // receive handle discards unread data while the driver flushes trailers.
-        drop(call.chunk);
-        drop(call.body);
-        finish(call.send, code).await
+            ended: false,
+        });
+        (request, ServerStreaming { respond, deadline })
     }
 
     /// Receive exactly one request message, then expose the response stream.
@@ -286,19 +279,50 @@ impl<'a> StreamingCall<'a> {
     }
 }
 
-/// One bidirectional RPC with bounded inbound framing and flushed replies.
-pub struct Bidirectional<M, R, const MAX: usize> {
+/// A typed gRPC request.
+pub struct Request<T>(T);
+
+impl<T> Request<T> {
+    pub fn new(message: T) -> Self {
+        Self(message)
+    }
+
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+/// A typed gRPC response.
+pub struct Response<T>(T);
+
+impl<T> Response<T> {
+    pub fn new(message: T) -> Self {
+        Self(message)
+    }
+
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+/// A stream of incoming gRPC messages with a bounded decoder.
+pub struct Streaming<M, const MAX: usize> {
     body: server::RecvStream,
-    send: server::SendStream,
     chunk: Option<server::Chunk>,
     offset: usize,
     decoder: MessageDecoder<M, MAX>,
-    reply: core::marker::PhantomData<fn(R)>,
+    ended: bool,
 }
 
-impl<M: MessageDecode + Default, R: MessageEncode, const MAX: usize> Bidirectional<M, R, MAX> {
+impl<M: MessageDecode + Default, const MAX: usize> Streaming<M, MAX> {
     /// Read one message, retaining receive credit for any coalesced messages.
     pub async fn message(&mut self) -> Result<Option<M>, Status> {
+        poll_fn(|cx| Pin::new(&mut *self).poll_next(cx))
+            .await
+            .transpose()
+    }
+
+    fn poll_message(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<M>, Status>> {
         loop {
             if let Some(chunk) = &self.chunk {
                 let bytes = chunk.as_bytes();
@@ -309,25 +333,29 @@ impl<M: MessageDecode + Default, R: MessageEncode, const MAX: usize> Bidirection
                     self.chunk = None;
                 }
                 if decoded.is_some() {
-                    return Ok(decoded);
+                    return Poll::Ready(Ok(decoded));
                 }
             }
-            self.chunk = self.body.data().await.map_err(|_| Status::Unavailable)?;
+            self.chunk =
+                core::task::ready!(self.body.poll_data(cx)).map_err(|_| Status::Unavailable)?;
             self.offset = 0;
             if self.chunk.is_none() {
-                self.decoder.finish()?;
-                return Ok(None);
+                return Poll::Ready(self.decoder.finish().map(|()| None));
             }
         }
     }
+}
 
-    /// Send and flush one reply before handling another request message.
-    pub async fn send(&mut self, message: R) -> Result<(), Status> {
-        let encoded = UnaryResponse::encode::<_, MAX>(message)?;
-        write_message(&mut self.send, &encoded)
-            .await
-            .map_err(|_| Status::Unavailable)?;
-        self.send.flush().await.map_err(|_| Status::Unavailable)
+impl<M: MessageDecode + Default, const MAX: usize> Stream for Streaming<M, MAX> {
+    type Item = Result<M, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.ended {
+            return Poll::Ready(None);
+        }
+        let result = core::task::ready!(self.poll_message(cx));
+        self.ended = !matches!(result, Ok(Some(_)));
+        Poll::Ready(result.transpose())
     }
 }
 
@@ -378,9 +406,9 @@ impl ServerStreaming<'_> {
         mut self,
         items: impl Stream<Item = Result<M, Status>>,
     ) -> Result<(), StreamError> {
-        let mut items = pin!(items);
         let mut send = self.respond.send_response(response_headers())?;
         let work = async {
+            let mut items = pin!(items);
             loop {
                 send.flush().await?;
                 match until_cancelled(send.closed(), poll_fn(|cx| items.as_mut().poll_next(cx)))

@@ -71,6 +71,37 @@ async fn check_status_exchanges(addr: std::net::SocketAddr) {
 
 struct EmbeddedManagement;
 
+struct TestUploadReplies {
+    request: embedded_grpc::Streaming<ota_protocol::UploadRequest, { ota_protocol::UPLOAD_FRAME }>,
+    ended: bool,
+}
+
+impl embedded_grpc::Stream for TestUploadReplies {
+    type Item = Result<ota_protocol::UploadAck, management_grpc::Status>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.ended {
+            return std::task::Poll::Ready(None);
+        }
+        std::pin::Pin::new(&mut self.request)
+            .poll_next(cx)
+            .map(|item| {
+                item.map(|item| {
+                    item.map(|message| {
+                        self.ended = message.request_id == 2;
+                        ota_protocol::UploadAck {
+                            request_id: message.request_id,
+                            ..Default::default()
+                        }
+                    })
+                })
+            })
+    }
+}
+
 impl management_grpc::Management for EmbeddedManagement {
     async fn logs(
         &self,
@@ -88,23 +119,19 @@ impl management_grpc::Management for EmbeddedManagement {
 
     async fn upload(
         &self,
-        call: &mut embedded_grpc::Bidirectional<
-            ota_protocol::UploadRequest,
-            ota_protocol::UploadAck,
-            { ota_protocol::UPLOAD_FRAME },
+        request: embedded_grpc::Request<
+            embedded_grpc::Streaming<ota_protocol::UploadRequest, { ota_protocol::UPLOAD_FRAME }>,
         >,
-    ) -> Result<(), management_grpc::Status> {
-        while let Some(request) = call.message().await? {
-            call.send(ota_protocol::UploadAck {
-                request_id: request.request_id,
-                ..Default::default()
-            })
-            .await?;
-            if request.request_id == 2 {
-                return Ok(());
-            }
-        }
-        Ok(())
+    ) -> Result<
+        embedded_grpc::Response<
+            impl embedded_grpc::Stream<Item = Result<ota_protocol::UploadAck, management_grpc::Status>>,
+        >,
+        management_grpc::Status,
+    > {
+        Ok(embedded_grpc::Response::new(TestUploadReplies {
+            request: request.into_inner(),
+            ended: false,
+        }))
     }
 
     async fn status(

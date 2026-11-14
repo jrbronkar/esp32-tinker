@@ -42,7 +42,10 @@ pub use zerodds_hpack::HeaderField;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     /// Maximum number of concurrent peer-initiated streams. Defaults to two.
-    /// Memory usage grows with the number of active streams.
+    ///
+    /// The value is advertised in SETTINGS. Memory usage grows with the number
+    /// of active streams. When using the service adapters, the limit must also
+    /// fit in the adapter's inline handler slots.
     pub max_concurrent_streams: core::num::NonZeroU32,
 }
 

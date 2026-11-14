@@ -155,5 +155,5 @@ restores the terminal. For palette checks, use a 256-color terminal with
 The pseudo-terminal checks cover rendering and real keyboard input. Use
 the hardware probes for physical flash, reboot, and slot checks.
 See [hardware probes and limits](../../docs/ota/testing.md),
-[protocol](../../docs/ota/protocol.md) and [implementation](../../docs/device-management/protolink.md).
+[protocol](../../docs/ota/protocol.md) and [implementation](../../docs/device-management/embedded-grpc.md).
 Updates are unsigned and unauthenticated; [production gaps](../../docs/ota/design.md#production-gaps) remain.
