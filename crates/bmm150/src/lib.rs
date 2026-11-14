@@ -44,11 +44,29 @@ const OP_MODE: u8 = 0x4C;
 const REP_XY: u8 = 0x51;
 const REP_Z: u8 = 0x52;
 
+// First register in each contiguous factory trim block.
+const TRIM_X1: u8 = 0x5D;
+const TRIM_Z4: u8 = 0x62;
+const TRIM_Z2: u8 = 0x68;
+const TRIM_XYZ1_HIGH_MASK: u8 = 0x7F;
+
+const DATA_READY_MASK: u8 = 1 << 0;
+const XY_DATA_SHIFT: u32 = 3;
+const Z_DATA_SHIFT: u32 = 1;
+const RHALL_DATA_SHIFT: u32 = 2;
+const XY_OVERFLOW: i16 = -(1 << 12);
+const Z_OVERFLOW: i16 = -(1 << 14);
+
 const POWER_ENABLE: u8 = 0x01;
 const SOFT_RESET: u8 = 0x82;
 const REGULAR_REP_XY: u8 = 4; // 2 * 4 + 1 repetitions
 const REGULAR_REP_Z: u8 = 14; // 14 + 1 repetitions
 const NORMAL_10_HZ: u8 = 0x00;
+// Startup and reset settling times used by the Bosch Sensor API.
+const STARTUP_DELAY_MS: u32 = 3;
+const SOFT_RESET_DELAY_MS: u32 = 1;
+
+// Host polling cadence, independent of the sensor's output rate.
 const READ_POLL_INTERVAL_MS: u32 = 10;
 // Allow more than one nominal 100 ms sample period for the next fresh sample.
 const READ_WAIT_MS: u32 = 150;
@@ -90,11 +108,12 @@ impl<I2C: I2c> Bmm150<I2C> {
     /// Wakes and verifies the sensor, then starts continuous sampling at 10 Hz.
     ///
     /// Resets the sensor to ensure all axes are enabled and uses the regular
-    /// preset (9 XY and 15 Z repetitions).
+    /// preset (9 XY and 15 Z repetitions). Waits for wake-up and reset
+    /// completion before accessing the chip ID and trim registers.
     pub fn initialize(&mut self, delay: &mut impl DelayNs) -> Result<(), Error<I2C::Error>> {
         self.trim = None;
         self.write(POWER_CONTROL, POWER_ENABLE)?;
-        delay.delay_ms(3);
+        delay.delay_ms(STARTUP_DELAY_MS);
 
         let [id] = self.read_register(CHIP_ID)?;
         if id != EXPECTED_ID {
@@ -102,12 +121,12 @@ impl<I2C: I2c> Bmm150<I2C> {
         }
 
         self.write(POWER_CONTROL, POWER_ENABLE | SOFT_RESET)?;
-        delay.delay_ms(1);
+        delay.delay_ms(SOFT_RESET_DELAY_MS);
 
         let trim = Trim::decode(
-            self.read_register(0x5D)?,
-            self.read_register(0x62)?,
-            self.read_register(0x68)?,
+            self.read_register(TRIM_X1)?,
+            self.read_register(TRIM_Z4)?,
+            self.read_register(TRIM_Z2)?,
         );
         if trim.xyz1 == 0 || trim.z1 == 0 || trim.z2 == 0 {
             return Err(Error::InvalidTrim);
@@ -124,12 +143,14 @@ impl<I2C: I2c> Bmm150<I2C> {
     ///
     /// Returns `Ok(None)` until new data is ready. Readout consumes the
     /// data-ready flag. Factory trim compensation is applied to valid samples.
+    /// This performs one synchronous I²C transaction with no polling delay.
     pub fn try_read(&mut self) -> Result<Option<[f32; 3]>, Error<I2C::Error>> {
         let trim = self.trim.ok_or(Error::NotInitialized)?;
         // Read the ready bit with the complete sample since reading the data
         // registers in a separate transaction can clear the flag.
         let data: [u8; 8] = self.read_register(FIELD_DATA)?;
-        if data[6] & 1 == 0 {
+        let [.., rhall_lsb, _] = data;
+        if rhall_lsb & DATA_READY_MASK == 0 {
             return Ok(None);
         }
 
@@ -191,54 +212,68 @@ struct Trim {
 
 impl Trim {
     fn decode(xy: [u8; 2], z4_xy2: [u8; 4], mixed: [u8; 10]) -> Self {
+        let [x1, y1] = xy;
+        let [z4_lsb, z4_msb, x2, y2] = z4_xy2;
+        let [z2_lsb, z2_msb, z1_lsb, z1_msb, xyz1_lsb, xyz1_msb, z3_lsb, z3_msb, xy2, xy1] = mixed;
         Self {
-            x1: xy[0] as i8,
-            y1: xy[1] as i8,
-            z4: i16::from_le_bytes([z4_xy2[0], z4_xy2[1]]),
-            x2: z4_xy2[2] as i8,
-            y2: z4_xy2[3] as i8,
-            z2: i16::from_le_bytes([mixed[0], mixed[1]]),
-            z1: u16::from_le_bytes([mixed[2], mixed[3]]),
-            xyz1: u16::from_le_bytes([mixed[4], mixed[5] & 0x7F]),
-            z3: i16::from_le_bytes([mixed[6], mixed[7]]),
-            xy2: mixed[8] as i8,
-            xy1: mixed[9],
+            x1: x1 as i8,
+            y1: y1 as i8,
+            z4: i16::from_le_bytes([z4_lsb, z4_msb]),
+            x2: x2 as i8,
+            y2: y2 as i8,
+            z2: i16::from_le_bytes([z2_lsb, z2_msb]),
+            z1: u16::from_le_bytes([z1_lsb, z1_msb]),
+            xyz1: u16::from_le_bytes([xyz1_lsb, xyz1_msb & TRIM_XYZ1_HIGH_MASK]),
+            z3: i16::from_le_bytes([z3_lsb, z3_msb]),
+            xy2: xy2 as i8,
+            xy1,
         }
     }
 
     // Floating-point equations from Bosch Sensortec's BMM150 Sensor API.
     fn compensate(&self, data: [u8; 8]) -> Option<[f32; 3]> {
-        let x = i16::from_le_bytes([data[0], data[1]]) >> 3;
-        let y = i16::from_le_bytes([data[2], data[3]]) >> 3;
-        let z = i16::from_le_bytes([data[4], data[5]]) >> 1;
-        let hall = u16::from_le_bytes([data[6], data[7]]) >> 2;
+        const XY_HALL_GAIN_BASE: f32 = 256.0;
+        const XY_AXIS_GAIN_BIAS: f32 = 160.0;
+        const XY_GAIN_DIVISOR: f32 = 8192.0;
+        const XY_OFFSET_SCALE: f32 = 8.0;
+        const Z_HALL_GAIN_DIVISOR: f32 = 32768.0;
+        const Z_OFFSET_SCALE: f32 = 131072.0;
+        const Z_GAIN_SCALE: f32 = 4.0;
+        const COMPENSATION_UNITS_PER_MICROTESLA: f32 = 16.0;
 
-        if x == -4096 || y == -4096 || z == -16384 || hall == 0 {
+        let [x_lsb, x_msb, y_lsb, y_msb, z_lsb, z_msb, hall_lsb, hall_msb] = data;
+        let x = i16::from_le_bytes([x_lsb, x_msb]) >> XY_DATA_SHIFT;
+        let y = i16::from_le_bytes([y_lsb, y_msb]) >> XY_DATA_SHIFT;
+        let z = i16::from_le_bytes([z_lsb, z_msb]) >> Z_DATA_SHIFT;
+        let hall = u16::from_le_bytes([hall_lsb, hall_msb]) >> RHALL_DATA_SHIFT;
+
+        if x == XY_OVERFLOW || y == XY_OVERFLOW || z == Z_OVERFLOW || hall == 0 {
             return None;
         }
 
         let hall = f32::from(hall);
         let xyz1 = f32::from(self.xyz1);
         let relative_hall = xyz1 / hall - 1.0;
-        let xy_gain = 256.0
+        let xy_gain = XY_HALL_GAIN_BASE
             + f32::from(self.xy2) * relative_hall * relative_hall
             + f32::from(self.xy1) * relative_hall;
         let compensate_xy = |raw: i16, offset: i8, gain: i8| {
-            let scaled = f32::from(raw) * xy_gain * (f32::from(gain) + 160.0);
-            (scaled / 8192.0 + f32::from(offset) * 8.0) / 16.0
+            let scaled = f32::from(raw) * xy_gain * (f32::from(gain) + XY_AXIS_GAIN_BIAS);
+            (scaled / XY_GAIN_DIVISOR + f32::from(offset) * XY_OFFSET_SCALE)
+                / COMPENSATION_UNITS_PER_MICROTESLA
         };
 
-        let z_gain = f32::from(self.z2) + f32::from(self.z1) * hall / 32768.0;
+        let z_gain = f32::from(self.z2) + f32::from(self.z1) * hall / Z_HALL_GAIN_DIVISOR;
         if z_gain == 0.0 {
             return None;
         }
-        let z_offset = (f32::from(z) - f32::from(self.z4)) * 131072.0;
+        let z_offset = (f32::from(z) - f32::from(self.z4)) * Z_OFFSET_SCALE;
         let z_hall = f32::from(self.z3) * (hall - xyz1);
 
         Some([
             compensate_xy(x, self.x1, self.x2),
             compensate_xy(y, self.y1, self.y2),
-            (z_offset - z_hall) / (z_gain * 64.0),
+            (z_offset - z_hall) / (z_gain * (Z_GAIN_SCALE * COMPENSATION_UNITS_PER_MICROTESLA)),
         ])
     }
 }
