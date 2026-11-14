@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/bmm150",
     "crates/hello-world",
     "crates/imu-demo",
     "crates/embedded-http2",
@@ -24,6 +25,7 @@ members = [
 # Plain Cargo commands build/test the host tools and shared portable crates.
 # Firmware packages are selected explicitly with -p and the Xtensa target.
 default-members = [
+    "crates/bmm150",
     "crates/embedded-http2",
     "crates/embedded-grpc",
     "crates/embedded-grpc-build",
