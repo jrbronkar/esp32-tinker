@@ -5,6 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
+management-grpc = { path = "../management-grpc" }
+embedded-grpc = { path = "../embedded-grpc" }
 embassy-futures = "0.1"
 embassy-sync = "0.8"
 ota-core = { path = "../ota-core" }

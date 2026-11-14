@@ -16,19 +16,44 @@ The ESP32-S3 release build also passes.
 ## Hardware probes
 
 Use a private application-only image built as described in [provisioning](provisioning.md).
-These probes check the known development board identity and do not activate images:
+The four probes run sequentially against the known development board and
+verify the candidate in the inactive slot without activating it:
 
 ```sh
-cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
-GRPC_STALL_LOGS=1 cargo run -p espctl --example grpc-concurrent -- BOARD_IP IMAGE.bin VERSION
-cargo run -p espctl --example grpc-cleanup -- BOARD_IP IMAGE.bin VERSION
-cargo run -p espctl --example grpc-parity -- BOARD_IP IMAGE.bin VERSION
+nix develop --command python3 tools/ota-probes/run.py BOARD_IP IMAGE.bin VERSION
 ```
+
+The runner reports each result and exits nonzero if any probe fails. It is
+intended for a dedicated board with network access. GitHub CI automatically
+runs the host regression suite through `cargo test --locked`, including the
+embedded gRPC deadline and allocation-failure tests.
 
 The live probe requires each chunk log before the next chunk. Stalled mode holds
 a 1024-byte log window while upload completes, then requires overwrite reporting.
 Cleanup tests cancellation/resubscription. Parity tests concurrent status,
-exclusive flash ownership, idle expiry despite PINGs and closure of port 7780.
+exclusive flash ownership, idle expiry despite PINGs, client deadline expiry
+with flash lease reacquisition, and closure of port 7780.
+
+## Heap pressure on the development board
+
+Connect the board's USB serial port before activating the instrumented image.
+Build a private IMU image with allocator statistics and a 4 KiB test reservation:
+
+```sh
+OTA_HEAP_RESERVE_BYTES=4096 FIRMWARE_VERSION=embedded-grpc-heap-probe \
+  cargo build --locked --target xtensa-esp32s3-none-elf \
+  -Zbuild-std=core,alloc --release -p device-demo --features imu,ota-heap-probe
+espflash save-image --chip esp32s3 --flash-size 16mb \
+  target/xtensa-esp32s3-none-elf/release/device-demo /private/tmp/imu-heap-probe.bin
+```
+
+Use the normal OTA activation procedure and verify the version and boot slot.
+With the USB monitor recording, run the OTA probe suite against the booted
+image. The parity probe overlaps Logs, an active Upload, and a second client's
+Status. Record the reservation, peak heap use, minimum aggregate free bytes,
+image size, and upload times. The allocator high-water mark is cumulative
+since boot and aggregate free bytes do not measure the largest free block.
+Reinstall the normal firmware after the probe.
 
 ## Validation status
 

@@ -1,9 +1,14 @@
 //! Two bounded HTTP/2 connections on the single management port.
-use core::time::Duration as CoreDuration;
+use core::{num::NonZeroU32, time::Duration as CoreDuration};
 use device_grpc::protolink;
-use device_grpc::{Environment, StreamingManagement, UploadEvent};
+use device_grpc::{EmbeddedManagement, Environment, UploadEvent};
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
+
+const HANDLER_SLOTS: u32 = 2;
+const HTTP2_CONFIG: embedded_grpc::Http2Config = embedded_grpc::Http2Config {
+    max_concurrent_streams: NonZeroU32::MIN.saturating_add(HANDLER_SLOTS - 1),
+};
 
 struct EmbassyClock;
 impl protolink::Clock for EmbassyClock {
@@ -57,7 +62,7 @@ async fn serve_connection(
                 reboot: Default::default(),
                 activation_started: core::cell::Cell::new(false),
             };
-            let mut handler = device_grpc::ManagementServer::new(StreamingManagement::new(
+            let handler = management_grpc::ManagementServer::new(EmbeddedManagement::new(
                 target,
                 target_offset,
                 DeviceEnvironment {
@@ -67,14 +72,14 @@ async fn serve_connection(
                 },
             ));
             {
-                let (reader, writer) = socket.split();
                 let connection = with_timeout(
                     Duration::from_secs(ota_protocol::MAX_UPLOAD_DURATION_SECS),
-                    protolink::server_split(reader, writer)
-                        .with_config(device_grpc::config())
-                        .with_deadline_timer(EmbassyClock)
-                        .build()
-                        .serve(&mut handler),
+                    embedded_grpc::serve_streaming_with_timer::<{ HANDLER_SLOTS as usize }, _, _, _>(
+                        &mut socket,
+                        &handler,
+                        HTTP2_CONFIG,
+                        |duration| Timer::after_micros(duration.as_nanos().div_ceil(1000) as u64),
+                    ),
                 );
                 let reboot = async {
                     connection_state.reboot.wait().await;
@@ -96,7 +101,6 @@ async fn serve_connection(
                     );
                 }
             }
-            drop(handler);
             if connection_state.activation_started.get() {
                 // Flush bytes already handed to TCP before reset. This is best
                 // effort: a lost ACK still leaves commit outcome uncertain.

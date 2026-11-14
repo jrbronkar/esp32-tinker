@@ -122,7 +122,7 @@ pub fn generate(
                 async fn call(
                     &self,
                     path: &str,
-                    call: embedded_grpc::StreamingCall,
+                    call: embedded_grpc::StreamingCall<'_>,
                 ) -> Result<(), embedded_grpc::StreamError> {{
                     match path {{"
         )
@@ -139,13 +139,13 @@ pub fn generate(
             writeln!(
                 bindings,
                 "{path:?} => {{
-                    let Some((request, response)) = call.unary::<{input}, {{ {max_message_len} }}>().await? else {{
+                    let Some((request, mut response)) = call.unary::<{input}, {{ {max_message_len} }}>().await? else {{
                         return Ok(());
                     }};
                     match response.start(self.service.{rpc}(request)).await {{
-                        Some(Ok(value)) => response.{send}::<_, {{ {max_message_len} }}>(value).await,
-                        Some(Err(status)) => response.reject(status).await,
-                        None => Ok(()),
+                        Ok(Some(Ok(value))) => response.{send}::<_, {{ {max_message_len} }}>(value).await,
+                        Ok(Some(Err(status))) | Err(status) => response.reject(status).await,
+                        Ok(None) => Ok(()),
                     }}
                 }},"
             )

@@ -1,8 +1,43 @@
 #[path = "support/grpc.rs"]
 mod common;
 use common::*;
+use embedded_io_adapters::tokio_1::FromTokio;
 use ota_protocol::{ReadLogsRequest, UploadOperation as Op};
 use std::{cell::RefCell, rc::Rc, task::Context, time::Duration};
+
+thread_local! {
+    static DENY_ALLOCATION: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+struct FaultAllocator;
+
+// SAFETY: Forward allocations and deallocations unchanged to the system
+// allocator. A null pointer reports the injected allocation failure.
+unsafe impl std::alloc::GlobalAlloc for FaultAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if DENY_ALLOCATION
+            .try_with(|size| {
+                if size.get() == Some(layout.size()) {
+                    size.take();
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
+        {
+            return std::ptr::null_mut();
+        }
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(pointer, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: FaultAllocator = FaultAllocator;
 
 struct Memory(Vec<u8>);
 impl ota_core::Reader for Memory {
@@ -104,16 +139,7 @@ async fn fixture() -> (
     let server = tokio::task::spawn_local(async move {
         // Exactly one accept: every RPC in the test must share this TCP connection.
         let (stream, _) = listener.accept().await.unwrap();
-        let watchdog = events.0.borrow().watchdog.clone();
-        let timer = events.0.borrow().timer;
-        let mut handler = device_grpc::ManagementServer::new(
-            device_grpc::StreamingManagement::new(&target, 0x10000, events),
-        );
-        let connection = protolink::tokio::server(stream)
-            .with_config(device_grpc::config())
-            .build()
-            .serve(&mut handler);
-        embassy_futures::select::select(connection, watchdog.expired(&timer)).await;
+        serve(stream, &target, events).await;
     });
     let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
         .unwrap()
@@ -123,6 +149,21 @@ async fn fixture() -> (
         .unwrap();
     (Client::new(channel), server, memory, env)
 }
+async fn serve(stream: tokio::net::TcpStream, target: &RefCell<Memory>, env: Env) {
+    let watchdog = env.0.borrow().watchdog.clone();
+    let timer = env.0.borrow().timer;
+    let handler = management_grpc::ManagementServer::new(device_grpc::EmbeddedManagement::new(
+        target, 0x10000, env,
+    ));
+    let connection = embedded_grpc::serve_streaming_with_timer::<2, _, _, _>(
+        FromTokio::new(stream),
+        &handler,
+        embedded_grpc::Http2Config::default(),
+        tokio::time::sleep,
+    );
+    embassy_futures::select::select(connection, watchdog.expired(&timer)).await;
+}
+
 #[tokio::test]
 async fn same_connection_upload_and_live_logs_verify_image() {
     tokio::task::LocalSet::new()
@@ -239,6 +280,13 @@ async fn cancellation_errors_and_disconnect_release_flash() {
                     assert!(batch.entries.iter().any(|e| e.message == "external wake"));
                     drop(stream);
                 }
+                let (empty_tx, mut empty) = upload(&mut client).await.unwrap();
+                drop(empty_tx);
+                assert_eq!(
+                    empty.message().await.unwrap_err().code(),
+                    tonic::Code::FailedPrecondition
+                );
+
                 let (active_tx, mut active) = upload(&mut client).await.unwrap();
                 op(&active_tx, &mut active, begin(&image, "v1"), 1)
                     .await
@@ -301,7 +349,7 @@ async fn stalled_log_stream_does_not_stall_upload_and_reports_overwrite() {
         .await;
 }
 #[tokio::test]
-async fn competing_stream_cannot_release_active_upload_and_deadline_cancels_logs() {
+async fn competing_stream_cannot_release_active_upload() {
     tokio::task::LocalSet::new()
         .run_until(async {
             tokio::time::timeout(Duration::from_secs(10), async {
@@ -328,25 +376,6 @@ async fn competing_stream_cannot_release_active_upload_and_deadline_cancels_logs
                 drop(other_tx);
                 drop(other);
                 drop(tx);
-                client.ready().await.unwrap();
-                let mut request =
-                    tonic::Request::new(proto(&ota_protocol::ReadLogsRequest::default()));
-                request.set_timeout(Duration::from_millis(100));
-                let mut stream = client
-                    .server_streaming(request, device_grpc::LOGS_PATH.parse().unwrap(), RawCodec)
-                    .await
-                    .unwrap()
-                    .into_inner();
-                loop {
-                    match stream.message().await {
-                        Ok(Some(_)) => {}
-                        Err(status) => {
-                            assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
-                            break;
-                        }
-                        Ok(None) => panic!("deadline must have error trailers"),
-                    }
-                }
                 server.abort();
                 let _ = server.await;
                 assert!(memory.try_borrow_mut().is_ok());
@@ -356,6 +385,92 @@ async fn competing_stream_cannot_release_active_upload_and_deadline_cancels_logs
         })
         .await;
 }
+#[tokio::test]
+async fn client_deadline_releases_active_upload_and_keeps_connection_usable() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (mut client, server, memory, _) = fixture().await;
+                let image = image();
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                let mut request =
+                    tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
+                request.set_timeout(Duration::from_millis(250));
+                client.ready().await.unwrap();
+                let mut replies = client
+                    .streaming(request, device_grpc::UPLOAD_PATH.parse().unwrap(), RawCodec)
+                    .await
+                    .unwrap()
+                    .into_inner();
+                op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                assert!(memory.try_borrow_mut().is_err());
+                assert_eq!(
+                    replies.message().await.unwrap_err().code(),
+                    tonic::Code::DeadlineExceeded
+                );
+                assert!(memory.try_borrow_mut().is_ok());
+
+                let (next_tx, mut next) = upload(&mut client).await.unwrap();
+                op(&next_tx, &mut next, begin(&image, "v1"), 1)
+                    .await
+                    .unwrap();
+                op(&next_tx, &mut next, Op::Abort(Default::default()), 2)
+                    .await
+                    .unwrap();
+                assert!(next.message().await.unwrap().is_none());
+                let mut request = tonic::Request::new(proto(&ReadLogsRequest::default()));
+                request.set_timeout(Duration::from_millis(150));
+                client.ready().await.unwrap();
+                let mut logs = client
+                    .server_streaming(request, device_grpc::LOGS_PATH.parse().unwrap(), RawCodec)
+                    .await
+                    .unwrap()
+                    .into_inner();
+                loop {
+                    match logs.message().await {
+                        Ok(Some(_)) => {}
+                        Ok(None) => panic!("expected deadline status"),
+                        Err(status) => {
+                            assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+                            break;
+                        }
+                    }
+                }
+                server.abort();
+                let _ = server.await;
+            })
+            .await
+            .unwrap();
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn inbound_allocation_failure_drops_upload_lease() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (mut client, server, memory, _) = fixture().await;
+                let image = image();
+                let (tx, mut replies) = upload(&mut client).await.unwrap();
+                op(&tx, &mut replies, begin(&image, "v1"), 1).await.unwrap();
+                assert!(memory.try_borrow_mut().is_err());
+
+                let chunk = body(chunk(0, &image[..1234]), 2);
+                // The inbound frame buffer includes the gRPC envelope and HTTP/2 header.
+                DENY_ALLOCATION.set(Some(chunk.len() + 5 + 9));
+                tx.send(chunk).await.unwrap();
+                assert!(replies.message().await.is_err());
+                assert_eq!(DENY_ALLOCATION.take(), None);
+                server.await.unwrap();
+                assert!(memory.try_borrow_mut().is_ok());
+            })
+            .await
+            .unwrap();
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn live_log_traffic_cannot_keep_an_abandoned_upload_holding_flash() {
     tokio::task::LocalSet::new()
@@ -432,21 +547,12 @@ async fn two_connections_share_exclusive_flash_without_sharing_idle_timeouts() {
                     let (stream, _) = listener.accept().await.unwrap();
                     let flash = flash.clone();
                     sessions.spawn_local(async move {
-                        let watchdog = Rc::new(device_grpc::watchdog::UploadWatchdog::new());
-                        let timer = protolink::tokio::TokioTimer::new();
                         let env = Env(Rc::new(RefCell::new(Events {
                             logs: device_grpc::logs::LogStore::new(1),
-                            watchdog: watchdog.clone(),
-                            timer,
+                            watchdog: Rc::new(device_grpc::watchdog::UploadWatchdog::new()),
+                            timer: protolink::tokio::TokioTimer::new(),
                         })));
-                        let mut handler = device_grpc::ManagementServer::new(
-                            device_grpc::StreamingManagement::new(&flash, 0x10000, env),
-                        );
-                        let connection = protolink::tokio::server(stream)
-                            .with_config(device_grpc::config())
-                            .build()
-                            .serve(&mut handler);
-                        embassy_futures::select::select(connection, watchdog.expired(&timer)).await;
+                        serve(stream, &flash, env).await;
                     });
                 }
                 while sessions.join_next().await.is_some() {}

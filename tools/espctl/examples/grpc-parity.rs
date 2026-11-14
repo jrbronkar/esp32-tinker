@@ -14,7 +14,9 @@ async fn connect(host: &str) -> Result<Client, Box<dyn std::error::Error>> {
         .await?;
     Ok(Client::new(channel))
 }
-async fn identity(client: &mut Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn identity(
+    client: &mut Client,
+) -> Result<ota_protocol::StatusResponse, Box<dyn std::error::Error>> {
     client.ready().await?;
     let reply = client
         .unary(
@@ -31,7 +33,7 @@ async fn identity(client: &mut Client) -> Result<(), Box<dyn std::error::Error>>
         "Verified {} running {}",
         status.device_id, status.firmware_version
     );
-    Ok(())
+    Ok(status)
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,15 +50,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|e| format!("invalid image: {e:?}"))?;
     tokio::time::timeout(Duration::from_secs(30), async {
         let mut client = connect(&args[1]).await?;
-        identity(&mut client).await?;
+        let application = identity(&mut client).await?.application;
         let mut logs = logs(&mut client, Default::default()).await?;
         logs.message().await?.ok_or("missing initial log batch")?;
         let (tx, mut replies) = upload(&mut client).await?;
-        op(&tx, &mut replies, begin(&image, &args[3]), 1).await?;
+        op(
+            &tx,
+            &mut replies,
+            begin_for_application(&image, &args[3], application.as_str()),
+            1,
+        )
+        .await?;
+        let started = Instant::now();
         let mut second = connect(&args[1]).await?;
         tokio::time::timeout(Duration::from_secs(2), identity(&mut second)).await??;
         let (other_tx, mut other) = upload(&mut second).await?;
-        match op(&other_tx, &mut other, begin(&image, &args[3]), 1).await {
+        match op(
+            &other_tx,
+            &mut other,
+            begin_for_application(&image, &args[3], application.as_str()),
+            1,
+        )
+        .await
+        {
             Err(error) if error.code() == tonic::Code::ResourceExhausted => {}
             _ => return Err("concurrent upload was not rejected".into()),
         }
@@ -66,7 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "PASS: another client can query status while upload owns flash; second upload rejected"
         );
-        let started = Instant::now();
         // HTTP/2 keepalive PINGs keep TCP active, while the upload sends no ops.
         match tokio::time::timeout(Duration::from_secs(8), replies.message()).await? {
             Err(_) | Ok(None) => {}
@@ -85,8 +100,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         drop(client);
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut client = connect(&args[1]).await?;
+        let (deadline_tx, deadline_rx) = tokio::sync::mpsc::channel(1);
+        let mut request =
+            tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(deadline_rx));
+        request.set_timeout(Duration::from_secs(2));
+        client.ready().await?;
+        let mut deadline_replies = client
+            .streaming(request, device_grpc::UPLOAD_PATH.parse()?, RawCodec)
+            .await?
+            .into_inner();
+        op(
+            &deadline_tx,
+            &mut deadline_replies,
+            begin_for_application(&image, &args[3], application.as_str()),
+            1,
+        )
+        .await?;
+        match deadline_replies.message().await {
+            Err(status) if status.code() == tonic::Code::DeadlineExceeded => {}
+            _ => return Err("expected DeadlineExceeded on the active upload".into()),
+        }
+        drop(deadline_replies);
+        drop(deadline_tx);
+        identity(&mut client).await?;
+        println!("PASS: grpc-timeout expired the active upload and preserved the connection");
         let (tx, mut replies) = upload(&mut client).await?;
-        op(&tx, &mut replies, begin(&image, &args[3]), 1).await?;
+        op(
+            &tx,
+            &mut replies,
+            begin_for_application(&image, &args[3], application.as_str()),
+            1,
+        )
+        .await?;
         op(&tx, &mut replies, Op::Abort(Default::default()), 2).await?;
         if replies.message().await?.is_some() {
             return Err("unexpected abort response".into());

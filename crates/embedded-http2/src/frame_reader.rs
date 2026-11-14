@@ -7,6 +7,14 @@ use zerodds_http2::{
 
 use crate::{Error, Frame};
 
+fn resize_buffer<E>(buffer: &mut Vec<u8>, size: usize) -> Result<(), Error<E>> {
+    buffer
+        .try_reserve_exact(size.saturating_sub(buffer.len()))
+        .map_err(|_| Error::ResourceExhausted)?;
+    buffer.resize(size, 0);
+    Ok(())
+}
+
 // RFC 9113 section 4.1 defines a 31-bit stream identifier.
 const STREAM_ID_MASK: u32 = 0x7fff_ffff;
 
@@ -25,7 +33,7 @@ impl FrameReader {
         buffer: &mut Vec<u8>,
     ) -> Result<Frame, Error<Io::Error>> {
         if self.filled < FRAME_HEADER_LEN {
-            buffer.resize(FRAME_HEADER_LEN, 0);
+            resize_buffer(buffer, FRAME_HEADER_LEN)?;
             self.fill(io, buffer).await?;
         }
 
@@ -37,7 +45,7 @@ impl FrameReader {
             }
             .into());
         }
-        buffer.resize(FRAME_HEADER_LEN + len as usize, 0);
+        resize_buffer(buffer, FRAME_HEADER_LEN + len as usize)?;
         self.fill(io, buffer).await?;
         let (kind, flags, stream_id) = match decode_frame(buffer, DEFAULT_MAX_FRAME_SIZE) {
             Ok((frame, _)) => (

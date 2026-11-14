@@ -18,6 +18,7 @@ pub enum StreamError {
     Reset(u32),
     Disconnected,
     HeaderLimit,
+    ResourceExhausted,
 }
 
 #[derive(Default)]
@@ -252,7 +253,11 @@ impl SendStream {
             return Ok(0);
         }
         Self::wait_for_slot(stream).await?;
-        stream.send.borrow_mut().command = Some(WriteCommand::Data(bytes[..count].to_vec(), 0));
+        let mut data = Vec::new();
+        data.try_reserve_exact(count)
+            .map_err(|_| StreamError::ResourceExhausted)?;
+        data.extend_from_slice(&bytes[..count]);
+        stream.send.borrow_mut().command = Some(WriteCommand::Data(data, 0));
         stream.driver.wake();
         Ok(count)
     }
@@ -269,6 +274,20 @@ impl SendStream {
         wait_for_finish(stream).await?;
         self.0.take();
         Ok(())
+    }
+
+    /// Finish the response without waiting for queued DATA to gain send credit.
+    pub async fn finish_discarding_data(
+        self,
+        trailers: Vec<HeaderField>,
+    ) -> Result<(), StreamError> {
+        if let Some(stream) = &self.0 {
+            let mut send = stream.send.borrow_mut();
+            if matches!(send.command, Some(WriteCommand::Data(..))) {
+                send.command = None;
+            }
+        }
+        self.finish(trailers).await
     }
 
     async fn wait_for_slot(stream: &Receive) -> Result<(), StreamError> {
@@ -434,6 +453,9 @@ impl<Io: Read + Write> Connection<Io> {
             }
             let frame = {
                 send_capacity.clear();
+                send_capacity
+                    .try_reserve(self.streams.len())
+                    .map_err(|_| Error::ResourceExhausted)?;
                 send_capacity.extend(
                     self.streams
                         .iter()
@@ -469,6 +491,14 @@ impl<Io: Read + Write> Connection<Io> {
             let Some(frame) = frame else { continue };
             match self.transport.dispatch(frame?).await? {
                 Event::Request(head) => {
+                    self.streams
+                        .try_reserve(1)
+                        .map_err(|_| Error::ResourceExhausted)?;
+                    self.shared
+                        .pending
+                        .borrow_mut()
+                        .try_reserve(1)
+                        .map_err(|_| Error::ResourceExhausted)?;
                     let receive = Rc::new(Receive {
                         state: RefCell::new(ReceiveState {
                             ended: head.end_stream,
@@ -505,6 +535,10 @@ impl<Io: Read + Write> Connection<Io> {
                         match frame {
                             BodyFrame::Data(bytes) => {
                                 if !state.dropped {
+                                    state
+                                        .bytes
+                                        .try_reserve(bytes.len())
+                                        .map_err(|_| Error::ResourceExhausted)?;
                                     state.bytes.extend_from_slice(bytes);
                                 }
                                 state.needs_credit = true;

@@ -1,5 +1,8 @@
 //! Retained logs and bounded notification for a single-threaded executor.
-use core::{cell::RefCell, task::Context};
+use core::{
+    cell::RefCell,
+    task::{Context, Poll},
+};
 use embassy_sync::waitqueue::MultiWakerRegistration;
 use ota_protocol::{LogSeverity, ReadLogsRequest, ReadLogsResponse, logs::LogBuffer};
 
@@ -39,5 +42,35 @@ impl<const READERS: usize> LogStore<READERS> {
     ) -> ReadLogsResponse {
         self.readers.borrow_mut().register(cx.waker());
         self.read(cursor)
+    }
+}
+
+/// Per-RPC position in the retained log buffer.
+pub(crate) struct LogCursor {
+    cursor: ReadLogsRequest,
+    first: bool,
+}
+
+impl LogCursor {
+    pub(crate) fn new(cursor: ReadLogsRequest) -> Self {
+        Self {
+            cursor,
+            first: true,
+        }
+    }
+
+    pub(crate) fn poll(
+        &mut self,
+        read: impl FnOnce(&ReadLogsRequest) -> ReadLogsResponse,
+    ) -> Poll<ReadLogsResponse> {
+        let batch = read(&self.cursor);
+        if self.first || batch.reset || batch.dropped || !batch.entries.is_empty() {
+            self.first = false;
+            self.cursor.boot_id = batch.boot_id;
+            self.cursor.after_sequence = batch.next_sequence;
+            Poll::Ready(batch)
+        } else {
+            Poll::Pending
+        }
     }
 }

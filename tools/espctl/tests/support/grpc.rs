@@ -108,8 +108,16 @@ pub async fn op(
     Ok(response)
 }
 pub fn begin(image: &[u8], version: &str) -> ota_protocol::UploadOperation {
+    begin_for_application(image, version, "device-demo")
+}
+
+pub fn begin_for_application(
+    image: &[u8],
+    version: &str,
+    application: &str,
+) -> ota_protocol::UploadOperation {
     ota_protocol::UploadOperation::Begin(ota_protocol::BeginUpdate {
-        application: "device-demo".try_into().unwrap(),
+        application: application.try_into().unwrap(),
         chip: "esp32s3".try_into().unwrap(),
         version: version.try_into().unwrap(),
         image_size: image.len() as u32,

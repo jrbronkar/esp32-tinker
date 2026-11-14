@@ -9,10 +9,11 @@ extern crate alloc;
 mod framing;
 mod streaming;
 
-pub use embedded_http2::server::StreamError;
+pub use embedded_http2::{Config as Http2Config, server::StreamError};
 pub use futures_core::Stream;
 pub use streaming::{
     Bidirectional, ServerStreaming, StreamingCall, StreamingService, serve_streaming,
+    serve_streaming_with_config, serve_streaming_with_timer,
 };
 
 pub use framing::MessageDecoder;
@@ -87,7 +88,9 @@ const GRPC_OK: &str = "0";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     InvalidArgument,
+    DeadlineExceeded,
     ResourceExhausted,
+    FailedPrecondition,
     Unimplemented,
     Internal,
     Unavailable,
@@ -97,7 +100,9 @@ impl Status {
     fn wire_code(self) -> &'static str {
         match self {
             Self::InvalidArgument => "3",
+            Self::DeadlineExceeded => "4",
             Self::ResourceExhausted => "8",
+            Self::FailedPrecondition => "9",
             Self::Unimplemented => "12",
             Self::Internal => "13",
             Self::Unavailable => "14",
@@ -167,7 +172,9 @@ impl UnaryResponse {
         let written = MAX - encoder.into_writer().len();
         let bytes = &buffer[..written];
         let len = u32::try_from(written).map_err(|_| Status::Internal)?;
-        let mut body = Vec::with_capacity(ENVELOPE_LEN + bytes.len());
+        let mut body = Vec::new();
+        body.try_reserve_exact(ENVELOPE_LEN + bytes.len())
+            .map_err(|_| Status::ResourceExhausted)?;
         body.push(UNCOMPRESSED);
         body.extend_from_slice(&len.to_be_bytes());
         body.extend_from_slice(bytes);

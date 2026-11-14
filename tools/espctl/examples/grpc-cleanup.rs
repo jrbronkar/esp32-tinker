@@ -16,18 +16,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client.ready().await?;
         let reply=client.unary(tonic::Request::new(proto(&ota_protocol::StatusRequest::default())),device_grpc::STATUS_PATH.parse()?,RawCodec).await?;
         let status = status_response(&reply.into_inner());
+        let application = &status.application;
         if status.device_id!="esp32s3-a4:cb:8f:d8:13:c8" {return Err("unexpected board identity".into())}
         for _ in 0..4 {
             let mut logs=logs(&mut client,Default::default()).await?;
             logs.message().await?.ok_or("missing initial logs")?;
             let (tx,mut replies)=upload(&mut client).await?;
-            op(&tx,&mut replies,begin(&image,&args[3]),1).await?;
+            op(&tx,&mut replies,begin_for_application(&image,&args[3],application.as_str()),1).await?;
             drop(replies);drop(tx);drop(logs);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         // A subsequent successful Begin demonstrates release of the previous lease.
         let (tx,mut replies)=upload(&mut client).await?;
-        op(&tx,&mut replies,begin(&image,&args[3]),1).await?;
+        op(&tx,&mut replies,begin_for_application(&image,&args[3],application.as_str()),1).await?;
         op(&tx,&mut replies,Op::Abort(Default::default()),2).await?;
         if replies.message().await?.is_some() {return Err("extra ack".into())}
         drop(tx);

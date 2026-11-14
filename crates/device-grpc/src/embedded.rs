@@ -1,0 +1,120 @@
+//! Management handlers for the embedded gRPC transport.
+
+use core::{
+    cell::RefCell,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use embedded_grpc::{Bidirectional, Status, Stream};
+use ota_protocol::{
+    ReadLogsRequest, ReadLogsResponse, StatusRequest, StatusResponse, UPLOAD_FRAME, UploadAck,
+    UploadRequest,
+};
+
+use crate::{Environment, StreamingManagement, logs::LogCursor, status_response};
+
+pub struct EmbeddedManagement<'a, T, E> {
+    target: &'a RefCell<T>,
+    target_offset: u32,
+    env: E,
+}
+
+impl<'a, T, E> EmbeddedManagement<'a, T, E> {
+    pub fn new(target: &'a RefCell<T>, target_offset: u32, env: E) -> Self {
+        Self {
+            target,
+            target_offset,
+            env,
+        }
+    }
+}
+
+impl<T: ota_core::Target, E: Environment> management_grpc::Management
+    for EmbeddedManagement<'_, T, E>
+{
+    async fn status(&self, request: StatusRequest) -> Result<StatusResponse, Status> {
+        Ok(status_response(
+            request,
+            || self.env.status(),
+            || self.env.now_us(),
+        ))
+    }
+
+    async fn logs(
+        &self,
+        request: ReadLogsRequest,
+    ) -> Result<impl Stream<Item = Result<ReadLogsResponse, Status>>, Status> {
+        Ok(Logs {
+            cursor: LogCursor::new(request),
+            env: &self.env,
+        })
+    }
+
+    async fn upload(
+        &self,
+        call: &mut Bidirectional<UploadRequest, UploadAck, UPLOAD_FRAME>,
+    ) -> Result<(), Status> {
+        // This state belongs to one RPC. Cancellation drops the flash lease.
+        let mut session = StreamingManagement::new(self.target, self.target_offset, &self.env);
+        while let Some(request) = call.message().await? {
+            session.process_upload(1, request).map_err(status_code)?;
+            let upload = session.upload.as_mut().ok_or(Status::Internal)?;
+            let ack = upload.pending.take().ok_or(Status::Internal)?;
+            let ended = upload.ended;
+            call.send(ack).await?;
+            if ended {
+                return Ok(());
+            }
+        }
+        if session.upload.is_none() {
+            return Err(Status::FailedPrecondition);
+        }
+        Ok(())
+    }
+}
+
+struct Logs<'a, E> {
+    cursor: LogCursor,
+    env: &'a E,
+}
+
+impl<E: Environment> Stream for Logs<'_, E> {
+    type Item = Result<ReadLogsResponse, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let Self { cursor, env } = self.get_mut();
+        cursor
+            .poll(|request| env.logs(request, cx))
+            .map(|batch| Some(Ok(batch)))
+    }
+}
+
+fn status_code(status: protolink::Status) -> Status {
+    match status.code {
+        protolink::Code::InvalidArgument => Status::InvalidArgument,
+        protolink::Code::ResourceExhausted => Status::ResourceExhausted,
+        protolink::Code::FailedPrecondition => Status::FailedPrecondition,
+        _ => Status::Internal,
+    }
+}
+
+impl<E: Environment> Environment for &E {
+    fn status(&self) -> StatusResponse {
+        (*self).status()
+    }
+    fn accepts_application(&self, application: &str) -> bool {
+        (*self).accepts_application(application)
+    }
+    fn logs(&self, cursor: &ReadLogsRequest, cx: &mut Context<'_>) -> ReadLogsResponse {
+        (*self).logs(cursor, cx)
+    }
+    fn now_us(&self) -> u64 {
+        (*self).now_us()
+    }
+    fn activation_pending(&self) -> bool {
+        (*self).activation_pending()
+    }
+    fn event(&self, event: crate::UploadEvent) {
+        (*self).event(event)
+    }
+}
