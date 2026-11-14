@@ -81,7 +81,7 @@ pub fn generate(
             let output = resolve(method.output_type())?;
             writeln!(
                 bindings,
-                "async fn {rpc}(&self, call: &mut embedded_grpc::Bidirectional<{input}, {output}, {{ {max_message_len} }}>) -> Result<(), embedded_grpc::Status>;"
+                "async fn {rpc}(&self, request: embedded_grpc::Request<embedded_grpc::Streaming<{input}, {{ {max_message_len} }}>>) -> Result<embedded_grpc::Response<impl embedded_grpc::Stream<Item = Result<{output}, embedded_grpc::Status>>>, embedded_grpc::Status>;"
             )
             .unwrap();
         }
@@ -153,10 +153,18 @@ pub fn generate(
         }
         for method in bidirectional {
             let rpc = rust_method(method.name());
+            let input = resolve(method.input_type())?;
             let path = rpc_path(schema.package(), name, method.name());
             writeln!(
                 bindings,
-                "{path:?} => call.bidirectional(async |rpc| self.service.{rpc}(rpc).await).await,"
+                "{path:?} => {{
+                    let (request, mut response) = call.streaming::<{input}, {{ {max_message_len} }}>();
+                    match response.start(self.service.{rpc}(request)).await {{
+                        Ok(Some(Ok(value))) => response.stream::<_, {{ {max_message_len} }}>(value.into_inner()).await,
+                        Ok(Some(Err(status))) | Err(status) => response.reject(status).await,
+                        Ok(None) => Ok(()),
+                    }}
+                }},"
             )
             .unwrap();
         }

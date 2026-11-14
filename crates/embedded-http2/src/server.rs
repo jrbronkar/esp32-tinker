@@ -6,7 +6,7 @@ use core::{
     future::{Future, poll_fn},
     mem,
     pin::pin,
-    task::{Poll, Waker},
+    task::{Context, Poll, Waker},
 };
 use embedded_io_async::{Read, Write};
 use zerodds_http2::{ErrorCode, StreamId};
@@ -354,25 +354,27 @@ impl Drop for SendStream {
 impl RecvStream {
     /// Receive a chunk. A chunk may combine several DATA frames.
     pub async fn data(&mut self) -> Result<Option<Chunk>, StreamError> {
-        poll_fn(|cx| {
-            let mut state = self.0.state.borrow_mut();
-            if let Some(error) = state.error {
-                return Poll::Ready(Err(error));
-            }
-            if !state.held && !state.bytes.is_empty() {
-                state.held = true;
-                return Poll::Ready(Ok(Some(Chunk {
-                    bytes: mem::take(&mut state.bytes),
-                    receive: self.0.clone(),
-                })));
-            }
-            if state.ended && state.bytes.is_empty() {
-                return Poll::Ready(Ok(None));
-            }
-            self.0.reader.register(cx.waker());
-            Poll::Pending
-        })
-        .await
+        poll_fn(|cx| self.poll_data(cx)).await
+    }
+
+    /// Poll for the next chunk using the same receive-credit rules as [Self::data].
+    pub fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Chunk>, StreamError>> {
+        let mut state = self.0.state.borrow_mut();
+        if let Some(error) = state.error {
+            return Poll::Ready(Err(error));
+        }
+        if !state.held && !state.bytes.is_empty() {
+            state.held = true;
+            return Poll::Ready(Ok(Some(Chunk {
+                bytes: mem::take(&mut state.bytes),
+                receive: self.0.clone(),
+            })));
+        }
+        if state.ended && state.bytes.is_empty() {
+            return Poll::Ready(Ok(None));
+        }
+        self.0.reader.register(cx.waker());
+        Poll::Pending
     }
 
     /// Take trailers after draining the body.

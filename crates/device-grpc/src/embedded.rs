@@ -5,7 +5,7 @@ use core::{
     pin::Pin,
     task::{Context, Poll},
 };
-use embedded_grpc::{Bidirectional, Status, Stream};
+use embedded_grpc::{Request, Response, Status, Stream, Streaming};
 use ota_protocol::{
     ReadLogsRequest, ReadLogsResponse, StatusRequest, StatusResponse, UPLOAD_FRAME, UploadAck,
     UploadRequest,
@@ -52,24 +52,52 @@ impl<T: ota_core::Target, E: Environment> management_grpc::Management
 
     async fn upload(
         &self,
-        call: &mut Bidirectional<UploadRequest, UploadAck, UPLOAD_FRAME>,
-    ) -> Result<(), Status> {
-        // This state belongs to one RPC. Cancellation drops the flash lease.
-        let mut session = StreamingManagement::new(self.target, self.target_offset, &self.env);
-        while let Some(request) = call.message().await? {
-            session.process_upload(1, request).map_err(status_code)?;
-            let upload = session.upload.as_mut().ok_or(Status::Internal)?;
-            let ack = upload.pending.take().ok_or(Status::Internal)?;
-            let ended = upload.ended;
-            call.send(ack).await?;
-            if ended {
-                return Ok(());
-            }
+        request: Request<Streaming<UploadRequest, UPLOAD_FRAME>>,
+    ) -> Result<Response<impl Stream<Item = Result<UploadAck, Status>>>, Status> {
+        let inbound = request.into_inner();
+        let session = StreamingManagement::new(self.target, self.target_offset, &self.env);
+        Ok(Response::new(UploadReplies {
+            inbound,
+            session,
+            ended: false,
+        }))
+    }
+}
+
+struct UploadReplies<'a, T: ota_core::Target, E: Environment> {
+    inbound: Streaming<UploadRequest, UPLOAD_FRAME>,
+    session: StreamingManagement<'a, T, &'a E>,
+    ended: bool,
+}
+
+impl<T: ota_core::Target, E: Environment> Stream for UploadReplies<'_, T, E> {
+    type Item = Result<UploadAck, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let Self {
+            inbound,
+            session,
+            ended,
+        } = self.get_mut();
+        if *ended {
+            return Poll::Ready(None);
         }
-        if session.upload.is_none() {
-            return Err(Status::FailedPrecondition);
-        }
-        Ok(())
+        let result = match core::task::ready!(Pin::new(inbound).poll_next(cx)) {
+            Some(Ok(request)) => session
+                .process_upload(1, request)
+                .map_err(status_code)
+                .and_then(|()| {
+                    let upload = session.upload.as_mut().ok_or(Status::Internal)?;
+                    let ack = upload.pending.take().ok_or(Status::Internal)?;
+                    *ended = upload.ended;
+                    Ok(ack)
+                }),
+            Some(Err(status)) => Err(status),
+            None if session.upload.is_some() => return Poll::Ready(None),
+            None => Err(Status::FailedPrecondition),
+        };
+        *ended |= result.is_err();
+        Poll::Ready(Some(result))
     }
 }
 

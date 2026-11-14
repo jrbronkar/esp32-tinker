@@ -12,8 +12,8 @@ mod streaming;
 pub use embedded_http2::{Config as Http2Config, server::StreamError};
 pub use futures_core::Stream;
 pub use streaming::{
-    Bidirectional, ServerStreaming, StreamingCall, StreamingService, serve_streaming,
-    serve_streaming_with_config, serve_streaming_with_timer,
+    Request, Response, ServerStreaming, Streaming, StreamingCall, StreamingService,
+    serve_streaming, serve_streaming_with_config, serve_streaming_with_timer,
 };
 
 pub use framing::MessageDecoder;
