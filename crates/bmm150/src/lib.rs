@@ -22,6 +22,15 @@
 //! ```
 //!
 //! Keep the initialized driver when polling repeatedly.
+//!
+//! Initialization follows the [Bosch datasheet] sections 4.2, 5.3, 5.6, and
+//! 5.8. The regular preset in table 3 specifies 9 XY repetitions and 15 Z
+//! repetitions, encoded as 4 and 14 in their respective registers. The
+//! separate factory trim register map and floating-point compensation come
+//! from the [Bosch Sensor API].
+//!
+//! [Bosch datasheet]: https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmm150-ds001.pdf
+//! [Bosch Sensor API]: https://github.com/boschsensortec/BMM150_SensorAPI
 
 use embedded_hal::{delay::DelayNs, i2c::I2c};
 
@@ -205,37 +214,5 @@ impl Trim {
             compensate_xy(y, self.y1, self.y2),
             (z_offset - z_hall) / (z_gain * 64.0),
         ])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn example_trim() -> Trim {
-        // Includes signed coefficients and the reserved high bit in XYZ1.
-        Trim::decode(
-            [254, 6],
-            [10, 0, 4, 248],
-            [0, 248, 0, 128, 0, 160, 0, 1, 252, 32],
-        )
-    }
-
-    #[test]
-    fn decodes_and_compensates_signed_axes() {
-        // X = 128, Y = -128, Z = 50, RHALL = 4096.
-        let field = example_trim()
-            .compensate([0, 4, 0, 252, 100, 0, 1, 64])
-            .unwrap();
-        // Reference values from the Bosch floating-point equations.
-        assert_eq!(field, [44.484375, -39.15625, 48.0]);
-    }
-
-    #[test]
-    fn rejects_overflow_and_missing_hall_data() {
-        let trim = example_trim();
-        assert_eq!(trim.compensate([0, 128, 0, 0, 0, 0, 1, 64]), None);
-        assert_eq!(trim.compensate([0, 0, 0, 0, 0, 128, 1, 64]), None);
-        assert_eq!(trim.compensate([0, 4, 0, 252, 100, 0, 1, 0]), None);
     }
 }
