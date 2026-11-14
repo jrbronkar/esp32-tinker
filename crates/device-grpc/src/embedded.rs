@@ -11,7 +11,7 @@ use ota_protocol::{
     UploadRequest,
 };
 
-use crate::{Environment, StreamingManagement, logs::LogCursor, status_response};
+use crate::{Environment, UploadSession, logs::LogCursor, status_response};
 
 pub struct EmbeddedManagement<'a, T, E> {
     target: &'a RefCell<T>,
@@ -55,7 +55,7 @@ impl<T: ota_core::Target, E: Environment> management_grpc::Management
         request: Request<Streaming<UploadRequest, UPLOAD_FRAME>>,
     ) -> Result<Response<impl Stream<Item = Result<UploadAck, Status>>>, Status> {
         let inbound = request.into_inner();
-        let session = StreamingManagement::new(self.target, self.target_offset, &self.env);
+        let session = UploadSession::new(self.target, self.target_offset, &self.env);
         Ok(Response::new(UploadReplies {
             inbound,
             session,
@@ -66,7 +66,7 @@ impl<T: ota_core::Target, E: Environment> management_grpc::Management
 
 struct UploadReplies<'a, T: ota_core::Target, E: Environment> {
     inbound: Streaming<UploadRequest, UPLOAD_FRAME>,
-    session: StreamingManagement<'a, T, &'a E>,
+    session: UploadSession<'a, T, &'a E>,
     ended: bool,
 }
 
@@ -83,15 +83,12 @@ impl<T: ota_core::Target, E: Environment> Stream for UploadReplies<'_, T, E> {
             return Poll::Ready(None);
         }
         let result = match core::task::ready!(Pin::new(inbound).poll_next(cx)) {
-            Some(Ok(request)) => session
-                .process_upload(1, request)
-                .map_err(status_code)
-                .and_then(|()| {
-                    let upload = session.upload.as_mut().ok_or(Status::Internal)?;
-                    let ack = upload.pending.take().ok_or(Status::Internal)?;
-                    *ended = upload.ended;
-                    Ok(ack)
-                }),
+            Some(Ok(request)) => session.process(request).inspect(|ack| {
+                *ended = matches!(
+                    ack.phase,
+                    ota_protocol::UploadPhase::Aborted | ota_protocol::UploadPhase::Committed
+                );
+            }),
             Some(Err(status)) => Err(status),
             None if session.upload.is_some() => return Poll::Ready(None),
             None => Err(Status::FailedPrecondition),
@@ -114,15 +111,6 @@ impl<E: Environment> Stream for Logs<'_, E> {
         cursor
             .poll(|request| env.logs(request, cx))
             .map(|batch| Some(Ok(batch)))
-    }
-}
-
-fn status_code(status: protolink::Status) -> Status {
-    match status.code {
-        protolink::Code::InvalidArgument => Status::InvalidArgument,
-        protolink::Code::ResourceExhausted => Status::ResourceExhausted,
-        protolink::Code::FailedPrecondition => Status::FailedPrecondition,
-        _ => Status::Internal,
     }
 }
 

@@ -8,9 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 fn mock(
-    action: impl FnMut(ota_protocol::StatusRequest) -> Result<Vec<u8>, protolink::Status>
-        + Send
-        + 'static,
+    action: impl FnMut(ota_protocol::StatusRequest) -> Result<Vec<u8>, tonic::Status> + Send + 'static,
 ) -> (std::net::SocketAddr, thread::JoinHandle<()>) {
     spawn(1, usize::MAX, Duration::ZERO, action)
 }
@@ -42,11 +40,8 @@ fn rejects_missing_identity() {
 }
 #[test]
 fn surfaces_grpc_error() {
-    let (address, handle) = mock(|_| {
-        Err(protolink::Status::invalid_argument(
-            "invalid status request",
-        ))
-    });
+    let (address, handle) =
+        mock(|_| Err(tonic::Status::invalid_argument("invalid status request")));
     assert!(espctl::query_status(address, Duration::from_secs(2))
         .unwrap_err()
         .to_string()
