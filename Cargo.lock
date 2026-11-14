@@ -490,10 +490,15 @@ dependencies = [
 name = "device-demo"
 version = "0.1.0"
 dependencies = [
+ "bmm150",
  "device-service",
+ "embassy-embedded-hal",
  "embassy-executor",
+ "embassy-futures",
  "embassy-net",
+ "embassy-sync 0.8.0",
  "embassy-time",
+ "embedded-hal 1.0.0",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",

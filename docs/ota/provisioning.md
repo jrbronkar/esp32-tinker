@@ -65,9 +65,14 @@ For a board running `device-demo`, provision the IMU firmware over USB using
 the provisioning steps above and add `--features imu` to the firmware build.
 OTA requires the image application to match the running application.
 
-The IMU build expects an MPU6050 on SDA GPIO8 and SCL GPIO9. Management stays
-available if the sensor is missing. Set `IMU_UDP_HOST` at build time to send
-samples to the visualizer on UDP port 7778.
+The IMU build reads an MPU6050 at `0x68` and a BMM150 at `0x10` through
+`0x13` on the same I²C bus (SDA GPIO8, SCL GPIO9). The BMM150 uses polling
+and needs only SDA, SCL, power, and ground. Each sensor retries independently,
+and management remains available if a sensor is missing.
+
+Use `espctl logs --follow` to see `IMU` records and `MAG,time_ms,x_uT,y_uT,z_uT`
+records. Set `IMU_UDP_HOST` at build time to send MPU6050 and BMM150 samples to the
+visualizer on UDP port 7778.
 
 ## Recovery
 

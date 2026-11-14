@@ -4,7 +4,7 @@ This macOS Rust application reads the `imu-demo` serial CSV stream and renders a
 
 Telemetry parsing and orientation estimation live in `src/lib.rs`; the serial/graphics executable consumes that library. Unit tests cover parsing, gravity initialization, gyro yaw integration, duplicate timestamps, bounded data gaps, and accelerometer correction of roll drift.
 
-The MPU6050 has no magnetometer. Yaw is therefore relative, gyro-only, and expected to drift; it is displayed for transparency rather than as an absolute compass heading.
+With the BMM150 stream, the viewer uses a tilt-compensated magnetic field to correct gyro yaw drift. Yaw remains relative to the first magnetic reading. Mount both sensors rigidly with corresponding axes aligned. If magnetic data stops arriving, the display falls back to gyro yaw.
 
 ## Run
 
@@ -21,9 +21,11 @@ espflash monitor --list-all-ports
 nix run .#imu-visualizer -- /dev/cu.usbmodemXXXX
 ```
 
-Only one process can own the serial port, so close `espflash monitor` before starting the visualizer. The visualizer ignores boot and diagnostic text and parses only lines beginning with `IMU,`.
+Only one process can own the serial port, so close `espflash monitor` before starting the visualizer. The visualizer ignores boot and diagnostic text and parses `IMU,` and `MAG,` records.
 
-For the Wi-Fi firmware, listen directly on its default UDP port instead:
+For the OTA-capable firmware, set `IMU_UDP_HOST` to the viewer Mac’s LAN
+IPv4 address when exporting the image with `nix run .#ota-image -- --imu`.
+Upload it to an OTA-provisioned `imu-demo` board, then listen on UDP port 7778:
 
 ```sh
 nix run .#imu-visualizer -- --udp
