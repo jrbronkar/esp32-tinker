@@ -1,6 +1,5 @@
 //! Two bounded HTTP/2 connections on the single management port.
 use core::{num::NonZeroU32, time::Duration as CoreDuration};
-use device_grpc::protolink;
 use device_grpc::{EmbeddedManagement, Environment, UploadEvent};
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
@@ -9,21 +8,6 @@ const HANDLER_SLOTS: u32 = 2;
 const HTTP2_CONFIG: embedded_grpc::Http2Config = embedded_grpc::Http2Config {
     max_concurrent_streams: NonZeroU32::MIN.saturating_add(HANDLER_SLOTS - 1),
 };
-
-struct EmbassyClock;
-impl protolink::Clock for EmbassyClock {
-    fn now(&self) -> CoreDuration {
-        CoreDuration::from_micros(Instant::now().as_micros())
-    }
-}
-impl protolink::Timer for EmbassyClock {
-    async fn sleep_until(&self, deadline: CoreDuration) {
-        Timer::at(Instant::from_micros(
-            deadline.as_micros().min(u64::MAX as u128) as u64,
-        ))
-        .await;
-    }
-}
 
 pub async fn serve(
     stack: Stack<'static>,
@@ -89,7 +73,14 @@ async fn serve_connection(
                 };
                 let stop = embassy_futures::select::select(
                     reboot,
-                    connection_state.watchdog.expired(&EmbassyClock),
+                    connection_state.watchdog.expired(
+                        || CoreDuration::from_micros(Instant::now().as_micros()),
+                        |deadline| {
+                            Timer::at(Instant::from_micros(
+                                deadline.as_micros().min(u64::MAX as u128) as u64,
+                            ))
+                        },
+                    ),
                 );
                 if let embassy_futures::select::Either::Second(
                     embassy_futures::select::Either::Second(()),

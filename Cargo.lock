@@ -510,8 +510,6 @@ dependencies = [
  "management-grpc",
  "ota-core",
  "ota-protocol",
- "protolink",
- "protolink-grpc-gen",
  "tokio",
 ]
 
@@ -1387,13 +1385,14 @@ dependencies = [
  "edge-mdns",
  "embassy-futures",
  "embedded-grpc",
+ "embedded-http2",
  "embedded-io-adapters",
  "hyper-util",
  "management-grpc",
  "mdns-sd",
+ "micropb",
  "ota-core",
  "ota-protocol",
- "protolink",
  "ratatui",
  "tokio",
  "tokio-stream",
@@ -2265,41 +2264,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "protolink"
-version = "0.0.5"
-dependencies = [
- "embedded-io 0.7.1",
- "embedded-io-adapters",
- "embedded-io-async 0.7.0",
- "protolink-grpc",
- "tokio",
-]
-
-[[package]]
-name = "protolink-grpc"
-version = "0.0.5"
-dependencies = [
- "micropb",
- "protolink-http2",
-]
-
-[[package]]
-name = "protolink-grpc-gen"
-version = "0.0.4"
-dependencies = [
- "protobuf",
- "protobuf-parse",
-]
-
-[[package]]
-name = "protolink-http2"
-version = "0.0.4"
-dependencies = [
- "zerodds-hpack",
- "zerodds-http2",
 ]
 
 [[package]]

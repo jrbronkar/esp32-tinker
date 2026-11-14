@@ -2,30 +2,6 @@
 mod common;
 use common::*;
 use std::time::Duration;
-#[tokio::test]
-async fn tonic_status_repeated_calls_and_error_trailers() {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut handler = device_grpc::ManagementServer::new(device_grpc::Management(|| {
-                ota_protocol::status("test-board", "host-test", "v1", 42).unwrap()
-            }));
-            protolink::tokio::server(stream)
-                .with_config(device_grpc::config())
-                .build()
-                .serve(&mut handler)
-                .await
-        });
-        check_status_exchanges(addr).await;
-        server.abort();
-        let _ = server.await;
-    })
-    .await
-    .expect("interop timed out");
-}
-
 async fn check_status_exchanges(addr: std::net::SocketAddr) {
     let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
         .unwrap()

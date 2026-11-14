@@ -60,7 +60,7 @@ impl ota_core::Target for Memory {
 struct Events {
     logs: device_grpc::logs::LogStore<2>,
     watchdog: Rc<device_grpc::watchdog::UploadWatchdog>,
-    timer: protolink::tokio::TokioTimer,
+    timer: tokio::time::Instant,
 }
 #[derive(Clone)]
 struct Env(Rc<RefCell<Events>>);
@@ -81,9 +81,7 @@ impl device_grpc::Environment for Env {
             match event {
                 device_grpc::UploadEvent::Receiving
                 | device_grpc::UploadEvent::ChunkWritten { .. }
-                | device_grpc::UploadEvent::Verified => {
-                    env.watchdog.activity(protolink::Clock::now(&env.timer))
-                }
+                | device_grpc::UploadEvent::Verified => env.watchdog.activity(env.timer.elapsed()),
                 device_grpc::UploadEvent::Released
                 | device_grpc::UploadEvent::ActivationPending => env.watchdog.clear(),
                 device_grpc::UploadEvent::Committed => {}
@@ -132,7 +130,7 @@ async fn fixture() -> (
     let env = Env(Rc::new(RefCell::new(Events {
         logs: device_grpc::logs::LogStore::new(1),
         watchdog: Rc::new(device_grpc::watchdog::UploadWatchdog::new()),
-        timer: protolink::tokio::TokioTimer::new(),
+        timer: tokio::time::Instant::now(),
     })));
     let target = memory.clone();
     let events = env.clone();
@@ -161,7 +159,14 @@ async fn serve(stream: tokio::net::TcpStream, target: &RefCell<Memory>, env: Env
         embedded_grpc::Http2Config::default(),
         tokio::time::sleep,
     );
-    embassy_futures::select::select(connection, watchdog.expired(&timer)).await;
+    embassy_futures::select::select(
+        connection,
+        watchdog.expired(
+            || timer.elapsed(),
+            |deadline| tokio::time::sleep_until(timer + deadline),
+        ),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -550,7 +555,7 @@ async fn two_connections_share_exclusive_flash_without_sharing_idle_timeouts() {
                         let env = Env(Rc::new(RefCell::new(Events {
                             logs: device_grpc::logs::LogStore::new(1),
                             watchdog: Rc::new(device_grpc::watchdog::UploadWatchdog::new()),
-                            timer: protolink::tokio::TokioTimer::new(),
+                            timer: tokio::time::Instant::now(),
                         })));
                         serve(stream, &flash, env).await;
                     });

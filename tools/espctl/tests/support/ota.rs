@@ -1,6 +1,6 @@
 //! Loopback gRPC board with the firmware management handler and RAM-backed flash.
-use ota_protocol::{MessageDecode, UploadOperation as Op, UploadPhase, UploadRequest};
-use protolink::{CallContext, Handler, Next, Route, Status};
+use embedded_grpc::{Status, Stream, Streaming};
+use ota_protocol::{UploadAck, UploadOperation as Op, UploadPhase, UploadRequest, UPLOAD_FRAME};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -153,85 +153,115 @@ impl device_grpc::Environment for Env {
     }
 }
 struct Faulty<'a> {
-    inner: device_grpc::ManagementServer<device_grpc::StreamingManagement<'a, Memory, Env>>,
-    state: State,
-    commit_id: Option<protolink::CallId>,
+    target: &'a RefCell<Memory>,
+    env: Env,
 }
-impl Handler for Faulty<'_> {
-    fn route(&self, path: &str) -> Option<Route> {
-        self.inner.route(path)
-    }
-    fn call(&mut self, ctx: &mut CallContext<'_>, request: &[u8]) -> Result<Vec<u8>, Status> {
-        self.inner.call(ctx, request)
-    }
-    fn on_message(&mut self, ctx: &mut CallContext<'_>, bytes: &[u8]) -> Result<(), Status> {
-        if ctx.path == device_grpc::LOGS_PATH {
-            return self.inner.on_message(ctx, bytes);
+
+impl embedded_grpc::StreamingService for Faulty<'_> {
+    async fn call(
+        &self,
+        path: &str,
+        call: embedded_grpc::StreamingCall<'_>,
+    ) -> Result<(), embedded_grpc::StreamError> {
+        if path != ota_protocol::UPLOAD_PATH {
+            let handler = management_grpc::ManagementServer::new(self.management());
+            return handler.call(path, call).await;
         }
-        let mut request = UploadRequest::default();
-        request.decode_from_bytes(bytes).unwrap();
+        let (request, response) = call.streaming();
+        response
+            .stream::<_, UPLOAD_FRAME>(FaultReplies {
+                inbound: request.into_inner(),
+                session: device_grpc::UploadSession::new(self.target, 0x310000, self.env.clone()),
+                state: &self.env.0,
+                ended: false,
+            })
+            .await
+    }
+}
+
+impl Faulty<'_> {
+    fn management(&self) -> device_grpc::EmbeddedManagement<'_, Memory, Env> {
+        device_grpc::EmbeddedManagement::new(self.target, 0x310000, self.env.clone())
+    }
+}
+
+enum WireAck {
+    Typed(UploadAck),
+    Malformed,
+}
+
+impl micropb::MessageEncode for WireAck {
+    const MAX_SIZE: Result<usize, &'static str> = UploadAck::MAX_SIZE;
+
+    fn encode<W: micropb::PbWrite>(
+        &self,
+        encoder: &mut micropb::PbEncoder<W>,
+    ) -> Result<(), W::Error> {
+        match self {
+            Self::Typed(ack) => ack.encode(encoder),
+            Self::Malformed => encoder.encode_varint32(255),
+        }
+    }
+
+    fn compute_size(&self) -> usize {
+        match self {
+            Self::Typed(ack) => ack.compute_size(),
+            Self::Malformed => 2,
+        }
+    }
+}
+
+struct FaultReplies<'a> {
+    inbound: Streaming<UploadRequest, UPLOAD_FRAME>,
+    session: device_grpc::UploadSession<'a, Memory, Env>,
+    state: &'a State,
+    ended: bool,
+}
+
+impl Stream for FaultReplies<'_> {
+    type Item = Result<WireAck, Status>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.ended {
+            return Poll::Ready(None);
+        }
+        let Some(request) = std::task::ready!(std::pin::Pin::new(&mut self.inbound).poll_next(cx))
+        else {
+            return Poll::Ready(None);
+        };
+        Poll::Ready(Some(request.and_then(|request| self.reply(request))))
+    }
+}
+
+impl FaultReplies<'_> {
+    fn reply(&mut self, request: UploadRequest) -> Result<WireAck, Status> {
         let name = match request.payload {
             Some(Op::Begin(_)) => "begin",
             Some(Op::Chunk(_)) => "chunk",
             Some(Op::Finish(_)) => "finish",
-            Some(Op::Commit(_)) => {
-                self.commit_id = Some(ctx.id);
-                "commit"
-            }
+            Some(Op::Commit(_)) => "commit",
             Some(Op::Abort(_)) => "abort",
             _ => "other",
         };
         self.state.requests.borrow_mut().push(name);
-        self.inner.on_message(ctx, bytes)
-    }
-    fn on_half_close(&mut self, ctx: &mut CallContext<'_>) -> Result<(), Status> {
-        self.inner.on_half_close(ctx)
-    }
-    fn poll_response(
-        &mut self,
-        ctx: &mut CallContext<'_>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Next<Vec<u8>>> {
-        let result = self.inner.poll_response(ctx, cx);
-        if ctx.path == device_grpc::LOGS_PATH {
-            return result;
-        }
-        if let Poll::Ready(Next::Message(ref bytes)) = result {
-            let mut response: ota_protocol::UploadAck = ota_protocol::decode(bytes).unwrap();
-            if self.commit_id == Some(ctx.id) && self.state.fault == "lost-commit" {
-                return Poll::Ready(Next::Done(Err(Status::unavailable("commit ACK lost"))));
+        let mut ack = self.session.process(request)?;
+        self.ended = matches!(ack.phase, UploadPhase::Aborted | UploadPhase::Committed);
+        match self.state.fault {
+            "lost-commit" if ack.phase == UploadPhase::Committed => {
+                return Err(Status::Unavailable)
             }
-            if !self.state.fault.is_empty()
-                && self.state.fault != "commit-storage"
-                && self.state.fault != "lost-commit"
-                && self.state.fault != "bad-logs"
-                && !self.state.fault.starts_with("disconnect-")
-            {
-                match self.state.fault {
-                    "id" => response.request_id += 1,
-                    "truncated" => return Poll::Ready(Next::Message(vec![0xff])),
-                    "disconnect" => {
-                        return Poll::Ready(Next::Done(Err(Status::unavailable("connection lost"))))
-                    }
-                    fault => {
-                        let ack = &mut response;
-                        match fault {
-                            "phase" => ack.phase = UploadPhase::Verified,
-                            "offset" => ack.next_offset += 1,
-                            "target" => ack.target_offset = 0x9000,
-                            _ => panic!(),
-                        }
-                    }
-                }
-                return Poll::Ready(Next::Message(
-                    ota_protocol::encode(&response).unwrap().to_vec(),
-                ));
-            }
+            "disconnect" => return Err(Status::Unavailable),
+            "truncated" => return Ok(WireAck::Malformed),
+            "id" => ack.request_id += 1,
+            "phase" => ack.phase = UploadPhase::Verified,
+            "offset" => ack.next_offset += 1,
+            "target" => ack.target_offset = 0x9000,
+            _ => {}
         }
-        result
-    }
-    fn on_cancel(&mut self, ctx: &mut CallContext<'_>) {
-        self.inner.on_cancel(ctx)
+        Ok(WireAck::Typed(ack))
     }
 }
 pub async fn start(
@@ -269,18 +299,13 @@ pub async fn start(
 }
 
 async fn serve(stream: tokio::net::TcpStream, state: State, target: Rc<RefCell<Memory>>) {
-    let mut handler = Faulty {
-        inner: device_grpc::ManagementServer::new(device_grpc::StreamingManagement::new(
-            target.as_ref(),
-            0x310000,
-            Env(state.clone()),
-        )),
-        state: state.clone(),
-        commit_id: None,
+    let handler = Faulty {
+        target: &target,
+        env: Env(state.clone()),
     };
-    let _ = protolink::tokio::server(CutIo { stream, state })
-        .with_config(device_grpc::config())
-        .build()
-        .serve(&mut handler)
-        .await;
+    let _ = embedded_grpc::serve_streaming(
+        embedded_io_adapters::tokio_1::FromTokio::new(CutIo { stream, state }),
+        &handler,
+    )
+    .await;
 }
