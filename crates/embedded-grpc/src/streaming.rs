@@ -21,6 +21,10 @@ pub trait StreamingService {
     async fn call(&self, path: &str, call: StreamingCall<'_>) -> Result<(), StreamError>;
 }
 
+/// Serve with the default HTTP/2 configuration and two inline handler slots.
+///
+/// Client timeout syntax is validated, but expiration requires
+/// [`serve_streaming_with_timer`].
 pub async fn serve_streaming<Io: Read + Write, S: StreamingService>(
     io: Io,
     service: &S,
@@ -29,7 +33,10 @@ pub async fn serve_streaming<Io: Read + Write, S: StreamingService>(
 }
 
 /// Serve gRPC with `SLOTS` inline handler futures per connection.
-/// The HTTP/2 stream limit must fit within that capacity.
+///
+/// The HTTP/2 stream limit must fit within that capacity or the call fails
+/// before the handshake. Client timeout syntax is validated, but expiration
+/// requires [`serve_streaming_with_timer`].
 pub async fn serve_streaming_with_config<
     const SLOTS: usize,
     Io: Read + Write,
@@ -43,7 +50,12 @@ pub async fn serve_streaming_with_config<
         .await
 }
 
-/// Enforce client-supplied deadlines with a caller-provided timer.
+/// Serve with `SLOTS` inline handler futures and enforce client deadlines.
+///
+/// The stream limit must fit within the handler capacity. Run on one local
+/// executor with cancellation-safe reads. The timer factory receives a
+/// relative [`Duration`] and must return a future that wakes when it expires.
+/// Deadline-aware call operations poll it while awaiting work.
 pub async fn serve_streaming_with_timer<
     const SLOTS: usize,
     Io: Read + Write,
