@@ -1,11 +1,13 @@
-# Embedded management API audit
+# Embedded gRPC management
 
-The firmware serves `esp.experimental.Management` over cleartext HTTP/2
+The firmware serves `esp.experimental.Management` on TCP port 7779 over cleartext HTTP/2
 using the generated `ManagementServer` and
 `embedded_grpc::serve_streaming_with_timer`. The service exposes unary
 Status, server-streaming Logs, and bidirectional Upload. The firmware and
 Tonic-based espctl client share the [Management schema](../../protocol/management.proto)
-and [OTA contract](../ota/protocol.md).
+and [OTA contract](../ota/protocol.md). The runtime supports identity
+encoding. See the [espctl guide](../../tools/espctl/README.md) for commands
+and [OTA testing](../ota/testing.md) for hardware validation.
 
 ## Configuration and memory
 
@@ -24,6 +26,12 @@ The protocol limits describe bytes on the wire or in logical buffers. To size
 firmware memory, account for allocator capacity, simultaneous connections,
 and live handler futures. Admission still allocates stream state with
 `Rc::new`, so the fallible buffer reservations do not cover all heap pressure.
+
+The two connections share an exclusive flash lease. Each connection owns
+its Upload watchdog and reboot signal. Upload flushes each acknowledgement
+before processing the next request. The log store retains 32 records and
+returns at most four per batch. Snapshots and follow mode share the same
+cursor, which carries boot identity and reports overwritten history.
 
 ## Deadlines and lifecycle
 
@@ -59,6 +67,9 @@ and live handler futures. Admission still allocates stream state with
 Keep the overlapping entry points and re-exports compatible during this
 audit. Any future narrowing should account for the host fixtures, generated
 dispatch, and downstream callers of the public crates.
+
+See [HTTP/2 flow control and conformance](embedded-http2.md) for transport
+details and the h2spec fixture.
 
 ## Comparison with Tonic 0.14.9
 
@@ -115,26 +126,3 @@ compatible micropb types and a const expression in scope in the generated
 code. An unmapped message or a client-streaming method with a unary response
 fails generation. Management maps the `ota` package to `ota_protocol::ota_`
 and passes `ota_protocol::UPLOAD_FRAME` as the bound.
-
-## Host coverage on the Upload branch
-
-Coverage on commit `bd126d4` used the embedded HTTP/2 and gRPC unit and
-integration tests and espctl's Tonic interoperability tests.
-
-| Source scope | Covered lines | Line coverage |
-| --- | ---: | ---: |
-| Embedded HTTP/2 | 1,460 / 1,510 | 96.69% |
-| Embedded gRPC runtime | 340 / 362 | 93.92% |
-| Both runtimes | 1,800 / 1,872 | 96.15% |
-| Generated Management bindings | 22 / 26 | 84.62% |
-
-Both runtimes had 93.09% region coverage. The gRPC streaming module had
-88.83% line coverage. LLVM reported mismatched data for seven functions and
-reported no branch coverage. This run does not measure the firmware endpoint
-or exercise flash and reboot on hardware.
-
-The follow-up host run added streaming request validation cases for HTTP method,
-content type, and missing, truncated, or extra gRPC messages. Combined runtime
-line coverage rose to 96.37% (1,804 / 1,872), region coverage to 93.43%, and
-streaming module line coverage to 90.96% (171 / 188). LLVM reported the same
-seven mismatched functions.

@@ -2,7 +2,7 @@
 
 `esp.experimental.Management` uses cleartext gRPC/HTTP2 on TCP 7779.
 The [service](../../protocol/management.proto) and [messages](../../protocol/ota.proto)
-are the API contract; see [RPC types and bounds](../device-management/protolink.md).
+are the API contract; see [RPC types and bounds](../device-management/embedded-grpc.md).
 Errors use gRPC status trailers. Only Upload uses operation variants and request
 IDs; status and log RPCs carry their declared messages directly.
 

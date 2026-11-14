@@ -29,4 +29,4 @@ sensor behavior during flash operations remain unverified. Synchronous flash wor
 can pause the executor. USB/BOOT/RESET is the recovery path.
 
 See [protocol](protocol.md), [provisioning](provisioning.md),
-[resource limits](../device-management/protolink.md) and [validation](testing.md).
+[resource limits](../device-management/embedded-grpc.md) and [validation](testing.md).
