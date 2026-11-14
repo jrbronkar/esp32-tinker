@@ -92,12 +92,19 @@ async fn exchange<M: ota_protocol::MessageDecode + Default>(
             wire.extend_from_slice(chunk.as_bytes());
         }
         drop(body);
-        let payload = ota_protocol::decode(&wire[5..]).unwrap();
+        let mut input = wire.as_slice();
+        let mut decoder =
+            embedded_grpc::MessageDecoder::<M, { ota_protocol::MAX_FRAME }>::default();
+        let reply = match decoder.push(&mut input) {
+            Ok(Some(payload)) if input.is_empty() && decoder.finish().is_ok() => {
+                action.borrow_mut()(payload)
+            }
+            _ => Err(tonic::Status::invalid_argument("invalid request message")),
+        };
         let mut send = respond.send_response(vec![
             field(":status", "200"),
             field("content-type", "application/grpc"),
         ])?;
-        let reply = action.borrow_mut()(payload);
         let trailers = match reply {
             Ok(payload) => {
                 let mut frame = vec![0];
