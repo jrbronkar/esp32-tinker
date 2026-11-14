@@ -60,6 +60,47 @@ Keep the overlapping entry points and re-exports compatible during this
 audit. Any future narrowing should account for the host fixtures, generated
 dispatch, and downstream callers of the public crates.
 
+## Comparison with Tonic 0.14.9
+
+The generated `ManagementServer::new(service)`, typed RPC methods, and
+`Result<_, Status>` follow Tonic's service model. The Management wire
+contract already interoperates with Tonic and espctl. The Rust server traits
+differ in three places.
+
+| RPC | Tonic generated trait | Embedded generated trait |
+| --- | --- | --- |
+| Status | `Request<StatusRequest>` → `Response<StatusResponse>` | Plain request and response messages |
+| Logs | `Request<ReadLogsRequest>` → `Response<Self::LogsStream>`, with a named associated stream type | Plain request and an opaque stream that can borrow the service |
+| Upload | `Request<Streaming<UploadRequest>>` → `Response<Self::UploadStream>` | A borrowed `Bidirectional<UploadRequest, UploadAck, MAX>` with `message()` and flushed `send()` |
+
+Tonic's request and response wrappers carry metadata and extensions. The
+embedded trait passes typed messages directly and exposes a limited status
+enum. Its local futures can borrow connection state. Tonic also supports
+client-streaming RPCs with unary replies.
+
+| Concern | Tonic server API | Embedded equivalent |
+| --- | --- | --- |
+| HTTP/2 stream admission | `Server::max_concurrent_streams` with no explicit limit by default | `Http2Config::max_concurrent_streams` with a required nonzero limit, defaulting to two |
+| Handler concurrency | `Server::concurrency_limit_per_connection` independently limits inbound service calls | `SLOTS` reserves inline memory and must accommodate the advertised transport limit |
+| Flow control | `initial_stream_window_size` and `initial_connection_window_size` configure the windows | Fixed initial windows with the same 65,535-byte defaults |
+| Message bounds | `max_decoding_message_size` and `max_encoding_message_size` configure independent limits, defaulting to 4 MiB and `usize::MAX` respectively | A generated const bound applies in both directions |
+| Timeouts | `Request::set_timeout` writes `grpc-timeout`. `Server::timeout` adds a server-side request time limit. | `serve_streaming_with_timer` enforces the client header at deadline-aware operations. Firmware's connection timeout applies to the entire connection. |
+
+Sources for these comparisons are Tonic's [generated server template](https://github.com/hyperium/tonic/blob/v0.14.9/tonic-build/src/server.rs),
+[transport server configuration](https://docs.rs/tonic/0.14.9/tonic/transport/server/struct.Server.html),
+[gRPC server configuration](https://docs.rs/tonic/0.14.9/tonic/server/struct.Grpc.html),
+and [request wrapper](https://docs.rs/tonic/0.14.9/tonic/struct.Request.html).
+
+For closer Rust API parity, start at the generated service boundary. Typed
+request and response wrappers could expose supported metadata, while an
+inbound message stream and returned outbound stream would give Upload the
+same ownership shape as Tonic. Prototype that shape with the existing Upload
+tests for ACK delivery before half-close, deadline cancellation and flash
+lease release, and sibling progress under backpressure. Keep local
+executor bounds and explicit memory limits. If message bounds become public
+knobs, use Tonic's directional names and preserve the generated embedded
+bounds as allocation ceilings.
+
 ## Protobuf generation
 
 Cargo runs `crates/management-grpc/build.rs` on the host to read the
