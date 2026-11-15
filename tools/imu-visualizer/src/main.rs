@@ -4,11 +4,24 @@ use std::{
     net::UdpSocket,
     sync::mpsc::{self, Receiver},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use imu_visualizer::{parse_sample, Orientation, OrientationEstimator, Sample};
+use imu_visualizer::{
+    parse_magnetic, parse_sample, MagneticSample, Orientation, OrientationEstimator, Sample,
+};
 use macroquad::prelude::*;
+
+enum Telemetry {
+    Imu(Sample),
+    Magnetic(MagneticSample),
+}
+
+fn parse_telemetry(line: &str) -> Option<Telemetry> {
+    parse_sample(line)
+        .map(Telemetry::Imu)
+        .or_else(|| parse_magnetic(line).map(Telemetry::Magnetic))
+}
 
 #[macroquad::main("ESP32-S3 IMU Orientation")]
 async fn main() {
@@ -30,16 +43,28 @@ async fn main() {
         }
     };
     let mut estimator = OrientationEstimator::default();
-    let mut latest = None;
+    let mut latest: Option<Sample> = None;
+    let mut magnetic: Option<(MagneticSample, Instant)> = None;
     let mut status = format!("Waiting for IMU data on {source_name}");
 
     loop {
         while let Ok(message) = receiver.try_recv() {
             match message {
-                Ok(sample) => {
+                Ok(Telemetry::Imu(sample)) => {
+                    if latest.is_some_and(|previous| sample.time_ms < previous.time_ms) {
+                        estimator = OrientationEstimator::default();
+                        magnetic = None;
+                    }
                     estimator.update(sample);
                     latest = Some(sample);
                     status = "Live".to_owned();
+                }
+                Ok(Telemetry::Magnetic(sample)) => {
+                    if magnetic.is_none_or(|(previous, _)| sample.time_ms > previous.time_ms)
+                        && estimator.correct_yaw(sample)
+                    {
+                        magnetic = Some((sample, Instant::now()));
+                    }
                 }
                 Err(error) => status = error,
             }
@@ -48,12 +73,15 @@ async fn main() {
         clear_background(Color::from_rgba(18, 22, 30, 255));
         let orientation = estimator.orientation();
         draw_scene(rotation(orientation));
-        draw_overlay(&status, latest, orientation);
+        let fresh_field = magnetic
+            .filter(|(_, received)| received.elapsed() < Duration::from_secs(1))
+            .map(|(sample, _)| sample.field_ut);
+        draw_overlay(&status, latest, orientation, fresh_field);
         next_frame().await;
     }
 }
 
-fn udp_reader(port: u16) -> Receiver<Result<Sample, String>> {
+fn udp_reader(port: u16) -> Receiver<Result<Telemetry, String>> {
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -72,7 +100,7 @@ fn udp_reader(port: u16) -> Receiver<Result<Sample, String>> {
                         continue;
                     };
                     for line in text.lines() {
-                        if let Some(sample) = parse_sample(line.trim()) {
+                        if let Some(sample) = parse_telemetry(line.trim()) {
                             let _ = sender.send(Ok(sample));
                         }
                     }
@@ -88,7 +116,7 @@ fn udp_reader(port: u16) -> Receiver<Result<Sample, String>> {
     receiver
 }
 
-fn serial_reader(port_name: String) -> Receiver<Result<Sample, String>> {
+fn serial_reader(port_name: String) -> Receiver<Result<Telemetry, String>> {
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -109,7 +137,7 @@ fn serial_reader(port_name: String) -> Receiver<Result<Sample, String>> {
             match reader.read_line(&mut line) {
                 Ok(0) => continue,
                 Ok(_) => {
-                    if let Some(sample) = parse_sample(line.trim()) {
+                    if let Some(sample) = parse_telemetry(line.trim()) {
                         let _ = sender.send(Ok(sample));
                     }
                 }
@@ -125,13 +153,20 @@ fn serial_reader(port_name: String) -> Receiver<Result<Sample, String>> {
     receiver
 }
 
+// The sensors use Z as up. The scene uses Y as up and -Z for sensor Y.
+fn sensor_to_scene() -> Quat {
+    Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+}
+
 fn rotation(orientation: Orientation) -> Quat {
-    Quat::from_euler(
+    let basis = sensor_to_scene();
+    let sensor_rotation = Quat::from_euler(
         EulerRot::ZYX,
         orientation.yaw,
         orientation.pitch,
         orientation.roll,
-    )
+    );
+    basis * sensor_rotation * basis.conjugate()
 }
 
 fn draw_scene(rotation: Quat) {
@@ -179,13 +214,19 @@ fn draw_rotated_box(rotation: Quat) {
     }
 
     let origin = Vec3::ZERO;
-    draw_line_3d(origin, rotation * vec3(2.2, 0.0, 0.0), RED);
-    draw_line_3d(origin, rotation * vec3(0.0, 2.2, 0.0), GREEN);
-    draw_line_3d(origin, rotation * vec3(0.0, 0.0, 2.2), BLUE);
+    let axes = rotation * sensor_to_scene();
+    draw_line_3d(origin, axes * vec3(2.2, 0.0, 0.0), RED);
+    draw_line_3d(origin, axes * vec3(0.0, 2.2, 0.0), GREEN);
+    draw_line_3d(origin, axes * vec3(0.0, 0.0, 2.2), BLUE);
 }
 
-fn draw_overlay(status: &str, sample: Option<Sample>, orientation: Orientation) {
-    draw_text("ESP32-S3 MPU6050", 24.0, 36.0, 30.0, WHITE);
+fn draw_overlay(
+    status: &str,
+    sample: Option<Sample>,
+    orientation: Orientation,
+    field: Option<[f32; 3]>,
+) {
+    draw_text("ESP32-S3 IMU", 24.0, 36.0, 30.0, WHITE);
     draw_text(status, 24.0, 64.0, 20.0, LIGHTGRAY);
 
     let degrees = vec3(
@@ -195,7 +236,7 @@ fn draw_overlay(status: &str, sample: Option<Sample>, orientation: Orientation) 
     );
     draw_text(
         &format!(
-            "roll {:7.1}°   pitch {:7.1}°   yaw* {:7.1}°",
+            "roll {:7.1}°   pitch {:7.1}°   yaw {:7.1}°",
             degrees.x, degrees.y, degrees.z
         ),
         24.0,
@@ -227,11 +268,24 @@ fn draw_overlay(status: &str, sample: Option<Sample>, orientation: Orientation) 
         );
     }
 
-    draw_text(
-        "* yaw is gyro-only and will drift without a magnetometer",
-        24.0,
-        screen_height() - 24.0,
-        18.0,
-        GRAY,
-    );
+    let yaw_status = match field {
+        Some([x, y, z]) => format!("Yaw corrected by BMM150    [{x:+.1}, {y:+.1}, {z:+.1}] µT"),
+        None => "Yaw from gyroscope    Waiting for BMM150 data".to_owned(),
+    };
+    draw_text(&yaw_status, 24.0, screen_height() - 24.0, 18.0, GRAY);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yaw_turns_the_board_in_the_horizontal_plane() {
+        let turn = rotation(Orientation {
+            yaw: std::f32::consts::FRAC_PI_2,
+            ..Orientation::default()
+        });
+        assert!((turn * Vec3::Y - Vec3::Y).length() < 1e-5);
+        assert!((turn * Vec3::X + Vec3::Z).length() < 1e-5);
+    }
 }

@@ -6,9 +6,14 @@ publish = false
 
 [features]
 ota-heap-probe = ["esp-alloc/internal-heap-stats"]
-imu = ["dep:mpu6050", "dep:onboard-rgb", "dep:wifi-telemetry", "dep:embassy-net", "dep:heapless"]
+imu = ["dep:bmm150", "dep:embassy-embedded-hal", "dep:embassy-futures", "dep:embassy-sync", "dep:embedded-hal", "dep:mpu6050", "dep:onboard-rgb", "dep:wifi-telemetry", "dep:embassy-net", "dep:heapless"]
 
 [dependencies]
+bmm150 = { path = "../bmm150", optional = true }
+embassy-embedded-hal = { version = "0.6", optional = true }
+embassy-futures = { version = "0.1", optional = true }
+embassy-sync = { version = "0.8", optional = true }
+embedded-hal = { version = "1", optional = true }
 mpu6050 = { path = "../mpu6050", optional = true }
 onboard-rgb = { path = "../onboard-rgb", optional = true }
 wifi-telemetry = { path = "../wifi-telemetry", optional = true }
