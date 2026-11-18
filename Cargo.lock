@@ -518,7 +518,6 @@ dependencies = [
  "rust-mqtt",
  "static_cell",
  "wifi-network",
- "wifi-telemetry",
 ]
 
 [[package]]

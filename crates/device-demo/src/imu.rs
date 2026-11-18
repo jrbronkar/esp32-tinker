@@ -1,8 +1,5 @@
 //! MPU6050 and BMM150 telemetry alongside device management on the same network.
-use core::{
-    cell::{Cell, RefCell},
-    fmt::Write,
-};
+use core::{cell::RefCell, fmt::Write};
 
 use bmm150::{Bmm150, DEFAULT_ADDRESS};
 
@@ -11,7 +8,7 @@ use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
 use embassy_futures::join::join;
 use embassy_net::Stack;
 use embassy_sync::blocking_mutex::NoopMutex;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_hal::i2c::I2c as I2cBus;
 use esp_hal::{
     delay::Delay,
@@ -21,9 +18,7 @@ use esp_hal::{
 };
 use heapless::String;
 use mpu6050::{Mpu6050, ADDRESS_LOW};
-use wifi_telemetry::UdpTelemetry;
 
-#[cfg(feature = "imu-mqtt")]
 mod mqtt;
 
 const BMM150_LAST_ADDRESS: u8 = 0x13;
@@ -49,49 +44,20 @@ pub async fn run(
     // before either future yields to the other.
     let bus = NoopMutex::new(RefCell::new(i2c.with_sda(sda).with_scl(scl)));
     let started = Instant::now();
-    let field = Cell::new(None);
-    #[cfg(feature = "imu-mqtt")]
     let samples = mqtt::Samples::default();
-    let imu = run_mpu(
-        stack,
-        I2cDevice::new(&bus),
-        logs,
-        started,
-        &field,
-        #[cfg(feature = "imu-mqtt")]
-        &samples,
-    );
-    let mag = run_magnetometer(
-        I2cDevice::new(&bus),
-        logs,
-        started,
-        &field,
-        #[cfg(feature = "imu-mqtt")]
-        &samples,
-    );
-    #[cfg(feature = "imu-mqtt")]
-    let imu = async {
-        let (never, _) = join(imu, mqtt::run(stack, logs, &samples)).await;
-        never
-    };
-    let (never, _) = join(imu, mag).await;
+    let imu = run_mpu(I2cDevice::new(&bus), logs, started, &samples);
+    let mag = run_magnetometer(I2cDevice::new(&bus), logs, started, &samples);
+    let ((never, _), _) = join(join(imu, mag), mqtt::run(stack, logs, &samples)).await;
     never
 }
 
-type MagneticSample = (u64, [f32; 3]);
-
 async fn run_mpu(
-    stack: Stack<'static>,
     bus: impl I2cBus,
     logs: &DeviceLogs,
     started: Instant,
-    field: &Cell<Option<MagneticSample>>,
-    #[cfg(feature = "imu-mqtt")] samples: &mqtt::Samples,
+    samples: &mqtt::Samples,
 ) -> ! {
     let mut sensor = Mpu6050::new(bus, ADDRESS_LOW);
-    let mut telemetry = option_env!("IMU_UDP_HOST")
-        .and_then(|host| host.parse().ok())
-        .and_then(|host| UdpTelemetry::new(stack, host, 7778).ok());
     let mut last_log = started;
     loop {
         if sensor.initialize().is_err() {
@@ -102,7 +68,6 @@ async fn run_mpu(
         logs.log(LogSeverity::Info, "MPU6050 ready");
         loop {
             let Ok(reading) = sensor.read() else {
-                #[cfg(feature = "imu-mqtt")]
                 samples.motion.set(None);
                 logs.log(LogSeverity::Warn, "MPU6050 read failed; retrying");
                 Timer::after_secs(1).await;
@@ -112,7 +77,6 @@ async fn run_mpu(
             let [gx, gy, gz] = reading.angular_velocity_dps;
             let temperature = reading.temperature_c;
             let sample_ms = started.elapsed().as_millis();
-            #[cfg(feature = "imu-mqtt")]
             samples.motion.set(Some(
                 imu_telemetry::MotionSample::default()
                     .init_sample_ms(sample_ms)
@@ -132,20 +96,6 @@ async fn run_mpu(
                     logs.log(LogSeverity::Info, &record);
                     last_log = now;
                 }
-                if let Some(telemetry) = &mut telemetry {
-                    let _ =
-                        with_timeout(Duration::from_millis(20), telemetry.send_line(&record)).await;
-                    if let Some((time_ms, [x, y, z])) = field.take() {
-                        let mut magnetic = String::<96>::new();
-                        if write!(magnetic, "MAG,{time_ms},{x:.2},{y:.2},{z:.2}").is_ok() {
-                            let _ = with_timeout(
-                                Duration::from_millis(20),
-                                telemetry.send_line(&magnetic),
-                            )
-                            .await;
-                        }
-                    }
-                }
             }
             Timer::after_millis(20).await;
         }
@@ -156,8 +106,7 @@ async fn run_magnetometer(
     bus: impl I2cBus + Clone,
     logs: &DeviceLogs,
     started: Instant,
-    field: &Cell<Option<MagneticSample>>,
-    #[cfg(feature = "imu-mqtt")] samples: &mqtt::Samples,
+    samples: &mqtt::Samples,
 ) -> ! {
     let mut delay = Delay::new();
     loop {
@@ -181,8 +130,6 @@ async fn run_magnetometer(
                     Ok(Some([x, y, z])) => {
                         let now = Instant::now();
                         let sample_ms = now.duration_since(started).as_millis();
-                        field.set(Some((sample_ms, [x, y, z])));
-                        #[cfg(feature = "imu-mqtt")]
                         samples.magnetic.set(Some(
                             imu_telemetry::MagneticSample::default()
                                 .init_sample_ms(sample_ms)
@@ -205,8 +152,6 @@ async fn run_magnetometer(
                     }
                     Ok(None) | Err(bmm150::Error::InvalidSample) => {}
                     Err(_) => {
-                        field.set(None);
-                        #[cfg(feature = "imu-mqtt")]
                         samples.magnetic.set(None);
                         logs.log(LogSeverity::Warn, "BMM150 read failed; retrying");
                         break;
