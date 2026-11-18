@@ -17,9 +17,10 @@ use onboard_rgb::{breathing_rgb, DEFAULT_BRIGHTNESS};
 use soil_sensor::{esp32s3::SoilProbe, Calibration};
 use wifi_network::Settings;
 
-const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
-const SOIL_UDP_HOST: &str = env!("SOIL_UDP_HOST");
+const DESTINATION: Ipv4Addr = match firmware_config::SOIL_UDP_HOST {
+    Some(address) => address,
+    None => panic!("set telemetry.soil.udp_host in firmware.yaml for the soil-demo wifi feature"),
+};
 const SOIL_UDP_PORT: u16 = 7777;
 const DRY_ADC: u16 = 4095;
 const WATERED_ADC: u16 = 3425;
@@ -33,23 +34,20 @@ async fn main(spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 36 * 1024);
 
-    let destination: Ipv4Addr = SOIL_UDP_HOST
-        .parse()
-        .unwrap_or_else(|_| fatal("SOIL_UDP_HOST must be an IPv4 address"));
     let stack = wifi_network::connect(
         spawner,
         peripherals.WIFI,
         peripherals.TIMG0,
         peripherals.SW_INTERRUPT,
         Settings {
-            ssid: WIFI_SSID,
-            password: WIFI_PASSWORD,
+            ssid: firmware_config::WIFI_SSID,
+            password: firmware_config::WIFI_PASSWORD,
         },
     )
     .await
     .unwrap_or_else(|_| fatal("Wi-Fi telemetry initialization failed"));
 
-    let mut telemetry = wifi_telemetry::UdpTelemetry::new(stack, destination, SOIL_UDP_PORT)
+    let mut telemetry = wifi_telemetry::UdpTelemetry::new(stack, DESTINATION, SOIL_UDP_PORT)
         .unwrap_or_else(|_| fatal("UDP telemetry initialization failed"));
 
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))

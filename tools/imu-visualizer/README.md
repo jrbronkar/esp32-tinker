@@ -8,20 +8,21 @@ Telemetry parsing and orientation estimation live in `src/lib.rs`; the serial/gr
 
 1. Mount the MPU6050 and BMM150 on the same rigid assembly and align their
    X, Y, and Z axes. Connect both to GPIO8 (SDA) and GPIO9 (SCL).
-2. Set `IMU_UDP_HOST` to the viewer Mac’s LAN IPv4 address and export an IMU
+2. Set `telemetry.imu.udp_host` to the viewer Mac’s LAN IPv4 address in `firmware.yaml` and export an IMU
    image. The firmware sends both sensor streams to this address on UDP 7778.
 3. Upload the image to an OTA-provisioned board running `imu-demo`, then start
    the viewer.
 
+Set `firmware.version` to `imu-mag-demo` for the filenames below.
+
 ```sh
-export IMU_UDP_HOST=MAC_LAN_IP
-nix run .#ota-image -- --imu imu-mag-demo
+nix run .#ota-image -- --imu
 nix run .#espctl -- upload --host BOARD_IP \
   --image target/ota/imu-demo-imu-mag-demo.bin --firmware-version imu-mag-demo --commit
 nix run .#imu-visualizer -- --udp
 ```
 
-Set the Wi-Fi build credentials privately as described in the
+Set the Wi-Fi credentials in the local config as described in the
 [OTA provisioning guide](../../docs/ota/provisioning.md). Stop any other
 listener on UDP 7778 before opening the viewer.
 
@@ -34,17 +35,24 @@ The `imu-mqtt` firmware feature publishes MPU6050 and BMM150 samples to
 The sensor timestamps are milliseconds since firmware startup and share the
 same clock. A message may contain either sensor or both. Publications use QoS 0
 without retention, and the publisher keeps only the newest pending sample from
-each sensor. Set `IMU_UDP_HOST` as before to run the UDP viewer alongside MQTT.
+each sensor. Set `telemetry.imu.udp_host` as before to run the UDP viewer alongside MQTT.
 
 Start a Mosquitto broker with an MQTT TCP listener reachable from the board.
 This firmware mode uses unauthenticated, unencrypted connections for a
-trusted bench network. Set a unique device ID per board and use the broker's
-LAN address when building the firmware:
+trusted bench network. Set `firmware.version` to `imu-mqtt-demo` and merge the
+following into the existing `telemetry` section of `firmware.yaml`. Use the broker’s LAN address and a unique device
+ID for each board.
+
+```yaml
+telemetry:
+  imu:
+    mqtt:
+      broker: "192.0.2.10:1883"
+      device_id: "esp32-01"
+```
 
 ```sh
-export IMU_MQTT_BROKER=MAC_LAN_IP:1883
-export IMU_MQTT_DEVICE_ID=esp32-01
-nix run .#ota-image -- --imu-mqtt imu-mqtt-demo
+nix run .#ota-image -- --imu-mqtt
 ```
 
 Upload the image using the dual-sensor OTA procedure above, substituting the
@@ -77,7 +85,7 @@ viewer to establish a new reference.
 
 If the overlay says **Waiting for BMM150 data**, use
 `espctl logs --host BOARD_IP --follow` to check for `BMM150 ready` and
-`MAG` records. If both appear, check `IMU_UDP_HOST` and UDP access to the
+`MAG` records. If both appear, check `telemetry.imu.udp_host` and UDP access to the
 Mac. The viewer integrates gyro yaw while magnetic data is unavailable.
 
 ## Run the serial MPU6050 demo

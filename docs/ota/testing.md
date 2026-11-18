@@ -37,11 +37,12 @@ with flash lease reacquisition, and closure of port 7780.
 ## Heap pressure on the development board
 
 Connect the board's USB serial port before activating the instrumented image.
-Build a private IMU image with allocator statistics and a 4 KiB test reservation:
+Set `diagnostics.ota_heap_reserve_bytes` to `4096` and
+`firmware.version` to `embedded-grpc-heap-probe` in your config, then build a
+private IMU image with allocator statistics:
 
 ```sh
-OTA_HEAP_RESERVE_BYTES=4096 FIRMWARE_VERSION=embedded-grpc-heap-probe \
-  cargo build --locked --target xtensa-esp32s3-none-elf \
+cargo build --locked --target xtensa-esp32s3-none-elf \
   -Zbuild-std=core,alloc --release -p device-demo --features imu,ota-heap-probe
 espflash save-image --chip esp32s3 --flash-size 16mb \
   target/xtensa-esp32s3-none-elf/release/device-demo /private/tmp/imu-heap-probe.bin

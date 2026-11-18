@@ -1,4 +1,4 @@
-use core::{cell::Cell, net::SocketAddrV4};
+use core::cell::Cell;
 
 use device_service::{DeviceLogs, LogSeverity};
 use embassy_net::{tcp::TcpSocket, Stack};
@@ -22,21 +22,15 @@ pub(super) struct Samples {
 }
 
 pub(super) async fn run(stack: Stack<'static>, logs: &DeviceLogs, samples: &Samples) {
-    let endpoint =
-        option_env!("IMU_MQTT_BROKER").and_then(|value| value.parse::<SocketAddrV4>().ok());
-    let device = option_env!("IMU_MQTT_DEVICE_ID").filter(|value| {
-        (1..=48).contains(&value.len())
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    });
-    let (Some(endpoint), Some(device)) = (endpoint, device) else {
+    let Some(settings) = firmware_config::IMU_MQTT else {
         logs.log(
             LogSeverity::Warn,
-            "Set IMU_MQTT_BROKER and IMU_MQTT_DEVICE_ID",
+            "Configure telemetry.imu.mqtt in firmware.yaml",
         );
         return;
     };
+    let endpoint = settings.broker;
+    let device = settings.device_id;
     let mut topic = String::<64>::new();
     if topic.push_str("devices/").is_err()
         || topic.push_str(device).is_err()

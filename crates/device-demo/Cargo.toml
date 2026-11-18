@@ -10,6 +10,7 @@ imu = ["dep:bmm150", "dep:embassy-embedded-hal", "dep:embassy-futures", "dep:emb
 imu-mqtt = ["imu", "dep:imu-telemetry", "dep:rust-mqtt"]
 
 [dependencies]
+firmware-config = { path = "../firmware-config" }
 imu-telemetry = { path = "../imu-telemetry", optional = true }
 rust-mqtt = { version = "0.6", default-features = false, features = ["v5", "bump"], optional = true }
 bmm150 = { path = "../bmm150", optional = true }

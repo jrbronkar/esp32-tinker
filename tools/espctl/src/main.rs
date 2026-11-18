@@ -121,7 +121,7 @@ struct UploadArgs {
     /// Application-only .bin exported by espflash (not ELF or a merged image)
     #[arg(long)]
     image: std::path::PathBuf,
-    /// Must match the firmware's embedded FIRMWARE_VERSION
+    /// Must match the firmware's embedded version
     #[arg(long)]
     firmware_version: String,
     /// Activate the verified image and reboot; otherwise leave the current image selected

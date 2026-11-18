@@ -12,3 +12,9 @@ target/
 # Locally captured sensor sessions
 imu-*.log
 imu-*.csv
+
+# Local firmware settings and Wi-Fi credentials
+/firmware.yaml
+/firmware.*.local.yaml
+/firmware.yml
+/firmware.*.local.yml

@@ -51,12 +51,11 @@ The optional `wifi` feature joins a 2.4 GHz Wi-Fi network with DHCP and sends th
 ipconfig getifaddr en0
 ```
 
-Set the variables only in your current shell. The password is consumed during compilation and is not written to the repository:
+Set the Wi-Fi credentials in the [firmware configuration](../../docs/ota/provisioning.md).
+
+Set `telemetry.soil.udp_host` to your Mac’s IPv4 address in `firmware.yaml`.
 
 ```sh
-export WIFI_SSID='your-network-name'
-export WIFI_PASSWORD='your-network-password'
-export SOIL_UDP_HOST='your-mac-ipv4-address'
 ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
   cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p soil-demo --features wifi
 ```

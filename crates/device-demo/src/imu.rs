@@ -89,9 +89,8 @@ async fn run_mpu(
     #[cfg(feature = "imu-mqtt")] samples: &mqtt::Samples,
 ) -> ! {
     let mut sensor = Mpu6050::new(bus, ADDRESS_LOW);
-    let mut telemetry = option_env!("IMU_UDP_HOST")
-        .and_then(|host| host.parse().ok())
-        .and_then(|host| UdpTelemetry::new(stack, host, 7778).ok());
+    let mut telemetry =
+        firmware_config::IMU_UDP_HOST.and_then(|host| UdpTelemetry::new(stack, host, 7778).ok());
     let mut last_log = started;
     loop {
         if sensor.initialize().is_err() {

@@ -511,6 +511,7 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-rtos",
+ "firmware-config",
  "heapless 0.8.0",
  "imu-telemetry",
  "mpu6050",
@@ -1454,6 +1455,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
+name = "firmware-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "flume"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1785,6 +1794,7 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-rtos",
+ "firmware-config",
  "heapless 0.8.0",
  "mpu6050",
  "onboard-rgb",
@@ -2732,6 +2742,7 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-rtos",
+ "firmware-config",
  "heapless 0.8.0",
  "onboard-rgb",
  "soil-sensor",

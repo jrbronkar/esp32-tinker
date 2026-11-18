@@ -1,0 +1,24 @@
+wifi:
+  ssid: "your-network"
+  # Use an empty string for an open network.
+  password: "your-password"
+
+firmware:
+  version: "dev-1"
+
+# Uncomment the settings for the transports you use.
+# telemetry:
+#   imu:
+#     # Required for the standalone imu-demo Wi-Fi build.
+#     udp_host: "192.0.2.10"
+#     # Required to send MQTT with the imu-mqtt feature.
+#     mqtt:
+#       broker: "192.0.2.10:1883"
+#       device_id: "esp32-01"
+#   soil:
+#     # Required for the standalone soil-demo Wi-Fi build.
+#     udp_host: "192.0.2.10"
+
+diagnostics:
+  # Only used with the ota-heap-probe feature.
+  ota_heap_reserve_bytes: 0
