@@ -1,47 +1,17 @@
 # IMU orientation visualizer
 
-This macOS Rust application reads the `imu-demo` serial CSV stream and renders a live 3D outline of the ESP32/IMU assembly. A complementary filter integrates gyroscope motion and uses the accelerometer's gravity vector to correct long-term roll and pitch drift.
+This macOS Rust application reads standalone IMU serial output or dual-sensor MQTT telemetry and renders a live 3D outline of the ESP32/IMU assembly. A complementary filter integrates gyroscope motion and uses the accelerometer's gravity vector to correct long-term roll and pitch drift.
 
 Telemetry parsing and orientation estimation live in `src/lib.rs`; the serial/graphics executable consumes that library. Unit tests cover parsing, gravity initialization, gyro yaw integration, duplicate timestamps, bounded data gaps, and accelerometer correction of roll drift.
 
-## Run with both sensors over Wi-Fi
+## Dual-sensor MQTT telemetry
 
-1. Mount the MPU6050 and BMM150 on the same rigid assembly and align their
-   X, Y, and Z axes. Connect both to GPIO8 (SDA) and GPIO9 (SCL).
-2. Set `telemetry.imu.udp_host` to the viewer Mac’s LAN IPv4 address in `firmware.yaml` and export an IMU
-   image. The firmware sends both sensor streams to this address on UDP 7778.
-3. Upload the image to an OTA-provisioned board running `imu-demo`, then start
-   the viewer.
-
-Set `firmware.version` to `imu-mag-demo` for the filenames below.
-
-```sh
-nix run .#ota-image -- --imu
-nix run .#espctl -- upload --host BOARD_IP \
-  --image target/ota/imu-demo-imu-mag-demo.bin --firmware-version imu-mag-demo --commit
-nix run .#imu-visualizer -- --udp
-```
-
-Set the Wi-Fi credentials in the local config as described in the
-[OTA provisioning guide](../../docs/ota/provisioning.md). Stop any other
-listener on UDP 7778 before opening the viewer.
-
-## Try MQTT with Protobuf
-
-The `imu-mqtt` firmware feature publishes MPU6050 and BMM150 samples to
-`devices/<device-id>/imu`. Each MQTT 5 message contains one binary
-`telemetry.ImuTelemetry` payload defined in
-[`protocol/imu_telemetry.proto`](../../protocol/imu_telemetry.proto).
-The sensor timestamps are milliseconds since firmware startup and share the
-same clock. A message may contain either sensor or both. Publications use QoS 0
-without retention, and the publisher keeps only the newest pending sample from
-each sensor. Set `telemetry.imu.udp_host` as before to run the UDP viewer alongside MQTT.
-
-Start a Mosquitto broker with an MQTT TCP listener reachable from the board.
-This firmware mode uses unauthenticated, unencrypted connections for a
-trusted bench network. Set `firmware.version` to `imu-mqtt-demo` and merge the
-following into the existing `telemetry` section of `firmware.yaml`. Use the broker’s LAN address and a unique device
-ID for each board.
+Start an MQTT 5 broker with a TCP listener reachable from the ESP32 and
+viewer. This firmware uses unauthenticated, unencrypted connections for a
+trusted bench network. Set Wi-Fi credentials as described in the
+[OTA provisioning guide](../../docs/ota/provisioning.md), set
+`firmware.version` to `imu-mag-demo`, and add the broker’s LAN address and
+a unique device ID to `firmware.yaml`:
 
 ```yaml
 telemetry:
@@ -52,20 +22,25 @@ telemetry:
 ```
 
 ```sh
-nix run .#ota-image -- --imu-mqtt
+nix run .#ota-image -- --imu
+nix run .#espctl -- upload --host BOARD_IP \
+  --image target/ota/imu-demo-imu-mag-demo.bin --firmware-version imu-mag-demo --commit
+nix run .#imu-visualizer -- --mqtt localhost esp32-01
 ```
 
-Upload the image using the dual-sensor OTA procedure above, substituting the
-new image path and version. Watch for `IMU MQTT connected` in the device logs.
-On the broker host, decode one publication from the repository root:
+The viewer accepts an optional port after the device ID. The ESP32 publishes
+to `devices/<device-id>/imu` at QoS 0 without retention. Each publication
+contains one binary `telemetry.ImuTelemetry` message with either or both
+sensor samples. Their timestamps share the same monotonic clock and reset
+when the board boots. The [Protobuf schema](../../protocol/imu_telemetry.proto)
+is shared between the firmware and viewer.
+
+To inspect one publication from the broker host:
 
 ```sh
 mosquitto_sub -h localhost -V mqttv5 -t devices/esp32-01/imu -C 1 -N |
   protoc -I protocol --decode=telemetry.ImuTelemetry protocol/imu_telemetry.proto
 ```
-
-Repeat the command to inspect a message containing a BMM150 sample. It arrives
-less often than an MPU6050 sample. The viewer still uses its serial or UDP input.
 
 ## Check yaw correction
 
@@ -85,8 +60,8 @@ viewer to establish a new reference.
 
 If the overlay says **Waiting for BMM150 data**, use
 `espctl logs --host BOARD_IP --follow` to check for `BMM150 ready` and
-`MAG` records. If both appear, check `telemetry.imu.udp_host` and UDP access to the
-Mac. The viewer integrates gyro yaw while magnetic data is unavailable.
+`IMU MQTT connected`. Verify that the viewer and firmware use the same broker
+and device ID. The viewer integrates gyro yaw while magnetic data is unavailable.
 
 ## Run the serial MPU6050 demo
 
@@ -100,9 +75,8 @@ Stop the serial monitor with Ctrl+C, then launch the viewer:
 nix run .#imu-visualizer -- /dev/cu.usbmodemXXXX
 ```
 
-The viewer accepts `IMU,time_ms,ax,ay,az,gx,gy,gz,temp_c` and
-`MAG,time_ms,x_uT,y_uT,z_uT` records on serial or UDP. The standalone serial
-firmware emits only MPU6050 records.
+The standalone serial firmware emits MPU6050 records in
+`IMU,time_ms,ax,ay,az,gx,gy,gz,temp_c` format.
 
 ## Coordinate display
 

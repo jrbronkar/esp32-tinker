@@ -95,13 +95,9 @@
             application=imu-demo
             features=(--features imu)
             shift
-          elif [[ ''${1-} == --imu-mqtt ]]; then
-            application=imu-demo
-            features=(--features imu-mqtt)
-            shift
           fi
           if [[ $# -ne 0 ]]; then
-            echo "Usage: nix run .#ota-image [-- --imu|--imu-mqtt]" >&2
+            echo "Usage: nix run .#ota-image [-- --imu]" >&2
             exit 2
           fi
           if [[ ! -f flake.nix || ! -d crates/device-demo ]]; then
@@ -165,7 +161,9 @@
       imuVisualizer = pkgs.rustPlatform.buildRustPackage {
         pname = "imu-visualizer";
         version = "0.1.0";
-        src = ./tools/imu-visualizer;
+        src = ./.;
+        cargoRoot = "tools/imu-visualizer";
+        buildAndTestSubdir = "tools/imu-visualizer";
         cargoLock.lockFile = ./tools/imu-visualizer/Cargo.lock;
       };
     in {

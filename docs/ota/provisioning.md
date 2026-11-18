@@ -81,8 +81,8 @@ and needs only SDA, SCL, power, and ground. Each sensor retries independently,
 and management remains available if a sensor is missing.
 
 Use `espctl logs --follow` to see `IMU` records and `MAG,time_ms,x_uT,y_uT,z_uT`
-records. Set `telemetry.imu.udp_host` in the config to send MPU6050 and BMM150 samples to the
-visualizer on UDP port 7778.
+records in device logs. Set `telemetry.imu.mqtt` in the config to publish both
+sensors to the [MQTT viewer](../../tools/imu-visualizer/README.md).
 
 ## Recovery
 

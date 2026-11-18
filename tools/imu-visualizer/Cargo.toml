@@ -7,5 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
+imu-telemetry = { path = "../../crates/imu-telemetry" }
+rumqttc = { version = "0.25", default-features = false }
 macroquad = "0.4.15"
 serialport = { version = "4.8.1", default-features = false }

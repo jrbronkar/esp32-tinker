@@ -85,11 +85,8 @@ ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
 
 For a basic receiver, run `nc -u -l 7778` on the Mac. The shared `wifi-telemetry` library adds a newline to each UDP datagram and automatically reconnects the ESP32 after a Wi-Fi interruption. Credentials are not stored in Git, but they are embedded in the resulting firmware binary, so do not distribute that binary.
 
-To feed the existing 3D orientation visualizer over Wi-Fi, stop `nc` and run:
-
-```sh
-nix run .#imu-visualizer -- --udp
-```
+The 3D viewer accepts serial output from this standalone demo. For networked
+3D rendering with both sensors, use the [dual-sensor MQTT firmware](../../tools/imu-visualizer/README.md).
 
 ## Library and tests
 
