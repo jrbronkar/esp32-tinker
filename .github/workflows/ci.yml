@@ -29,6 +29,7 @@ jobs:
             cargo clippy --locked --all-targets -- -D warnings
             cargo build --locked
             cargo test --locked
+            python3 crates/firmware-config/tests/config_smoke.py
           '
       - name: Check HTTP/2 conformance regressions
         run: nix run .#http2-conformance
