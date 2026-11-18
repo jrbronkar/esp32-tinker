@@ -172,7 +172,9 @@
       imuVisualizer = pkgs.rustPlatform.buildRustPackage {
         pname = "imu-visualizer";
         version = "0.1.0";
-        src = ./tools/imu-visualizer;
+        src = ./.;
+        cargoRoot = "tools/imu-visualizer";
+        buildAndTestSubdir = "tools/imu-visualizer";
         cargoLock.lockFile = ./tools/imu-visualizer/Cargo.lock;
       };
     in {

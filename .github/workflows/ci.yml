@@ -29,6 +29,7 @@ jobs:
             cargo clippy --locked --all-targets -- -D warnings
             cargo build --locked
             cargo test --locked
+            cargo test --locked --manifest-path tools/imu-visualizer/Cargo.toml
           '
       - name: Check HTTP/2 conformance regressions
         run: nix run .#http2-conformance
@@ -40,8 +41,11 @@ jobs:
         env:
           WIFI_SSID: build-check
           WIFI_PASSWORD: build-check
+          IMU_MQTT_BROKER: 192.0.2.10:1883
+          IMU_MQTT_DEVICE_ID: build-check
         run: |
           nix develop --command bash -euo pipefail -c '
             cargo clippy --locked --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc -p device-demo -p embedded-http2 -p management-grpc -- -D warnings
             cargo build --locked --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
+            cargo build --locked --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo --features imu
           '

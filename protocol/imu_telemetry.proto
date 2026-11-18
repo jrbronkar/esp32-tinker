@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package telemetry;
+
+// Each publication contains the latest sample from one or both sensors.
+// Timestamps use the same monotonic clock and reset when the board boots.
+message ImuTelemetry {
+  MotionSample motion = 1;
+  MagneticSample magnetic = 2;
+}
+
+message MotionSample {
+  uint64 sample_ms = 1;
+  Vector3 acceleration_g = 2;
+  Vector3 angular_velocity_dps = 3;
+  float temperature_c = 4;
+}
+
+message MagneticSample {
+  uint64 sample_ms = 1;
+  Vector3 field_ut = 2;
+}
+
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}

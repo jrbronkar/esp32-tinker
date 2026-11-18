@@ -1,8 +1,5 @@
 //! MPU6050 and BMM150 telemetry alongside device management on the same network.
-use core::{
-    cell::{Cell, RefCell},
-    fmt::Write,
-};
+use core::{cell::RefCell, fmt::Write};
 
 use bmm150::{Bmm150, DEFAULT_ADDRESS};
 
@@ -11,7 +8,7 @@ use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
 use embassy_futures::join::join;
 use embassy_net::Stack;
 use embassy_sync::blocking_mutex::NoopMutex;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_hal::i2c::I2c as I2cBus;
 use esp_hal::{
     delay::Delay,
@@ -21,7 +18,8 @@ use esp_hal::{
 };
 use heapless::String;
 use mpu6050::{Mpu6050, ADDRESS_LOW};
-use wifi_telemetry::UdpTelemetry;
+
+mod mqtt;
 
 const BMM150_LAST_ADDRESS: u8 = 0x13;
 const MAG_POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -46,26 +44,20 @@ pub async fn run(
     // before either future yields to the other.
     let bus = NoopMutex::new(RefCell::new(i2c.with_sda(sda).with_scl(scl)));
     let started = Instant::now();
-    let field = Cell::new(None);
-    let imu = run_mpu(stack, I2cDevice::new(&bus), logs, started, &field);
-    let mag = run_magnetometer(I2cDevice::new(&bus), logs, started, &field);
-    let (never, _) = join(imu, mag).await;
+    let samples = mqtt::Samples::default();
+    let imu = run_mpu(I2cDevice::new(&bus), logs, started, &samples);
+    let mag = run_magnetometer(I2cDevice::new(&bus), logs, started, &samples);
+    let ((never, _), _) = join(join(imu, mag), mqtt::run(stack, logs, &samples)).await;
     never
 }
 
-type MagneticSample = (u64, [f32; 3]);
-
 async fn run_mpu(
-    stack: Stack<'static>,
     bus: impl I2cBus,
     logs: &DeviceLogs,
     started: Instant,
-    field: &Cell<Option<MagneticSample>>,
+    samples: &mqtt::Samples,
 ) -> ! {
     let mut sensor = Mpu6050::new(bus, ADDRESS_LOW);
-    let mut telemetry = option_env!("IMU_UDP_HOST")
-        .and_then(|host| host.parse().ok())
-        .and_then(|host| UdpTelemetry::new(stack, host, 7778).ok());
     let mut last_log = started;
     loop {
         if sensor.initialize().is_err() {
@@ -76,6 +68,7 @@ async fn run_mpu(
         logs.log(LogSeverity::Info, "MPU6050 ready");
         loop {
             let Ok(reading) = sensor.read() else {
+                samples.motion.set(None);
                 logs.log(LogSeverity::Warn, "MPU6050 read failed; retrying");
                 Timer::after_secs(1).await;
                 break;
@@ -83,11 +76,18 @@ async fn run_mpu(
             let [ax, ay, az] = reading.acceleration_g;
             let [gx, gy, gz] = reading.angular_velocity_dps;
             let temperature = reading.temperature_c;
+            let sample_ms = started.elapsed().as_millis();
+            samples.motion.set(Some(
+                imu_telemetry::MotionSample::default()
+                    .init_sample_ms(sample_ms)
+                    .init_acceleration_g(reading.acceleration_g.into())
+                    .init_angular_velocity_dps(reading.angular_velocity_dps.into())
+                    .init_temperature_c(temperature),
+            ));
             let mut record = String::<160>::new();
             if write!(
                 record,
-                "IMU,{},{ax:.5},{ay:.5},{az:.5},{gx:.3},{gy:.3},{gz:.3},{temperature:.2}",
-                started.elapsed().as_millis(),
+                "IMU,{sample_ms},{ax:.5},{ay:.5},{az:.5},{gx:.3},{gy:.3},{gz:.3},{temperature:.2}",
             )
             .is_ok()
             {
@@ -95,20 +95,6 @@ async fn run_mpu(
                 if now.duration_since(last_log) >= Duration::from_secs(1) {
                     logs.log(LogSeverity::Info, &record);
                     last_log = now;
-                }
-                if let Some(telemetry) = &mut telemetry {
-                    let _ =
-                        with_timeout(Duration::from_millis(20), telemetry.send_line(&record)).await;
-                    if let Some((time_ms, [x, y, z])) = field.take() {
-                        let mut magnetic = String::<96>::new();
-                        if write!(magnetic, "MAG,{time_ms},{x:.2},{y:.2},{z:.2}").is_ok() {
-                            let _ = with_timeout(
-                                Duration::from_millis(20),
-                                telemetry.send_line(&magnetic),
-                            )
-                            .await;
-                        }
-                    }
                 }
             }
             Timer::after_millis(20).await;
@@ -120,7 +106,7 @@ async fn run_magnetometer(
     bus: impl I2cBus + Clone,
     logs: &DeviceLogs,
     started: Instant,
-    field: &Cell<Option<MagneticSample>>,
+    samples: &mqtt::Samples,
 ) -> ! {
     let mut delay = Delay::new();
     loop {
@@ -143,7 +129,12 @@ async fn run_magnetometer(
                 match sensor.try_read() {
                     Ok(Some([x, y, z])) => {
                         let now = Instant::now();
-                        field.set(Some((now.duration_since(started).as_millis(), [x, y, z])));
+                        let sample_ms = now.duration_since(started).as_millis();
+                        samples.magnetic.set(Some(
+                            imu_telemetry::MagneticSample::default()
+                                .init_sample_ms(sample_ms)
+                                .init_field_ut([x, y, z].into()),
+                        ));
                         if last_log.is_none_or(|last| now.duration_since(last) >= MAG_LOG_INTERVAL)
                         {
                             let mut record = String::<96>::new();
@@ -161,7 +152,7 @@ async fn run_magnetometer(
                     }
                     Ok(None) | Err(bmm150::Error::InvalidSample) => {}
                     Err(_) => {
-                        field.set(None);
+                        samples.magnetic.set(None);
                         logs.log(LogSeverity::Warn, "BMM150 read failed; retrying");
                         break;
                     }

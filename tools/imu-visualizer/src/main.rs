@@ -1,16 +1,24 @@
 use std::{
     env,
     io::{BufRead, BufReader},
-    net::UdpSocket,
     sync::mpsc::{self, Receiver},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use imu_visualizer::{
     parse_magnetic, parse_sample, MagneticSample, Orientation, OrientationEstimator, Sample,
 };
 use macroquad::prelude::*;
+use rumqttc::v5::{
+    mqttbytes::{
+        v5::{Packet, SubscribeReasonCode},
+        QoS,
+    },
+    Client, Event, MqttOptions,
+};
+
+mod mqtt_payload;
 
 enum Telemetry {
     Imu(Sample),
@@ -27,18 +35,31 @@ fn parse_telemetry(line: &str) -> Option<Telemetry> {
 async fn main() {
     let arguments: Vec<String> = env::args().skip(1).collect();
     let (receiver, source_name) = match arguments.as_slice() {
-        [flag] if flag == "--udp" => (udp_reader(7778), "UDP port 7778".to_owned()),
-        [flag, port] if flag == "--udp" => match port.parse::<u16>().ok().filter(|port| *port != 0)
-        {
-            Some(port) => (udp_reader(port), format!("UDP port {port}")),
-            None => {
-                eprintln!("UDP port must be a number from 1 to 65535");
+        [flag, host, device, rest @ ..] if flag == "--mqtt" => {
+            let port = match rest {
+                [] => Some(1883),
+                [port] => port.parse::<u16>().ok().filter(|port| *port != 0),
+                _ => None,
+            };
+            let Some(port) = port else {
+                eprintln!("MQTT port must be a number from 1 to 65535");
+                return;
+            };
+            if !(1..=48).contains(&device.len())
+                || !device
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+            {
+                eprintln!("MQTT device ID must be 1–48 letters, digits, hyphens or underscores");
                 return;
             }
-        },
+            let topic = format!("devices/{device}/imu");
+            let source = format!("MQTT {host}:{port} {topic}");
+            (mqtt_reader(host.clone(), port, topic), source)
+        }
         [port_name] => (serial_reader(port_name.clone()), port_name.clone()),
         _ => {
-            eprintln!("usage: imu-visualizer /dev/cu.usbmodemXXXX | --udp [port]");
+            eprintln!("usage: imu-visualizer /dev/cu.usbmodemXXXX | --mqtt HOST DEVICE_ID [PORT]");
             return;
         }
     };
@@ -81,34 +102,53 @@ async fn main() {
     }
 }
 
-fn udp_reader(port: u16) -> Receiver<Result<Telemetry, String>> {
-    let (sender, receiver) = mpsc::channel();
+fn mqtt_reader(host: String, port: u16, topic: String) -> Receiver<Result<Telemetry, String>> {
+    let (sender, receiver) = mpsc::sync_channel(32);
 
     thread::spawn(move || {
-        let socket = match UdpSocket::bind(("0.0.0.0", port)) {
-            Ok(socket) => socket,
-            Err(error) => {
-                let _ = sender.send(Err(format!("Could not listen on UDP port {port}: {error}")));
-                return;
-            }
-        };
-        let mut packet = [0_u8; 512];
-        loop {
-            match socket.recv_from(&mut packet) {
-                Ok((length, _source)) => {
-                    let Ok(text) = std::str::from_utf8(&packet[..length]) else {
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let client_id = format!("imu-viewer-{}-{}", std::process::id(), started.as_nanos());
+        let options = MqttOptions::new(client_id, host, port);
+        let (client, mut connection) = Client::new(options, 4);
+        for event in connection.iter() {
+            match event {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    if let Err(error) = client.try_subscribe(&topic, QoS::AtMostOnce) {
+                        let _ = sender.try_send(Err(format!("MQTT subscribe failed: {error}")));
+                    }
+                }
+                Ok(Event::Incoming(Packet::SubAck(ack)))
+                    if !matches!(
+                        ack.return_codes.as_slice(),
+                        [SubscribeReasonCode::Success(_)]
+                    ) =>
+                {
+                    let _ = sender.try_send(Err(format!(
+                        "MQTT broker rejected subscription: {:?}",
+                        ack.return_codes
+                    )));
+                }
+                Ok(Event::Incoming(Packet::Publish(publish))) => {
+                    let Ok((motion, magnetic)) = mqtt_payload::decode(&publish.payload) else {
+                        let _ = sender.try_send(Err("Invalid MQTT IMU payload".to_owned()));
                         continue;
                     };
-                    for line in text.lines() {
-                        if let Some(sample) = parse_telemetry(line.trim()) {
-                            let _ = sender.send(Ok(sample));
-                        }
+                    // Update the gyro estimate before applying a magnetic correction from
+                    // the same publication.
+                    if let Some(sample) = motion {
+                        let _ = sender.try_send(Ok(Telemetry::Imu(sample)));
+                    }
+                    if let Some(sample) = magnetic {
+                        let _ = sender.try_send(Ok(Telemetry::Magnetic(sample)));
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(Err(format!("UDP receive failed: {error}")));
-                    return;
+                    let _ = sender.try_send(Err(format!("MQTT connection failed: {error}")));
+                    thread::sleep(Duration::from_secs(1));
                 }
+                _ => {}
             }
         }
     });
