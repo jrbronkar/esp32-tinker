@@ -73,10 +73,11 @@ Select the firmware package and target explicitly. For a build and lint check
 of `device-demo`, use placeholders for its required Wi-Fi settings:
 
 ```sh
-WIFI_SSID=build-check WIFI_PASSWORD=build-check cargo build --locked \
+test -f firmware.yaml || cp firmware.example.yaml firmware.yaml
+cargo build --locked \
   --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
 
-WIFI_SSID=build-check WIFI_PASSWORD=build-check cargo clippy --locked \
+cargo clippy --locked \
   --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc -p device-demo -- -D warnings
 ```
 

@@ -46,7 +46,7 @@ connection accepts `--port` if the board uses a custom gRPC port.
 
 ### Update firmware from the dashboard
 
-From the repository root, export `WIFI_SSID` and `WIFI_PASSWORD`, then build
+From the repository root, set Wi-Fi and version in the [firmware configuration](../../docs/ota/provisioning.md), then build
 and export the image with the pinned Nix tools:
 
 ```sh

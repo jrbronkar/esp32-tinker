@@ -74,12 +74,11 @@ While sampling is healthy, the onboard GPIO48 RGB LED uses the shared `onboard-r
 
 ### Wi-Fi telemetry
 
-Serial mode remains the default. To send the same `IMU,...` rows to UDP port `7778` on the Mac, enable the optional Wi-Fi feature with compile-time environment variables:
+Serial mode remains the default. To send the same `IMU,...` rows to UDP port `7778` on the Mac, enable the optional Wi-Fi feature with the [firmware configuration](../../docs/ota/provisioning.md).
+
+Set `telemetry.imu.udp_host` to your Mac’s IPv4 address in `firmware.yaml`.
 
 ```sh
-export WIFI_SSID='your-network-name'
-export WIFI_PASSWORD='your-network-password'
-export IMU_UDP_HOST="$(ipconfig getifaddr en0)"
 ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
   cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p imu-demo --features wifi
 ```

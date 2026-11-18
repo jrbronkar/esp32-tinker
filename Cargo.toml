@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/bmm150",
+    "crates/firmware-config",
     "crates/hello-world",
     "crates/imu-demo",
     "crates/embedded-http2",

@@ -6,9 +6,10 @@ publish = false
 
 [features]
 default = []
-wifi = ["dep:embassy-executor", "dep:embassy-time", "dep:esp-alloc", "dep:esp-rtos", "dep:heapless", "dep:wifi-telemetry", "dep:wifi-network"]
+wifi = ["dep:firmware-config", "dep:embassy-executor", "dep:embassy-time", "dep:esp-alloc", "dep:esp-rtos", "dep:heapless", "dep:wifi-telemetry", "dep:wifi-network"]
 
 [dependencies]
+firmware-config = { path = "../firmware-config", optional = true }
 embassy-executor = { version = "0.10.0", optional = true }
 embassy-time = { version = "0.5.0", optional = true }
 esp-alloc = { version = "0.10.0", features = ["esp32s3"], optional = true }

@@ -1,8 +1,18 @@
 # Provisioning and recovery
 
-Run from the repository root inside `nix develop`. Export `WIFI_SSID` and
-`WIFI_PASSWORD` privately; Cargo does not load `.env`. Firmware images contain
-these credentials and must stay private. Build client and firmware together.
+Run from the repository root inside `nix develop`. Copy the
+[example configuration](../../firmware.example.yaml) to `firmware.yaml` and
+set `wifi.ssid`, `wifi.password`, and `firmware.version`.
+
+```sh
+cp firmware.example.yaml firmware.yaml
+```
+
+The build validates the file and embeds its settings in the firmware. Git
+ignores `firmware.yaml`, `firmware.yml`, and `firmware.*.local.yaml` or `.yml` profiles. For a different board or
+network, keep a second file and set `FIRMWARE_CONFIG` to its absolute path
+when building. Keep both local config files and firmware images private since
+they contain Wi-Fi credentials. Build client and firmware together.
 
 ## Initial USB setup
 
@@ -22,7 +32,7 @@ credentials. Set `SERIAL_PORT` to its USB device. Initial provisioning replaces
 the partition table and clears OTA metadata; do not repeat it for ordinary updates.
 
 ```sh
-FIRMWARE_VERSION=ota-a cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
+cargo build --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p device-demo
 espflash flash --port "$SERIAL_PORT" --flash-size 16mb \
   --partition-table partitions/ota-16mb.csv --target-app-partition ota_0 \
   --erase-parts otadata target/xtensa-esp32s3-none-elf/release/device-demo
@@ -36,12 +46,12 @@ nix run .#espctl -- tui
 ```
 
 Press **U** to select an exported image. The TUI reads its embedded version
-and asks for confirmation before uploading and applying the update. The image
-version defaults to a Git hash. For a scripted update with a fixed version,
-pass an override when exporting:
+and asks for confirmation before uploading and applying the update. Set
+`firmware.version` before each export to identify the build and name the
+binary. For example, set it to `ota-next` for this scripted update:
 
 ```sh
-nix run .#ota-image -- ota-next
+nix run .#ota-image
 cargo run -p espctl -- upload --host BOARD_IP \
   --image target/ota/ota-next.bin --firmware-version ota-next --logs --commit
 cargo run -p espctl -- status --host BOARD_IP --boot
@@ -71,8 +81,8 @@ and needs only SDA, SCL, power, and ground. Each sensor retries independently,
 and management remains available if a sensor is missing.
 
 Use `espctl logs --follow` to see `IMU` records and `MAG,time_ms,x_uT,y_uT,z_uT`
-records in device logs. Set `IMU_MQTT_BROKER` and `IMU_MQTT_DEVICE_ID` when building
-to publish both sensors to the [MQTT viewer](../../tools/imu-visualizer/README.md).
+records in device logs. Set `telemetry.imu.mqtt` in the config to publish both
+sensors to the [MQTT viewer](../../tools/imu-visualizer/README.md).
 
 ## Recovery
 

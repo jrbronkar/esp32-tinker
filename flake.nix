@@ -87,7 +87,7 @@
 
       otaImage = pkgs.writeShellApplication {
         name = "ota-image";
-        runtimeInputs = firmwareTools ++ [pkgs.coreutils pkgs.gitMinimal];
+        runtimeInputs = firmwareTools ++ [pkgs.coreutils];
         text = ''
           application=device-demo
           features=()
@@ -96,26 +96,15 @@
             features=(--features imu)
             shift
           fi
-          if [[ $# -gt 1 || ($# -eq 1 && ! $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,30}$) ]]; then
-            echo "Usage: nix run .#ota-image [-- [--imu] [VERSION]] (1–31 letters, digits, dots, underscores or hyphens)" >&2
+          if [[ $# -ne 0 ]]; then
+            echo "Usage: nix run .#ota-image [-- --imu]" >&2
             exit 2
           fi
           if [[ ! -f flake.nix || ! -d crates/device-demo ]]; then
             echo "Run from the ESP32 repository root." >&2
             exit 2
           fi
-          : "''${WIFI_SSID:?Export WIFI_SSID before building}"
-          : "''${WIFI_PASSWORD?Export WIFI_PASSWORD before building}"
-          if [[ $# -eq 1 ]]; then
-            version=$1
-          else
-            version=$(git rev-parse --short=12 HEAD)
-            if ! git diff --quiet HEAD --; then
-              changes=$(git diff --no-ext-diff --no-textconv --binary HEAD -- | git hash-object --stdin)
-              version="$version-''${changes:0:12}"
-            fi
-          fi
-          export FIRMWARE_VERSION="$version"
+          version=$(cargo run --locked --quiet -p firmware-config --bin firmware-version)
           cargo build --locked --target-dir target --target xtensa-esp32s3-none-elf \
             -Zbuild-std=core,alloc --release -p device-demo "''${features[@]}"
           mkdir -p target/ota

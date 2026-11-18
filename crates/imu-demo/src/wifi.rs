@@ -18,9 +18,10 @@ use mpu6050::{Mpu6050, ADDRESS_LOW};
 use onboard_rgb::breathing_green;
 use wifi_network::Settings;
 
-const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
-const IMU_UDP_HOST: &str = env!("IMU_UDP_HOST");
+const DESTINATION: Ipv4Addr = match firmware_config::IMU_UDP_HOST {
+    Some(address) => address,
+    None => panic!("set telemetry.imu.udp_host in firmware.yaml for the imu-demo wifi feature"),
+};
 const IMU_UDP_PORT: u16 = 7778;
 
 #[esp_rtos::main]
@@ -30,23 +31,20 @@ async fn main(spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 36 * 1024);
 
-    let destination: Ipv4Addr = IMU_UDP_HOST
-        .parse()
-        .unwrap_or_else(|_| fatal("IMU_UDP_HOST must be an IPv4 address"));
     let stack = wifi_network::connect(
         spawner,
         peripherals.WIFI,
         peripherals.TIMG0,
         peripherals.SW_INTERRUPT,
         Settings {
-            ssid: WIFI_SSID,
-            password: WIFI_PASSWORD,
+            ssid: firmware_config::WIFI_SSID,
+            password: firmware_config::WIFI_PASSWORD,
         },
     )
     .await
     .unwrap_or_else(|_| fatal("Wi-Fi telemetry initialization failed"));
 
-    let mut telemetry = wifi_telemetry::UdpTelemetry::new(stack, destination, IMU_UDP_PORT)
+    let mut telemetry = wifi_telemetry::UdpTelemetry::new(stack, DESTINATION, IMU_UDP_PORT)
         .unwrap_or_else(|_| fatal("UDP telemetry initialization failed"));
 
     let i2c_config = Config::default().with_frequency(Rate::from_khz(100));

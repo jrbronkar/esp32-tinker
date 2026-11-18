@@ -8,14 +8,21 @@ Telemetry parsing and orientation estimation live in `src/lib.rs`; the serial/gr
 
 Start an MQTT 5 broker with a TCP listener reachable from the ESP32 and
 viewer. This firmware uses unauthenticated, unencrypted connections for a
-trusted bench network. Set the broker address and a unique device ID when
-building the dual-sensor image. Set the Wi-Fi credentials as described in
-the [OTA provisioning guide](../../docs/ota/provisioning.md).
+trusted bench network. Set Wi-Fi credentials as described in the
+[OTA provisioning guide](../../docs/ota/provisioning.md), set
+`firmware.version` to `imu-mag-demo`, and add the broker’s LAN address and
+a unique device ID to `firmware.yaml`:
+
+```yaml
+telemetry:
+  imu:
+    mqtt:
+      broker: "192.0.2.10:1883"
+      device_id: "esp32-01"
+```
 
 ```sh
-export IMU_MQTT_BROKER=MAC_LAN_IP:1883
-export IMU_MQTT_DEVICE_ID=esp32-01
-nix run .#ota-image -- --imu imu-mag-demo
+nix run .#ota-image -- --imu
 nix run .#espctl -- upload --host BOARD_IP \
   --image target/ota/imu-demo-imu-mag-demo.bin --firmware-version imu-mag-demo --commit
 nix run .#imu-visualizer -- --mqtt localhost esp32-01

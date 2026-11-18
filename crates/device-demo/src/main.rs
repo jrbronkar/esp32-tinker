@@ -26,10 +26,7 @@ const APPLICATION: &str = if cfg!(feature = "imu") {
 };
 
 esp_bootloader_esp_idf::esp_app_desc!(
-    match option_env!("FIRMWARE_VERSION") {
-        Some(version) => version,
-        None => env!("CARGO_PKG_VERSION"),
-    },
+    firmware_config::VERSION,
     APPLICATION,
     esp_bootloader_esp_idf::BUILD_TIME,
     esp_bootloader_esp_idf::BUILD_DATE,
@@ -53,8 +50,8 @@ async fn main(spawner: Spawner) -> ! {
         peripherals.TIMG0,
         peripherals.SW_INTERRUPT,
         wifi_network::Settings {
-            ssid: env!("WIFI_SSID"),
-            password: env!("WIFI_PASSWORD"),
+            ssid: firmware_config::WIFI_SSID,
+            password: firmware_config::WIFI_PASSWORD,
         },
     )
     .await
@@ -70,7 +67,7 @@ async fn main(spawner: Spawner) -> ! {
         spawner,
         stack,
         APPLICATION,
-        option_env!("FIRMWARE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+        firmware_config::VERSION,
         boot,
         flash,
         logs,
@@ -110,9 +107,7 @@ async fn main(spawner: Spawner) -> ! {
 #[cfg(feature = "ota-heap-probe")]
 #[embassy_executor::task]
 async fn ota_heap_probe() {
-    let reserve_bytes = option_env!("OTA_HEAP_RESERVE_BYTES")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
+    let reserve_bytes = firmware_config::OTA_HEAP_RESERVE_BYTES;
     let mut reserve = alloc::vec::Vec::<u8>::new();
     if reserve.try_reserve_exact(reserve_bytes).is_err() {
         println!("OTA heap probe could not reserve {} bytes", reserve_bytes);

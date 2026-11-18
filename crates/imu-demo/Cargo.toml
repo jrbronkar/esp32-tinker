@@ -6,12 +6,13 @@ publish = false
 
 [features]
 default = []
-wifi = ["dep:embassy-executor", "dep:embassy-time", "dep:esp-alloc", "dep:esp-rtos", "dep:heapless", "dep:wifi-telemetry", "dep:wifi-network"]
+wifi = ["dep:firmware-config", "dep:embassy-executor", "dep:embassy-time", "dep:esp-alloc", "dep:esp-rtos", "dep:heapless", "dep:wifi-telemetry", "dep:wifi-network"]
 
 [dependencies]
 mpu6050 = { path = "../mpu6050" }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
+firmware-config = { path = "../firmware-config", optional = true }
 esp-backtrace = { version = "0.19.0", features = ["esp32s3", "panic-handler", "println"] }
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"] }
 esp-hal = { version = "1.1.1", features = ["esp32s3", "rt", "unstable"] }
