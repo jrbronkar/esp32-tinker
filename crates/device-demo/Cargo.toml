@@ -7,8 +7,11 @@ publish = false
 [features]
 ota-heap-probe = ["esp-alloc/internal-heap-stats"]
 imu = ["dep:bmm150", "dep:embassy-embedded-hal", "dep:embassy-futures", "dep:embassy-sync", "dep:embedded-hal", "dep:mpu6050", "dep:onboard-rgb", "dep:wifi-telemetry", "dep:embassy-net", "dep:heapless"]
+imu-mqtt = ["imu", "dep:imu-telemetry", "dep:rust-mqtt"]
 
 [dependencies]
+imu-telemetry = { path = "../imu-telemetry", optional = true }
+rust-mqtt = { version = "0.6", default-features = false, features = ["v5", "bump"], optional = true }
 bmm150 = { path = "../bmm150", optional = true }
 embassy-embedded-hal = { version = "0.6", optional = true }
 embassy-futures = { version = "0.1", optional = true }

@@ -25,6 +25,40 @@ Set the Wi-Fi build credentials privately as described in the
 [OTA provisioning guide](../../docs/ota/provisioning.md). Stop any other
 listener on UDP 7778 before opening the viewer.
 
+## Try MQTT with Protobuf
+
+The `imu-mqtt` firmware feature publishes MPU6050 and BMM150 samples to
+`devices/<device-id>/imu`. Each MQTT 5 message contains one binary
+`telemetry.ImuTelemetry` payload defined in
+[`protocol/imu_telemetry.proto`](../../protocol/imu_telemetry.proto).
+The sensor timestamps are milliseconds since firmware startup and share the
+same clock. A message may contain either sensor or both. Publications use QoS 0
+without retention, and the publisher keeps only the newest pending sample from
+each sensor. Set `IMU_UDP_HOST` as before to run the UDP viewer alongside MQTT.
+
+Start a Mosquitto broker with an MQTT TCP listener reachable from the board.
+This firmware mode uses unauthenticated, unencrypted connections for a
+trusted bench network. Set a unique device ID per board and use the broker's
+LAN address when building the firmware:
+
+```sh
+export IMU_MQTT_BROKER=MAC_LAN_IP:1883
+export IMU_MQTT_DEVICE_ID=esp32-01
+nix run .#ota-image -- --imu-mqtt imu-mqtt-demo
+```
+
+Upload the image using the dual-sensor OTA procedure above, substituting the
+new image path and version. Watch for `IMU MQTT connected` in the device logs.
+On the broker host, decode one publication from the repository root:
+
+```sh
+mosquitto_sub -h localhost -V mqttv5 -t devices/esp32-01/imu -C 1 -N |
+  protoc -I protocol --decode=telemetry.ImuTelemetry protocol/imu_telemetry.proto
+```
+
+Repeat the command to inspect a message containing a BMM150 sample. It arrives
+less often than an MPU6050 sample. The viewer still uses its serial or UDP input.
+
 ## Check yaw correction
 
 Start the viewer with the assembly still. The first valid magnetic sample
