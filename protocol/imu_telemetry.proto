@@ -3,9 +3,7 @@ syntax = "proto3";
 package telemetry;
 
 message ImuTelemetry {
-  reserved 1, 2;
-  reserved "motion", "magnetic";
-  OrientationSample orientation = 3;
+  OrientationSample orientation = 1;
 }
 
 // Hamilton unit quaternion in sensor coordinates, with yaw relative to startup.

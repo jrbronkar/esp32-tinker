@@ -77,6 +77,7 @@ mod tests {
         };
         let payload = encode(&sample)?;
         assert_eq!(payload.len(), 33);
+        assert_eq!(payload[0], 0x0a); // Field 1, length-delimited.
         assert_eq!(decode(&payload), Ok(sample));
         assert!(decode(&payload[..payload.len() - 1]).is_err());
         Ok(())
