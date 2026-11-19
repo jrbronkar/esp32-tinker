@@ -3,12 +3,11 @@ use std::{
     io::{BufRead, BufReader},
     sync::mpsc::{self, Receiver},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use imu_visualizer::{
-    parse_magnetic, parse_sample, MagneticSample, Orientation, OrientationEstimator, Sample,
-};
+use imu_telemetry::OrientationSample;
+use imu_visualizer::parse_sample;
 use macroquad::prelude::*;
 use rumqttc::v5::{
     mqttbytes::{
@@ -17,19 +16,6 @@ use rumqttc::v5::{
     },
     Client, Event, MqttOptions,
 };
-
-mod mqtt_payload;
-
-enum Telemetry {
-    Imu(Sample),
-    Magnetic(MagneticSample),
-}
-
-fn parse_telemetry(line: &str) -> Option<Telemetry> {
-    parse_sample(line)
-        .map(Telemetry::Imu)
-        .or_else(|| parse_magnetic(line).map(Telemetry::Magnetic))
-}
 
 #[macroquad::main("ESP32-S3 IMU Orientation")]
 async fn main() {
@@ -63,46 +49,32 @@ async fn main() {
             return;
         }
     };
-    let mut estimator = OrientationEstimator::default();
-    let mut latest: Option<Sample> = None;
-    let mut magnetic: Option<(MagneticSample, Instant)> = None;
-    let mut status = format!("Waiting for IMU data on {source_name}");
+    let mut latest = None;
+    let mut status = format!("Waiting for orientation on {source_name}");
 
     loop {
         while let Ok(message) = receiver.try_recv() {
             match message {
-                Ok(Telemetry::Imu(sample)) => {
-                    if latest.is_some_and(|previous| sample.time_ms < previous.time_ms) {
-                        estimator = OrientationEstimator::default();
-                        magnetic = None;
-                    }
-                    estimator.update(sample);
+                Ok(sample) => {
                     latest = Some(sample);
-                    status = "Live".to_owned();
-                }
-                Ok(Telemetry::Magnetic(sample)) => {
-                    if magnetic.is_none_or(|(previous, _)| sample.time_ms > previous.time_ms)
-                        && estimator.correct_yaw(sample)
-                    {
-                        magnetic = Some((sample, Instant::now()));
-                    }
+                    status = format!("Live on {source_name}");
                 }
                 Err(error) => status = error,
             }
         }
 
         clear_background(Color::from_rgba(18, 22, 30, 255));
-        let orientation = estimator.orientation();
-        draw_scene(rotation(orientation));
-        let fresh_field = magnetic
-            .filter(|(_, received)| received.elapsed() < Duration::from_secs(1))
-            .map(|(sample, _)| sample.field_ut);
-        draw_overlay(&status, latest, orientation, fresh_field);
+        draw_scene(latest.as_ref().map_or(Quat::IDENTITY, rotation));
+        draw_overlay(&status, latest.as_ref());
         next_frame().await;
     }
 }
 
-fn mqtt_reader(host: String, port: u16, topic: String) -> Receiver<Result<Telemetry, String>> {
+fn mqtt_reader(
+    host: String,
+    port: u16,
+    topic: String,
+) -> Receiver<Result<OrientationSample, String>> {
     let (sender, receiver) = mpsc::sync_channel(32);
 
     thread::spawn(move || {
@@ -131,18 +103,9 @@ fn mqtt_reader(host: String, port: u16, topic: String) -> Receiver<Result<Teleme
                     )));
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
-                    let Ok((motion, magnetic)) = mqtt_payload::decode(&publish.payload) else {
-                        let _ = sender.try_send(Err("Invalid MQTT IMU payload".to_owned()));
-                        continue;
-                    };
-                    // Update the gyro estimate before applying a magnetic correction from
-                    // the same publication.
-                    if let Some(sample) = motion {
-                        let _ = sender.try_send(Ok(Telemetry::Imu(sample)));
-                    }
-                    if let Some(sample) = magnetic {
-                        let _ = sender.try_send(Ok(Telemetry::Magnetic(sample)));
-                    }
+                    let sample = imu_telemetry::decode(&publish.payload)
+                        .map_err(|error| format!("Invalid MQTT orientation payload: {error:?}"));
+                    let _ = sender.try_send(sample);
                 }
                 Err(error) => {
                     let _ = sender.try_send(Err(format!("MQTT connection failed: {error}")));
@@ -156,7 +119,7 @@ fn mqtt_reader(host: String, port: u16, topic: String) -> Receiver<Result<Teleme
     receiver
 }
 
-fn serial_reader(port_name: String) -> Receiver<Result<Telemetry, String>> {
+fn serial_reader(port_name: String) -> Receiver<Result<OrientationSample, String>> {
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -177,7 +140,7 @@ fn serial_reader(port_name: String) -> Receiver<Result<Telemetry, String>> {
             match reader.read_line(&mut line) {
                 Ok(0) => continue,
                 Ok(_) => {
-                    if let Some(sample) = parse_telemetry(line.trim()) {
+                    if let Some(sample) = parse_sample(&line) {
                         let _ = sender.send(Ok(sample));
                     }
                 }
@@ -198,15 +161,9 @@ fn sensor_to_scene() -> Quat {
     Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
 }
 
-fn rotation(orientation: Orientation) -> Quat {
+fn rotation(sample: &OrientationSample) -> Quat {
     let basis = sensor_to_scene();
-    let sensor_rotation = Quat::from_euler(
-        EulerRot::ZYX,
-        orientation.yaw,
-        orientation.pitch,
-        orientation.roll,
-    );
-    basis * sensor_rotation * basis.conjugate()
+    basis * Quat::from_array(sample.xyzw()) * basis.conjugate()
 }
 
 fn draw_scene(rotation: Quat) {
@@ -260,59 +217,22 @@ fn draw_rotated_box(rotation: Quat) {
     draw_line_3d(origin, axes * vec3(0.0, 0.0, 2.2), BLUE);
 }
 
-fn draw_overlay(
-    status: &str,
-    sample: Option<Sample>,
-    orientation: Orientation,
-    field: Option<[f32; 3]>,
-) {
+fn draw_overlay(status: &str, sample: Option<&OrientationSample>) {
     draw_text("ESP32-S3 IMU", 24.0, 36.0, 30.0, WHITE);
     draw_text(status, 24.0, 64.0, 20.0, LIGHTGRAY);
-
-    let degrees = vec3(
-        orientation.roll.to_degrees(),
-        orientation.pitch.to_degrees(),
-        orientation.yaw.to_degrees(),
-    );
-    draw_text(
-        &format!(
-            "roll {:7.1}°   pitch {:7.1}°   yaw {:7.1}°",
-            degrees.x, degrees.y, degrees.z
-        ),
-        24.0,
-        94.0,
-        24.0,
-        WHITE,
-    );
-
     if let Some(sample) = sample {
+        let [x, y, z, w] = sample.xyzw();
         draw_text(
             &format!(
-                "accel [{:+.3}, {:+.3}, {:+.3}] g",
-                sample.accel_g[0], sample.accel_g[1], sample.accel_g[2]
+                "xyzw [{x:+.4}, {y:+.4}, {z:+.4}, {w:+.4}]    {} ms",
+                sample.sample_ms
             ),
             24.0,
-            124.0,
-            20.0,
-            LIGHTGRAY,
-        );
-        draw_text(
-            &format!(
-                "gyro  [{:+.1}, {:+.1}, {:+.1}] °/s    {:.1} °C",
-                sample.gyro_dps[0], sample.gyro_dps[1], sample.gyro_dps[2], sample.temperature_c
-            ),
-            24.0,
-            150.0,
+            94.0,
             20.0,
             LIGHTGRAY,
         );
     }
-
-    let yaw_status = match field {
-        Some([x, y, z]) => format!("Yaw corrected by BMM150    [{x:+.1}, {y:+.1}, {z:+.1}] µT"),
-        None => "Yaw from gyroscope    Waiting for BMM150 data".to_owned(),
-    };
-    draw_text(&yaw_status, 24.0, screen_height() - 24.0, 18.0, GRAY);
 }
 
 #[cfg(test)]
@@ -321,9 +241,10 @@ mod tests {
 
     #[test]
     fn yaw_turns_the_board_in_the_horizontal_plane() {
-        let turn = rotation(Orientation {
-            yaw: std::f32::consts::FRAC_PI_2,
-            ..Orientation::default()
+        let turn = rotation(&OrientationSample {
+            z: std::f32::consts::FRAC_1_SQRT_2,
+            w: std::f32::consts::FRAC_1_SQRT_2,
+            ..Default::default()
         });
         assert!((turn * Vec3::Y - Vec3::Y).length() < 1e-5);
         assert!((turn * Vec3::X + Vec3::Z).length() < 1e-5);

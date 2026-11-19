@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+fusion = ["dep:libm"]
+
 [dependencies]
+libm = { version = "0.2", optional = true }
 heapless = "0.8"
 micropb = { version = "=0.6.0", default-features = false, features = ["container-heapless-0-8", "encode", "decode", "enable-64bit"] }
 

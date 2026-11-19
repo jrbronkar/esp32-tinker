@@ -1,22 +1,37 @@
 #![no_std]
 
-//! Bounded Protobuf messages shared by the IMU publisher and its consumers.
+//! Orientation telemetry shared by the IMU publisher and viewer.
 
+use core::fmt;
 use micropb::{MessageDecode, MessageEncode, PbEncoder};
+
+#[cfg(feature = "fusion")]
+pub mod fusion;
 
 #[allow(nonstandard_style, unused, irrefutable_let_patterns, clippy::all)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/imu_telemetry.rs"));
 }
-pub use generated::telemetry_::{ImuTelemetry, MagneticSample, MotionSample, Vector3};
+pub use generated::telemetry_::{ImuTelemetry, OrientationSample};
 
-// A full motion sample (52 bytes) and magnetic sample (30 bytes), including
-// their outer tags and lengths, fit even with ten-byte uint64 timestamps.
-pub type Payload = heapless::Vec<u8, 96>;
+// The nested message uses at most 33 bytes, including the outer tag and length.
+pub type Payload = heapless::Vec<u8, 33>;
 
-impl From<[f32; 3]> for Vector3 {
-    fn from([x, y, z]: [f32; 3]) -> Self {
-        Self { x, y, z }
+impl OrientationSample {
+    pub fn xyzw(&self) -> [f32; 4] {
+        [self.x, self.y, self.z, self.w]
+    }
+
+    pub fn is_unit(&self) -> bool {
+        let norm_squared: f32 = self.xyzw().iter().map(|value| value * value).sum();
+        (norm_squared - 1.0).abs() < 0.001
+    }
+}
+
+impl fmt::Display for OrientationSample {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let [x, y, z, w] = self.xyzw();
+        write!(f, "IMU_QUAT,{},{x:.7},{y:.7},{z:.7},{w:.7}", self.sample_ms)
     }
 }
 
@@ -24,18 +39,27 @@ impl From<[f32; 3]> for Vector3 {
 pub enum Error {
     Encode,
     Decode,
+    InvalidOrientation,
 }
 
-pub fn encode(sample: &ImuTelemetry) -> Result<Payload, Error> {
+pub fn encode(orientation: &OrientationSample) -> Result<Payload, Error> {
+    if !orientation.is_unit() {
+        return Err(Error::InvalidOrientation);
+    }
+    let message = ImuTelemetry::default().init_orientation(*orientation);
     let mut encoder = PbEncoder::new(Payload::new());
-    sample.encode(&mut encoder).map_err(|_| Error::Encode)?;
+    message.encode(&mut encoder).map_err(|_| Error::Encode)?;
     Ok(encoder.into_writer())
 }
 
-pub fn decode(data: &[u8]) -> Result<ImuTelemetry, Error> {
+pub fn decode(data: &[u8]) -> Result<OrientationSample, Error> {
     let mut sample = ImuTelemetry::default();
     sample.decode_from_bytes(data).map_err(|_| Error::Decode)?;
-    Ok(sample)
+    sample
+        .orientation()
+        .filter(|orientation| orientation.is_unit())
+        .copied()
+        .ok_or(Error::InvalidOrientation)
 }
 
 #[cfg(test)]
@@ -43,33 +67,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trips_both_sensors_at_max_timestamp() {
-        let motion = MotionSample::default()
-            .init_sample_ms(u64::MAX)
-            .init_acceleration_g([0.25, -0.5, 1.0].into())
-            .init_angular_velocity_dps([1.25, -42.5, 91.0].into())
-            .init_temperature_c(21.5);
-        let magnetic = MagneticSample::default()
-            .init_sample_ms(u64::MAX - 1)
-            .init_field_ut([16.0, -2.5, 40.0].into());
-        let sample = ImuTelemetry::default()
-            .init_motion(motion)
-            .init_magnetic(magnetic);
-        let payload = encode(&sample).unwrap();
+    fn round_trips_a_full_quaternion_at_max_timestamp() -> Result<(), Error> {
+        let sample = OrientationSample {
+            sample_ms: u64::MAX,
+            x: 0.5,
+            y: -0.5,
+            z: 0.5,
+            w: 0.5,
+        };
+        let payload = encode(&sample)?;
+        assert_eq!(payload.len(), 33);
         assert_eq!(decode(&payload), Ok(sample));
         assert!(decode(&payload[..payload.len() - 1]).is_err());
+        Ok(())
     }
 
     #[test]
-    fn encodes_a_magnetic_only_publication_to_expected_wire_bytes() {
-        let sample = ImuTelemetry::default().init_magnetic(
-            MagneticSample::default()
-                .init_sample_ms(1)
-                .init_field_ut([0.0, 0.0, 1.0].into()),
+    fn rejects_missing_and_legacy_orientation() {
+        assert_eq!(decode(&[]), Err(Error::InvalidOrientation));
+        assert_eq!(
+            decode(&[0x12, 9, 8, 1, 0x12, 5, 0x1d, 0, 0, 0x80, 0x3f]),
+            Err(Error::InvalidOrientation)
         );
         assert_eq!(
-            encode(&sample).unwrap().as_slice(),
-            &[0x12, 9, 8, 1, 0x12, 5, 0x1d, 0, 0, 0x80, 0x3f]
+            encode(&OrientationSample::default()),
+            Err(Error::InvalidOrientation)
         );
     }
 }

@@ -9,6 +9,7 @@ use esp_hal::{
     time::{Instant, Rate},
 };
 use esp_println::println;
+use imu_telemetry::fusion::{MotionSample, OrientationEstimator};
 use mpu6050::{Error as SensorError, Mpu6050, ADDRESS_LOW};
 use onboard_rgb::breathing_green;
 
@@ -53,24 +54,19 @@ fn run(peripherals: Peripherals) -> Result<Infallible, StartupError> {
     println!("Initializing MPU6050 at I2C address 0x68...");
     sensor.initialize().map_err(StartupError::Sensor)?;
     println!("MPU6050 confirmed and awake");
-    println!("IMU_CSV,time_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,temp_c");
+    let mut estimator = OrientationEstimator::default();
 
     let telemetry_started = Instant::now();
     let mut animation_frame = 0_u16;
     loop {
         match sensor.read() {
             Ok(reading) => {
-                println!(
-                    "IMU,{},{:.5},{:.5},{:.5},{:.3},{:.3},{:.3},{:.2}",
-                    telemetry_started.elapsed().as_millis(),
-                    reading.acceleration_g[0],
-                    reading.acceleration_g[1],
-                    reading.acceleration_g[2],
-                    reading.angular_velocity_dps[0],
-                    reading.angular_velocity_dps[1],
-                    reading.angular_velocity_dps[2],
-                    reading.temperature_c,
-                );
+                estimator.update(MotionSample {
+                    time_ms: telemetry_started.elapsed().as_millis(),
+                    accel_g: reading.acceleration_g,
+                    gyro_dps: reading.angular_velocity_dps,
+                });
+                println!("{}", estimator.orientation());
             }
             Err(error) => println!("MPU6050 read failed: {:?}", error),
         }
