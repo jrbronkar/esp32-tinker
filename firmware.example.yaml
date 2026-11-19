@@ -9,9 +9,7 @@ firmware:
 # Uncomment the settings for the transports you use.
 # telemetry:
 #   imu:
-#     # Required for the standalone imu-demo Wi-Fi build.
-#     udp_host: "192.0.2.10"
-#     # Required to send MQTT with the imu-mqtt feature.
+#     # Required to send MQTT with the device-demo imu feature.
 #     mqtt:
 #       broker: "192.0.2.10:1883"
 #       device_id: "esp32-01"

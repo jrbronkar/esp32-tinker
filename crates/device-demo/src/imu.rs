@@ -17,13 +17,13 @@ use esp_hal::{
     time::Rate,
 };
 use heapless::String;
+use imu_telemetry::fusion::{MagneticSample, MotionSample, OrientationEstimator};
 use mpu6050::{Mpu6050, ADDRESS_LOW};
 
 mod mqtt;
 
 const BMM150_LAST_ADDRESS: u8 = 0x13;
 const MAG_POLL_INTERVAL: Duration = Duration::from_millis(20);
-const MAG_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const MAG_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 pub async fn run(
@@ -59,6 +59,7 @@ async fn run_mpu(
 ) -> ! {
     let mut sensor = Mpu6050::new(bus, ADDRESS_LOW);
     let mut last_log = started;
+    let mut estimator = OrientationEstimator::default();
     loop {
         if sensor.initialize().is_err() {
             logs.log(LogSeverity::Warn, "MPU6050 unavailable; check wiring");
@@ -68,35 +69,29 @@ async fn run_mpu(
         logs.log(LogSeverity::Info, "MPU6050 ready");
         loop {
             let Ok(reading) = sensor.read() else {
-                samples.motion.set(None);
+                samples.orientation.set(None);
                 logs.log(LogSeverity::Warn, "MPU6050 read failed; retrying");
                 Timer::after_secs(1).await;
                 break;
             };
-            let [ax, ay, az] = reading.acceleration_g;
-            let [gx, gy, gz] = reading.angular_velocity_dps;
-            let temperature = reading.temperature_c;
-            let sample_ms = started.elapsed().as_millis();
-            samples.motion.set(Some(
-                imu_telemetry::MotionSample::default()
-                    .init_sample_ms(sample_ms)
-                    .init_acceleration_g(reading.acceleration_g.into())
-                    .init_angular_velocity_dps(reading.angular_velocity_dps.into())
-                    .init_temperature_c(temperature),
-            ));
-            let mut record = String::<160>::new();
-            if write!(
-                record,
-                "IMU,{sample_ms},{ax:.5},{ay:.5},{az:.5},{gx:.3},{gy:.3},{gz:.3},{temperature:.2}",
-            )
-            .is_ok()
-            {
+            estimator.update(MotionSample {
+                time_ms: started.elapsed().as_millis(),
+                accel_g: reading.acceleration_g,
+                gyro_dps: reading.angular_velocity_dps,
+            });
+            if let Some(field) = samples.magnetic.take() {
+                estimator.correct_yaw(field);
+            }
+            let orientation = estimator.orientation();
+            let mut record = String::<96>::new();
+            if write!(record, "{orientation}").is_ok() {
                 let now = Instant::now();
                 if now.duration_since(last_log) >= Duration::from_secs(1) {
                     logs.log(LogSeverity::Info, &record);
                     last_log = now;
                 }
             }
+            samples.orientation.set(Some(orientation));
             Timer::after_millis(20).await;
         }
     }
@@ -124,31 +119,13 @@ async fn run_magnetometer(
             if write!(message, "BMM150 ready at 0x{address:02X}").is_ok() {
                 logs.log(LogSeverity::Info, &message);
             }
-            let mut last_log = None;
             loop {
                 match sensor.try_read() {
-                    Ok(Some([x, y, z])) => {
-                        let now = Instant::now();
-                        let sample_ms = now.duration_since(started).as_millis();
-                        samples.magnetic.set(Some(
-                            imu_telemetry::MagneticSample::default()
-                                .init_sample_ms(sample_ms)
-                                .init_field_ut([x, y, z].into()),
-                        ));
-                        if last_log.is_none_or(|last| now.duration_since(last) >= MAG_LOG_INTERVAL)
-                        {
-                            let mut record = String::<96>::new();
-                            if write!(
-                                record,
-                                "MAG,{},{x:.2},{y:.2},{z:.2}",
-                                now.duration_since(started).as_millis(),
-                            )
-                            .is_ok()
-                            {
-                                logs.log(LogSeverity::Info, &record);
-                                last_log = Some(now);
-                            }
-                        }
+                    Ok(Some(field_ut)) => {
+                        samples.magnetic.set(Some(MagneticSample {
+                            time_ms: started.elapsed().as_millis(),
+                            field_ut,
+                        }));
                     }
                     Ok(None) | Err(bmm150::Error::InvalidSample) => {}
                     Err(_) => {

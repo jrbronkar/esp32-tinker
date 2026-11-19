@@ -8,7 +8,7 @@ Mac visualization tools, and a development OTA update system over Wi-Fi.
 | Task | Starting point |
 | --- | --- |
 | Set up the toolchain and flash a first program | [Development shell](#enter-the-development-shell), [build](#build), and [flash](#flash-and-monitor) below |
-| Stream and visualize IMU measurements | [IMU guide](crates/imu-demo/README.md) and [visualizer](tools/imu-visualizer/README.md) |
+| Stream and visualize IMU orientation | [IMU guide](crates/imu-demo/README.md) and [visualizer](tools/imu-visualizer/README.md) |
 | Monitor soil moisture | [Sensor guide](crates/soil-sensor/README.md) and [dashboard](tools/soil-visualizer/README.md) |
 | Find boards on the same LAN | [Device discovery](docs/device-management/discovery.md) |
 | Watch board status and live logs | [Terminal dashboard](tools/espctl/README.md#terminal-dashboard) |
@@ -195,7 +195,7 @@ The most recently flashed program remains in SPI flash and starts again whenever
 
 ## Live IMU orientation
 
-The host-side Rust application in `tools/imu-visualizer` consumes the standalone IMU demo over serial or the dual-sensor firmware over MQTT and displays a live 3D board orientation. See its [README](tools/imu-visualizer/README.md) for usage and the MPU6050 yaw limitation.
+The host-side Rust application in `tools/imu-visualizer` renders on-device quaternions from the standalone IMU demo over serial or the dual-sensor firmware over MQTT. See its [README](tools/imu-visualizer/README.md) for usage and the MPU6050 yaw limitation.
 
 ## Live soil dashboard
 

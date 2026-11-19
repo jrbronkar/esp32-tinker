@@ -4,7 +4,7 @@ use device_service::{DeviceLogs, LogSeverity};
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{with_timeout, Duration, Ticker, Timer};
 use heapless::String;
-use imu_telemetry::{ImuTelemetry, MagneticSample, MotionSample};
+use imu_telemetry::{fusion::MagneticSample, OrientationSample};
 use rust_mqtt::{
     buffer::BumpBuffer,
     client::{
@@ -17,7 +17,7 @@ use rust_mqtt::{
 // Each sensor replaces its pending sample, so a slow connection cannot build a backlog.
 #[derive(Default)]
 pub(super) struct Samples {
-    pub motion: Cell<Option<MotionSample>>,
+    pub orientation: Cell<Option<OrientationSample>>,
     pub magnetic: Cell<Option<MagneticSample>>,
 }
 
@@ -73,27 +73,16 @@ pub(super) async fn run(stack: Stack<'static>, logs: &DeviceLogs, samples: &Samp
                 Ok(Ok(_))
             ) {
                 logs.log(LogSeverity::Info, "IMU MQTT connected");
-                samples.motion.set(None);
-                samples.magnetic.set(None);
                 let publication =
                     PublicationOptions::new(TopicReference::Name(topic.as_borrowed()));
                 let mut ticker = Ticker::every(Duration::from_millis(20));
                 loop {
                     ticker.next().await;
-                    let motion = samples.motion.take();
-                    let magnetic = samples.magnetic.take();
-                    if motion.is_none() && magnetic.is_none() {
+                    let Some(orientation) = samples.orientation.take() else {
                         continue;
-                    }
-                    let mut sample = ImuTelemetry::default();
-                    if let Some(motion) = motion {
-                        sample.set_motion(motion);
-                    }
-                    if let Some(magnetic) = magnetic {
-                        sample.set_magnetic(magnetic);
-                    }
-                    let Ok(payload) = imu_telemetry::encode(&sample) else {
-                        logs.log(LogSeverity::Error, "IMU MQTT payload exceeded buffer");
+                    };
+                    let Ok(payload) = imu_telemetry::encode(&orientation) else {
+                        logs.log(LogSeverity::Error, "IMU orientation encoding failed");
                         continue;
                     };
                     if !matches!(

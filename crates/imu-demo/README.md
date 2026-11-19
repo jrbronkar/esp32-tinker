@@ -1,6 +1,6 @@
 # MPU6050 IMU demo
 
-This demo connects one MPU6050 breakout board to the ESP32-S3 DevKitC-1 over I²C. It confirms the sensor identity, wakes it from sleep, and streams acceleration, angular velocity, and temperature as both raw register values and physical units.
+This demo connects one MPU6050 breakout board to the ESP32-S3 DevKitC-1 over I²C. It confirms the sensor identity, wakes it from sleep, and streams the estimated orientation over USB serial.
 
 ## Wiring
 
@@ -64,33 +64,16 @@ A correctly connected MPU6050 with AD0 low should produce output similar to:
 
 ```text
 MPU6050 confirmed and awake
-raw accel=[...] gyro=[...] temp=...
-units accel(g) x=... y=... z=... | gyro(dps) x=... y=... z=... | temp=... C
+IMU_QUAT,120,0.0000000,0.0000000,0.0000000,1.0000000
 ```
 
-Readings use an `IMU`-prefixed CSV protocol at approximately 50 samples per second. Each row contains time in milliseconds, acceleration in `g`, angular velocity in degrees per second, and temperature in degrees Celsius. Pressing `Ctrl+C` closes the monitor but leaves the firmware running on the ESP32.
+At approximately 50 Hz the demo publishes a timestamped unit quaternion over USB serial. The MPU6050 provides gravity and gyroscope measurements. Yaw is relative to startup and drifts over time. The onboard GPIO48 RGB LED breathes green while sampling.
 
-While sampling is healthy, the onboard GPIO48 RGB LED uses the shared `onboard-rgb` library to breathe green. This provides a visible heartbeat even when no serial monitor is attached.
-
-### Wi-Fi telemetry
-
-Serial mode remains the default. To send the same `IMU,...` rows to UDP port `7778` on the Mac, enable the optional Wi-Fi feature with the [firmware configuration](../../docs/ota/provisioning.md).
-
-Set `telemetry.imu.udp_host` to your Mac’s IPv4 address in `firmware.yaml`.
-
-```sh
-ESPFLASH_PORT=/dev/cu.usbmodem1234561 \
-  cargo run --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc --release -p imu-demo --features wifi
-```
-
-For a basic receiver, run `nc -u -l 7778` on the Mac. The shared `wifi-telemetry` library adds a newline to each UDP datagram and automatically reconnects the ESP32 after a Wi-Fi interruption. Credentials are not stored in Git, but they are embedded in the resulting firmware binary, so do not distribute that binary.
-
-The 3D viewer accepts serial output from this standalone demo. For networked
-3D rendering with both sensors, use the [dual-sensor MQTT firmware](../../tools/imu-visualizer/README.md).
+For MQTT, use `device-demo --features imu` with the [MQTT firmware configuration](../../tools/imu-visualizer/README.md).
 
 ## Library and tests
 
-The [`mpu6050` driver crate](../mpu6050) owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. The serial and Wi-Fi entry points configure the ESP32 I²C peripheral and publish the driver's readings.
+The [`mpu6050` driver crate](../mpu6050) owns identity checking, wake-up and range configuration, register decoding, and conversion into `g`, degrees per second, and degrees Celsius. The serial demo passes those measurements to the shared orientation estimator.
 
 Firmware startup is also fallible: `main` passes hardware ownership to `run`, then handles any returned setup error in a persistent safe-state loop. Expected setup failures do not use `unwrap()` or panic. The existing `esp-backtrace` panic handler remains a final boundary for programming defects and other unexpected failures.
 

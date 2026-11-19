@@ -80,9 +80,7 @@ The IMU build reads an MPU6050 at `0x68` and a BMM150 at `0x10` through
 and needs only SDA, SCL, power, and ground. Each sensor retries independently,
 and management remains available if a sensor is missing.
 
-Use `espctl logs --follow` to see `IMU` records and `MAG,time_ms,x_uT,y_uT,z_uT`
-records in device logs. Set `telemetry.imu.mqtt` in the config to publish both
-sensors to the [MQTT viewer](../../tools/imu-visualizer/README.md).
+Use `espctl logs --follow` to see sensor status and `IMU_QUAT,time_ms,x,y,z,w` orientation records. Set `telemetry.imu.mqtt` in the config to publish the same fused orientation to the [MQTT viewer](../../tools/imu-visualizer/README.md).
 
 ## Recovery
 

@@ -42,7 +42,6 @@ struct Telemetry {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImuTelemetry {
-    udp_host: Option<Ipv4Addr>,
     mqtt: Option<Mqtt>,
 }
 
@@ -123,14 +122,12 @@ impl Config {
             "pub const WIFI_SSID: &str = {:?};\n\
              pub const WIFI_PASSWORD: &str = {:?};\n\
              pub const VERSION: &str = {:?};\n\
-             pub const IMU_UDP_HOST: Option<Ipv4Addr> = {};\n\
              pub const SOIL_UDP_HOST: Option<Ipv4Addr> = {};\n\
              pub const IMU_MQTT: Option<MqttSettings> = {mqtt};\n\
              pub const OTA_HEAP_RESERVE_BYTES: usize = {};\n",
             self.wifi.ssid,
             self.wifi.password,
             self.firmware.version,
-            optional_ipv4(imu.udp_host),
             optional_ipv4(self.telemetry.soil.udp_host),
             self.diagnostics.ota_heap_reserve_bytes,
         )
