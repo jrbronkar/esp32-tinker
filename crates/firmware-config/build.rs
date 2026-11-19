@@ -42,9 +42,6 @@ struct Telemetry {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImuTelemetry {
-    // Accept existing profiles after retiring the IMU UDP publisher.
-    #[serde(rename = "udp_host")]
-    _udp_host: Option<Ipv4Addr>,
     mqtt: Option<Mqtt>,
 }
 

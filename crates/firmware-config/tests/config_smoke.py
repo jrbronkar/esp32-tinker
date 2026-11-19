@@ -16,7 +16,6 @@ firmware:
   version: "first-build"
 telemetry:
   imu:
-    udp_host: "192.0.2.10"
     mqtt:
       broker: "192.0.2.10:1883"
       device_id: "esp32-01"
@@ -60,6 +59,7 @@ class FirmwareConfig(unittest.TestCase):
     def test_invalid_profiles_fail_without_echoing_credentials(self):
         cases = (
             ("password:", "typo:", "invalid firmware settings"),
+            ("  imu:\n", '  imu:\n    udp_host: "192.0.2.10"\n', "invalid firmware settings"),
             ('"first-build"', '"../invalid"', "firmware.version must be"),
             (":1883", ":0", "nonzero TCP port"),
             ('"esp32-01"', '"esp32/#"', "telemetry.imu.mqtt.device_id must be"),
